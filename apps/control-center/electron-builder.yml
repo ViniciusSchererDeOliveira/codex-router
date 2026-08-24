@@ -18,6 +18,8 @@ electronFuses:
 extraResources:
   - from: assets/icon.png
     to: icon.png
+  - from: ../../src/spawnable-command.mjs
+    to: src/spawnable-command.mjs
 mac:
   category: public.app-category.developer-tools
   icon: assets/icon.png
