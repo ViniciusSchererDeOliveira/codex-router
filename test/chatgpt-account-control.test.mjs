@@ -8,8 +8,17 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-account-control-"));
+const codexStub = path.join(stateDir, process.platform === "win32" ? "codex-control-stub.cmd" : "codex-control-stub");
+writeFileSync(
+  codexStub,
+  process.platform === "win32"
+    ? "@echo off\r\nif \"%1\"==\"--version\" (echo codex-cli 99.0.0& exit /b 0)\r\nif \"%1\"==\"login\" exit /b 0\r\nif \"%1\"==\"debug\" (echo {\"models\":[{\"slug\":\"gpt-5.6-sol\",\"display_name\":\"GPT-5.6 Sol\",\"visibility\":\"list\"}]}& exit /b 0)\r\nexit /b 1\r\n"
+    : "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'codex-cli 99.0.0' ;;\n  login) exit 0 ;;\n  debug) printf '%s\\n' '{\"models\":[{\"slug\":\"gpt-5.6-sol\",\"display_name\":\"GPT-5.6 Sol\",\"visibility\":\"list\"}]}' ;;\n  *) exit 1 ;;\nesac\n",
+  { mode: 0o755 },
+);
 const env = {
   ...process.env,
+  CODEX_BIN: codexStub,
   CODEX_HOME: stateDir,
   MODEL_ROUTER_STATE_DIR: stateDir,
 };
