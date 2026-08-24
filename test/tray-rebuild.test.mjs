@@ -941,6 +941,7 @@ test("user launches show Codex Router in the Dock while supervision stays access
     "utf8",
   );
   assert.match(source, /NSApp\.setActivationPolicy\(Self\.launchedByUser \? \.regular : \.accessory\)/);
+  assert.match(source, /applicationShouldHandleReopen[\s\S]*NSApp\.setActivationPolicy\(\.regular\)/);
   assert.doesNotMatch(info, /LSUIElement/);
 });
 

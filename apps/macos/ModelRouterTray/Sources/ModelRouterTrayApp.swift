@@ -428,6 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // Double-clicking an app that is already running sends this instead of a
   // fresh launch.
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    NSApp.setActivationPolicy(.regular)
     store.revealForUserLaunch()
     ControlCenterLauncher.open()
     return true
