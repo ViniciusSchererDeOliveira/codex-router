@@ -52,6 +52,18 @@ const CATALOG_ARTIFACTS = Object.freeze([
   ["announced-models.json", "announcedModelsPath"],
 ]);
 
+function transactionDirectory(switchPath = CHATGPT_PROFILE_SWITCH_PATH) {
+  return path.join(path.dirname(switchPath), "chatgpt-profile", "switch-transaction");
+}
+
+function transactionManifestPath(switchPath) {
+  return path.join(transactionDirectory(switchPath), "manifest.json");
+}
+
+function transactionAuthPath(switchPath) {
+  return path.join(transactionDirectory(switchPath), "primary-auth.json");
+}
+
 function catalogPaths(options = {}) {
   return {
     modelsCachePath: options.modelsCachePath || MODELS_CACHE_PATH,
@@ -191,6 +203,104 @@ function restoreGlobalCatalog(snapshot, options = {}) {
   }
 }
 
+function writeSwitchTransaction({
+  switchPath,
+  active,
+  target,
+  targetIdentity,
+  primary,
+  catalogsEnabled,
+  globalCatalogSnapshot,
+}) {
+  const directory = transactionDirectory(switchPath);
+  ensureNoSymlinkParents(directory);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  ensureNoSymlinkParents(directory);
+  const identity = authIdentity(primary);
+  if (!identity) throw new Error("The active ChatGPT login profile has no verified identity.");
+  atomicPrivateCopy(primary, transactionAuthPath(switchPath));
+  writePrivateJson(transactionManifestPath(switchPath), {
+    version: VERSION,
+    active,
+    target,
+    activeAccountId: identity.accountId,
+    targetAccountId: targetIdentity.accountId,
+    catalogsEnabled: catalogsEnabled === true,
+    ...(catalogsEnabled ? { globalCatalogSnapshot } : {}),
+  }, { directoryMode: 0o700 });
+  return {
+    active,
+    target,
+    activeAccountId: identity.accountId,
+    targetAccountId: targetIdentity.accountId,
+    catalogsEnabled: catalogsEnabled === true,
+    globalCatalogSnapshot,
+  };
+}
+
+function readSwitchTransaction(switchPath) {
+  const directory = transactionDirectory(switchPath);
+  if (!existsSync(directory)) return undefined;
+  ensureNoSymlinkParents(directory);
+  const directoryStat = lstatSync(directory);
+  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+    throw new Error("The ChatGPT profile switch transaction is not a private directory.");
+  }
+  const manifestPath = transactionManifestPath(switchPath);
+  const authPath = transactionAuthPath(switchPath);
+  if (!existsSync(manifestPath) || !existsSync(authPath)) {
+    throw new Error("The ChatGPT profile switch transaction is incomplete.");
+  }
+  const manifestStat = lstatSync(manifestPath);
+  if (manifestStat.isSymbolicLink() || !manifestStat.isFile()) {
+    throw new Error("The ChatGPT profile switch transaction manifest is invalid.");
+  }
+  const parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (
+    parsed?.version !== VERSION
+    || !isChatGPTAccountId(parsed.active)
+    || !isChatGPTAccountId(parsed.target)
+    || typeof parsed.activeAccountId !== "string"
+    || !parsed.activeAccountId.trim()
+    || typeof parsed.targetAccountId !== "string"
+    || !parsed.targetAccountId.trim()
+  ) {
+    throw new Error("The ChatGPT profile switch transaction manifest is invalid.");
+  }
+  ensureAuthFile(authPath, "The saved");
+  if (authIdentity(authPath)?.accountId !== parsed.activeAccountId) {
+    throw new Error("The ChatGPT profile switch transaction identity does not match its manifest.");
+  }
+  return {
+    active: parsed.active,
+    target: parsed.target,
+    activeAccountId: parsed.activeAccountId,
+    targetAccountId: parsed.targetAccountId,
+    catalogsEnabled: parsed.catalogsEnabled === true,
+    globalCatalogSnapshot: parsed.catalogsEnabled === true && parsed.globalCatalogSnapshot
+      ? parsed.globalCatalogSnapshot
+      : undefined,
+  };
+}
+
+function removeSwitchTransaction(switchPath) {
+  const directory = transactionDirectory(switchPath);
+  if (!existsSync(directory)) return;
+  ensureNoSymlinkParents(directory);
+  const stat = lstatSync(directory);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error("The ChatGPT profile switch transaction is not a private directory.");
+  }
+  rmSync(directory, { recursive: true, force: true });
+}
+
+function restoreSwitchTransaction(transaction, switchPath, options) {
+  atomicPrivateCopy(transactionAuthPath(switchPath), primaryAuthPath(options.primaryHome));
+  if (transaction.catalogsEnabled) {
+    restoreGlobalCatalog(transaction.globalCatalogSnapshot || {}, options);
+  }
+}
+
 function refreshActiveCatalog(options = {}) {
   if (options.refreshCatalog === false) return;
   if (typeof options.refreshCatalog === "function") {
@@ -235,7 +345,7 @@ export function readChatGPTProfileSwitchState(filePath = CHATGPT_PROFILE_SWITCH_
       desired,
       active,
       pending: parsed?.pending === true,
-      phase: parsed?.phase === "backed-up" || parsed?.phase === "installed" ? parsed.phase : "idle",
+      phase: ["preparing", "backed-up", "installed"].includes(parsed?.phase) ? parsed.phase : "idle",
     };
   } catch {
     return defaultState();
@@ -467,6 +577,73 @@ function restorePreviousProfile(active, { homesDir, primaryHome }) {
   if (existsSync(current)) atomicPrivateCopy(current, primary);
 }
 
+function recoverInterruptedSwitchLocked(options) {
+  const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
+  const state = readChatGPTProfileSwitchState(switchPath);
+  let transaction;
+  try {
+    transaction = readSwitchTransaction(switchPath);
+  } catch (error) {
+    if (state.phase === "idle") {
+      removeSwitchTransaction(switchPath);
+      return state;
+    }
+    throw error;
+  }
+  if (!transaction) {
+    if (state.phase !== "idle") {
+      throw new Error(`The ChatGPT profile switch has no durable transaction for phase ${state.phase}.`);
+    }
+    return state;
+  }
+  if (state.phase === "idle") {
+    removeSwitchTransaction(switchPath);
+    return state;
+  }
+  if (state.phase === "installed") {
+    const targetProfile = profileAuthPath(transaction.target, {
+      homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
+    });
+    const targetIdentity = authIdentity(targetProfile);
+    const primaryIdentity = authIdentity(primaryAuthPath(options.primaryHome));
+    if (
+      !targetIdentity
+      || targetIdentity.accountId !== transaction.targetAccountId
+      || !primaryIdentity
+      || primaryIdentity.accountId !== transaction.targetAccountId
+    ) {
+      restoreSwitchTransaction(transaction, switchPath, options);
+      const rolledBack = writeState({
+        ...state,
+        desired: transaction.target,
+        active: transaction.active,
+        pending: true,
+        phase: "idle",
+      }, switchPath);
+      removeSwitchTransaction(switchPath);
+      return rolledBack;
+    }
+    const completed = writeState({
+      desired: transaction.target,
+      active: transaction.target,
+      pending: false,
+      phase: "idle",
+    }, switchPath);
+    removeSwitchTransaction(switchPath);
+    return completed;
+  }
+  restoreSwitchTransaction(transaction, switchPath, options);
+  const recovered = writeState({
+    ...state,
+    desired: transaction.target,
+    active: transaction.active,
+    pending: true,
+    phase: "idle",
+  }, switchPath);
+  removeSwitchTransaction(switchPath);
+  return recovered;
+}
+
 async function applyLocked(selection, options) {
   const {
     filePath = CHATGPT_ACCOUNT_POOL_PATH,
@@ -502,8 +679,18 @@ async function applyLocked(selection, options) {
   const catalogsEnabled = catalogHandlingEnabled(options);
   const globalCatalogSnapshot = catalogsEnabled ? snapshotGlobalCatalog(options) : undefined;
   if (catalogsEnabled) snapshotAccountCatalog(active, options);
-  writeState({ ...current, desired: target, active, pending: true, phase: "preparing" }, switchPath);
+  let transaction;
   try {
+    transaction = writeSwitchTransaction({
+      switchPath,
+      active,
+      target,
+      targetIdentity,
+      primary,
+      catalogsEnabled,
+      globalCatalogSnapshot,
+    });
+    writeState({ ...current, desired: target, active, pending: true, phase: "preparing" }, switchPath);
     syncAuthProfile(primary, activeProfile);
     writeState({ ...current, desired: target, active, pending: true, phase: "backed-up" }, switchPath);
     atomicPrivateCopy(targetProfile, primary);
@@ -513,12 +700,18 @@ async function applyLocked(selection, options) {
       snapshotAccountCatalog(target, options);
     }
     writeState({ desired: target, active: target, pending: false, phase: "installed" }, switchPath);
-    return writeState({ desired: target, active: target, pending: false, phase: "idle" }, switchPath);
+    const completed = writeState({ desired: target, active: target, pending: false, phase: "idle" }, switchPath);
+    removeSwitchTransaction(switchPath);
+    return completed;
   } catch (error) {
     try {
-      restorePreviousProfile(active, { homesDir, primaryHome });
-      if (catalogsEnabled) restoreGlobalCatalog(globalCatalogSnapshot, options);
+      if (transaction) restoreSwitchTransaction(transaction, switchPath, options);
+      else {
+        restorePreviousProfile(active, { homesDir, primaryHome });
+        if (catalogsEnabled) restoreGlobalCatalog(globalCatalogSnapshot, options);
+      }
       writeState({ ...current, desired: target, active, pending: true, phase: "idle" }, switchPath);
+      removeSwitchTransaction(switchPath);
     } catch {
       writeState({ ...current, desired: target, active, pending: true, phase: "backed-up" }, switchPath);
     }
@@ -529,11 +722,17 @@ async function applyLocked(selection, options) {
 export async function requestChatGPTProfileSwitch(selection, options = {}) {
   return withChatGPTAccountPoolLock(
     () => {
+      recoverInterruptedSwitchLocked(options);
       const migration = ensureProfileAccountLocked(options);
       const normalized = validateSelection(selection, { ...options, currentAccountId: migration.currentAccountId });
       return applyLocked(normalized, options);
     },
-    { filePath: options.filePath || CHATGPT_ACCOUNT_POOL_PATH },
+    {
+      filePath: options.filePath || CHATGPT_ACCOUNT_POOL_PATH,
+      ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
+      ...(options.retryMs === undefined ? {} : { retryMs: options.retryMs }),
+      ...(options.staleMs === undefined ? {} : { staleMs: options.staleMs }),
+    },
   );
 }
 

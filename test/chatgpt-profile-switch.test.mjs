@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -283,4 +284,67 @@ test("switching accounts restores each native catalog without losing routed mode
   assert.equal(readFileSync(catalog.nativeCatalogPath, "utf8"), firstFiles.nativeCatalogPath);
   assert.equal(readFileSync(catalog.mergedCatalogPath, "utf8"), firstFiles.mergedCatalogPath);
   assert.equal(readFileSync(path.join(secondDir, "native-models.json"), "utf8"), secondFiles["native-models.json"]);
+});
+
+test("an interrupted switch rolls back durable auth and catalog before retrying", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-crash-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const modelsCachePath = path.join(root, "models_cache.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  writeFileSync(modelsCachePath, JSON.stringify({ account: "first" }), { mode: 0o600 });
+  const firstCatalog = chatGPTSubscriptionAccountCatalogDir(first.id, { homesDir });
+  const secondCatalog = chatGPTSubscriptionAccountCatalogDir(second.id, { homesDir });
+  mkdirSync(firstCatalog, { recursive: true, mode: 0o700 });
+  mkdirSync(secondCatalog, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(firstCatalog, "models_cache.json"), JSON.stringify({ account: "first" }), { mode: 0o600 });
+  writeFileSync(path.join(secondCatalog, "models_cache.json"), JSON.stringify({ account: "second" }), { mode: 0o600 });
+
+  const modulePath = path.resolve("src/chatgpt-profile-switch.mjs");
+  const childSource = `
+    import { requestChatGPTProfileSwitch } from ${JSON.stringify(modulePath)};
+    await requestChatGPTProfileSwitch(${JSON.stringify(second.id)}, {
+      filePath: ${JSON.stringify(filePath)}, homesDir: ${JSON.stringify(homesDir)},
+      primaryHome: ${JSON.stringify(primaryHome)}, switchPath: ${JSON.stringify(switchPath)},
+      platform: "darwin", processList: "", modelsCachePath: ${JSON.stringify(modelsCachePath)},
+      staleMs: 2000, waitMs: 5000,
+      refreshCatalog: () => process.kill(process.pid, "SIGKILL"),
+    });
+  `;
+  const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", childSource], {
+    cwd: path.resolve("."),
+    encoding: "utf8",
+  });
+  assert.equal(crashed.signal, "SIGKILL");
+  const interrupted = readChatGPTProfileSwitchState(switchPath);
+  assert.equal(interrupted.phase, "backed-up");
+  assert.equal(interrupted.pending, true);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
+  assert.equal(JSON.parse(readFileSync(modelsCachePath, "utf8")).account, "second");
+
+  const applied = await reconcileChatGPTProfileSwitch({
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "",
+    modelsCachePath,
+    staleMs: 2000,
+    waitMs: 5000,
+    refreshCatalog: () => {},
+  });
+  assert.equal(applied.active, second.id);
+  assert.equal(applied.pending, false);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
+  assert.equal(JSON.parse(readFileSync(modelsCachePath, "utf8")).account, "second");
 });

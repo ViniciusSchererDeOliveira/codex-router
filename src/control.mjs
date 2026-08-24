@@ -2849,11 +2849,14 @@ async function handleChatGptAccountSwitch(action, value) {
   if (action === "remove") {
     const state = readChatGPTAccountPoolState();
     const profile = chatGPTProfileSwitchSnapshot();
+    if (profile.desired === value && profile.active !== value) {
+      throw new Error("Cannot remove a ChatGPT account with a pending native profile selection.");
+    }
     if (profile.active === value) {
       if (profile.running) throw new Error("Close Codex before removing the active subscription account.");
       const replacement = Object.values(state.accounts).find((account) => account.id !== value && account.state === "active" && !account.paused);
       if (!replacement) throw new Error("Cannot remove the only logged-in ChatGPT account.");
-      await requestChatGPTProfileSwitch(replacement.id, { refreshCatalog: false });
+      await requestChatGPTProfileSwitch(replacement.id);
     }
     const removed = await withChatGPTAccountPoolLock(() => removeChatGPTSubscriptionAccount(value));
     process.stdout.write(`${JSON.stringify(removed)}\n`);
@@ -2874,13 +2877,13 @@ async function handleChatGptAccountSwitch(action, value) {
       current.policy.selectedAccountId = selection;
       return writeChatGPTAccountPoolState(current);
     });
-    const profile = await requestChatGPTProfileSwitch(selection, { refreshCatalog: false });
+    const profile = await requestChatGPTProfileSwitch(selection);
     process.stdout.write(`${JSON.stringify({ ...sanitizeChatGPTAccountPool(result), profile })}\n`);
     return;
   }
   if (action === "profile") {
     if (value === "reconcile") {
-      process.stdout.write(`${JSON.stringify(await reconcileChatGPTProfileSwitch({ refreshCatalog: false }))}\n`);
+      process.stdout.write(`${JSON.stringify(await reconcileChatGPTProfileSwitch())}\n`);
       return;
     }
     if (!value || value === "status") {

@@ -42,4 +42,15 @@ test("account selection persists without replacing another saved login", () => {
   assert.equal(status.accounts[added.id].label, "Secondary");
   assert.equal(status.accounts[added.id].state, "active");
   assert.equal(Object.keys(status.accounts).length, 2);
+
+  const primary = Object.keys(status.accounts).find((id) => id !== added.id);
+  writeFileSync(
+    path.join(stateDir, "chatgpt-profile-switch.json"),
+    JSON.stringify({ version: 1, desired: added.id, active: primary, pending: true, phase: "idle" }),
+    { mode: 0o600 },
+  );
+  assert.throws(
+    () => run("chatgpt-account-pool", "remove", added.id),
+    /pending native profile selection/i,
+  );
 });
