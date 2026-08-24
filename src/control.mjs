@@ -2783,6 +2783,7 @@ async function handleChatGptAccountSwitch(action, value) {
     chatGPTSubscriptionAccountPoolSnapshot,
     createChatGPTSubscriptionAccount,
     readChatGPTAccountPoolState,
+    refreshChatGPTSubscriptionAccount,
     removeChatGPTSubscriptionAccount,
     sanitizeChatGPTAccountPool,
     withChatGPTAccountPoolLock,
@@ -2797,6 +2798,12 @@ async function handleChatGptAccountSwitch(action, value) {
 
   if (!action || action === "status") {
     await ensureChatGPTProfileAccounts();
+    const beforeRefresh = chatGPTSubscriptionAccountPoolSnapshot();
+    await Promise.all(
+      Object.values(beforeRefresh.accounts || {})
+        .filter((account) => account.subscription?.usable === true)
+        .map((account) => refreshChatGPTSubscriptionAccount(account.id)),
+    );
     const safe = chatGPTSubscriptionAccountPoolSnapshot();
     const { readCodexAccountUsage } = await import("./codex-account-usage.mjs");
     for (const account of Object.values(safe.accounts || {})) {
