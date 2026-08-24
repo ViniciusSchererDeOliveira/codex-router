@@ -293,7 +293,8 @@ if (lifecycleQueryInvocation) {
 }
 
 const primaryInstance = !lifecycleQueryInvocation && app.requestSingleInstanceLock();
-if (!lifecycleQueryInvocation && (!primaryInstance || quitForUpdateInvocation)) app.quit();
+if (!lifecycleQueryInvocation && !primaryInstance) app.exit(0);
+if (primaryInstance && quitForUpdateInvocation) app.quit();
 
 if (primaryInstance && !quitForUpdateInvocation) {
   // Replace a stale record as soon as this process owns the single-instance

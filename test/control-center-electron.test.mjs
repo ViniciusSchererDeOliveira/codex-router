@@ -759,6 +759,7 @@ test("electron boundary does not enable node integration or shell argv", async (
   assert.match(main, /setPermissionCheckHandler\(\(\) => false\)/);
   assert.match(main, /setPermissionRequestHandler\([\s\S]*callback\(false\)/);
   assert.match(main, /requestSingleInstanceLock\(\)/);
+  assert.match(main, /if \(!lifecycleQueryInvocation && !primaryInstance\) app\.exit\(0\)/);
   assert.match(main, /app\.on\("second-instance"/);
   assert.match(main, /else openRequests\.requestOpen\(\)/);
   assert.match(main, /new Tray\(/);
