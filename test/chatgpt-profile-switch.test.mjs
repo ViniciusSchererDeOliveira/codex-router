@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -104,9 +104,95 @@ test("a selected profile waits for Codex to close and preserves both account pro
   assert.equal(autoApplied.active, second.id);
 });
 
-test("profile detection only treats the desktop Codex process as open", () => {
+test("profile detection fails closed across desktop process names", () => {
   assert.equal(codexDesktopRunning({ platform: "darwin", processList: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" }), true);
   assert.equal(codexDesktopRunning({ platform: "darwin", processList: "/usr/bin/codex app-server" }), false);
+  assert.equal(codexDesktopRunning({ platform: "win32", processList: '"Codex.exe","123","Console","1","42 K"' }), true);
+  assert.equal(codexDesktopRunning({ platform: "win32", processList: '"codex-cli.exe","123","Console","1","42 K"' }), false);
+  assert.equal(codexDesktopRunning({ platform: "linux", processList: "/opt/Codex-desktop --profile default" }), true);
+  assert.equal(codexDesktopRunning({ platform: "linux", processList: "/usr/local/bin/codex app-server" }), true);
+  assert.equal(codexDesktopRunning({ platform: "linux", processList: "/usr/local/bin/codex-router" }), false);
+  assert.equal(codexDesktopRunning({ platform: "plan9", processList: "" }), true);
+  assert.equal(codexDesktopRunning({ platform: "linux", processListReader: () => { throw new Error("ps unavailable"); } }), true);
+});
+
+test("profile switching rejects symlinked login files before mutating the active profile", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-symlink-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = path.join(root, "second-auth.json");
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(secondAuth, JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } }), { mode: 0o600 });
+  symlinkSync(secondAuth, chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }));
+  await assert.rejects(
+    requestChatGPTProfileSwitch(second.id, { filePath, homesDir, primaryHome, switchPath, platform: "darwin", processList: "", refreshCatalog: false }),
+    /unavailable|symbolic-link/i,
+  );
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).active, first.id);
+});
+
+test("a catalog refresh failure restores the previous auth and catalog atomically", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-rollback-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const modelsCachePath = path.join(root, "models_cache.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  writeFileSync(modelsCachePath, '{"account":"first"}', { mode: 0o600 });
+  const firstCatalog = path.join(chatGPTSubscriptionAccountCatalogDir(first.id, { homesDir }), "models_cache.json");
+  mkdirSync(path.dirname(firstCatalog), { recursive: true });
+  writeFileSync(firstCatalog, '{"account":"first"}', { mode: 0o600 });
+  const secondCatalog = path.join(chatGPTSubscriptionAccountCatalogDir(second.id, { homesDir }), "models_cache.json");
+  mkdirSync(path.dirname(secondCatalog), { recursive: true });
+  writeFileSync(secondCatalog, '{"account":"second"}', { mode: 0o600 });
+  await assert.rejects(
+    requestChatGPTProfileSwitch(second.id, {
+      filePath, homesDir, primaryHome, switchPath, platform: "darwin", processList: "", modelsCachePath,
+      refreshCatalog: () => { throw new Error("simulated catalog crash"); },
+    }),
+    /simulated catalog crash/,
+  );
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+  assert.equal(readFileSync(modelsCachePath, "utf8"), '{"account":"first"}');
+  assert.equal(readChatGPTProfileSwitchState(switchPath).active, first.id);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).pending, true);
+});
+
+test("concurrent account switches serialize without producing a torn auth file", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-concurrent-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  const options = { filePath, homesDir, primaryHome, switchPath, platform: "darwin", processList: "", refreshCatalog: false };
+  await Promise.all([requestChatGPTProfileSwitch(second.id, options), requestChatGPTProfileSwitch(first.id, options)]);
+  const active = readFileSync(path.join(primaryHome, "auth.json"), "utf8");
+  assert.ok(active === firstAuth || active === secondAuth);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).pending, false);
 });
 
 test("switching accounts restores each native catalog without losing routed models", async () => {

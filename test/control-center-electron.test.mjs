@@ -941,9 +941,6 @@ test("preload constructs exact positional IPC payloads", async () => {
     ["addChatGptSubscriptionAccount", ["Work"], { label: "Work" }],
     ["loginChatGptSubscriptionAccount", ["acct_example_123456"], { accountId: "acct_example_123456" }],
     ["removeChatGptSubscriptionAccount", ["acct_example_123456"], { accountId: "acct_example_123456" }],
-    ["setChatGptAccountPoolEnabled", [true], { enabled: true }],
-    ["setChatGptAccountPoolMode", ["pool"], { mode: "pool" }],
-    ["setChatGptAccountPoolStrategy", ["round-robin"], { strategy: "round-robin" }],
     ["setChatGptAccountSelection", ["acct_example_123456"], { selection: "acct_example_123456" }],
     ["setPresence", ["always"], { mode: "always" }],
     ["controlService", ["start"], { action: "start" }],
@@ -1073,7 +1070,7 @@ test("settings keeps model choice out and exposes durable app preferences", asyn
   assert.match(settings, /setVisionBridgeEnabled\(/);
   assert.match(settings, /setVisionBridgeEngine\(/);
   assert.match(settings, /setVisionBridgeEffort\(/);
-  assert.match(settings, /ChatGPT subscription pool/);
+  assert.match(settings, /ChatGPT accounts/);
   assert.match(settings, /subscription-account-row/);
   assert.match(settings, /No saved ChatGPT accounts/);
   assert.match(settings, /addChatGptSubscriptionAccount\(/);

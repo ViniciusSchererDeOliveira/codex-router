@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AppWindow, Eye, LogIn, Moon, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, UserRound, Wrench } from "lucide-react";
+import { AppWindow, Check, Eye, LogIn, Moon, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, UserRound, Wrench } from "lucide-react";
 import { Badge, Button, Dialog, InlineNotice, PageHeader, SectionHeading, Toggle } from "../components";
 import { compactNumber } from "../lib";
 import { LANGUAGE_OPTIONS, type LanguageId, type Translate } from "../i18n";
@@ -48,6 +48,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
   const [repairReport, setRepairReport] = useState<DoctorSnapshot | null>(null);
   const [newAccountLabel, setNewAccountLabel] = useState("");
   const [removeAccountId, setRemoveAccountId] = useState<string | null>(null);
+  const [loginPendingId, setLoginPendingId] = useState<string | null>(null);
   const [trayCapability, setTrayCapability] = useState<{ supported?: boolean; why?: string }>();
   useEffect(() => {
     let active = true;
@@ -64,6 +65,18 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
     });
     return () => { active = false; };
   }, [api, refreshing]);
+  const loginPendingUsable = loginPendingId
+    ? accountPool?.accounts?.[loginPendingId]?.subscription?.usable === true
+    : false;
+  useEffect(() => {
+    if (!loginPendingId) return;
+    if (loginPendingUsable) {
+      setLoginPendingId(null);
+      return;
+    }
+    const timer = window.setInterval(onRefresh, 1_500);
+    return () => window.clearInterval(timer);
+  }, [loginPendingId, loginPendingUsable, onRefresh]);
   const trayControlsUnavailable = trayCapability?.supported === false;
   const repairFailures = useMemo(
     () => (repairReport?.checks ?? []).filter((check) => check.status === "fail"),
@@ -91,10 +104,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
     .filter((account) => account.state !== "revoked");
   const usableSubscriptionAccounts = subscriptionAccounts.filter((account) => account.state === "active" && account.subscription?.usable === true);
   const activeAccountId = accountPool?.profile?.active;
-  const accountMode = accountPool?.policy.mode === "pool" ? "pool" : "switch";
-  const accountSelection = accountPool?.policy.enabled
-    ? accountPool.policy.selectedAccountId || "auto"
-    : activeAccountId || usableSubscriptionAccounts[0]?.id || "auto";
+  const accountSelection = accountPool?.profile?.desired || activeAccountId || usableSubscriptionAccounts[0]?.id || "";
 
   // Repair reinstalls and restarts the service, so it can outlast several
   // ordinary actions. `runAction` owns the toast and the refresh; the report
@@ -173,18 +183,6 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
             <SectionHeading title={t("settings.routing.title")} description={t("settings.routing.description")} />
             <div className="settings-list">
               <div className="setting-row">
-                <div><strong>Account mode</strong><small>{accountMode === "pool" ? "Keep the selected login active and route native requests through the other saved accounts automatically." : "Activate the selected login in Codex. Other saved accounts remain untouched."}</small></div>
-                <select
-                  aria-label="ChatGPT account mode"
-                  value={accountMode}
-                  disabled={!api || !accountPool}
-                  onChange={(event) => api && void runAction("Change ChatGPT account mode", () => api.setChatGptAccountPoolMode(event.target.value as "switch" | "pool"))}
-                >
-                  <option value="switch">Switch account</option>
-                  <option value="pool">Pool (automatic)</option>
-                </select>
-              </div>
-              <div className="setting-row">
                 <div><strong>{t("settings.signedRouting.title")}</strong><small>{t("settings.signedRouting.detail")}</small></div>
                 <Toggle checked={optimisticToggles.value("signed-routing", target?.signedRouting === true)} disabled={!api || !target} label={t("settings.signedRouting.title")} onChange={(enabled) => api && void optimisticToggles.mutate("signed-routing", enabled, "Change signed routing", () => api.setSignedRouting(enabled))} />
               </div>
@@ -209,8 +207,8 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
           </section>
 
           <section className="panel-section">
-            <SectionHeading
-              title="ChatGPT subscription pool"
+              <SectionHeading
+              title="ChatGPT accounts"
               description="Save multiple ChatGPT logins and choose which one native Codex chats use. Provider routes keep their own credentials."
             />
             {accountPool?.profile?.pending ? (
@@ -218,37 +216,6 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                 Close Codex completely. The selected login will be activated before the next launch.
               </InlineNotice>
             ) : null}
-            <div className="settings-list">
-              <div className="setting-row">
-                <div><strong>Account to use</strong><small>Choose one saved login or let the account pool select automatically.</small></div>
-                <select
-                  aria-label="ChatGPT account to use"
-                  value={accountSelection}
-                  disabled={!api || !accountPool}
-                  onChange={(event) => api && void runAction("Change ChatGPT account", () => api.setChatGptAccountSelection(event.target.value))}
-                >
-                  <option value="auto" disabled={usableSubscriptionAccounts.length === 0}>Automatic pool</option>
-                  {subscriptionAccounts.map((account) => (
-                    <option key={account.id} value={account.id} disabled={account.subscription?.usable !== true}>
-                      {account.subscription?.email || account.label || account.id}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="setting-row">
-                <div><strong>Selection strategy</strong><small>Quota prefers the account with more remaining capacity.</small></div>
-                <select
-                  aria-label="ChatGPT subscription pool strategy"
-                  value={accountPool?.policy.strategy || "quota"}
-                  disabled={!api || !accountPool || accountMode !== "pool"}
-                  onChange={(event) => api && void runAction("Change ChatGPT pool strategy", () => api.setChatGptAccountPoolStrategy(event.target.value as "quota" | "round-robin" | "fill-first"))}
-                >
-                  <option value="quota">Quota</option>
-                  <option value="round-robin">Round-robin</option>
-                  <option value="fill-first">Fill first</option>
-                </select>
-              </div>
-            </div>
             <div className="settings-actions subscription-account-create">
               <input
                 aria-label="New ChatGPT account label"
@@ -273,19 +240,34 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
             <div className="settings-list">
               {subscriptionAccounts.map((account) => {
                 const status = account.subscription?.usable ? "Ready" : account.subscription?.expired ? "Session expired" : "Sign-in required";
-                const title = account.subscription?.email || account.label || account.id;
+                const title = account.subscription?.email || account.label || "ChatGPT account";
                 const label = account.subscription?.email && account.label ? `${account.label} · ` : "";
+                const usage = account.subscription?.usage;
+                const usageLabel = usage && Number.isFinite(usage.remainingPercent)
+                  ? `${usage.period} · ${Math.round(usage.remainingPercent)}% remaining`
+                  : "Usage unavailable";
                 return (
                   <div className="setting-row subscription-account-row" key={account.id}>
                     <div>
                       <strong><UserRound aria-hidden size={14} strokeWidth={1.7} /> {title} {accountSelection === account.id ? <Badge tone="accent">Selected</Badge> : null}</strong>
-                      <small>{label}{status} · {account.id} · {account.subscription?.expiresInHours !== undefined ? `${account.subscription.expiresInHours}h remaining` : ""}</small>
+                      <small>{label}{status}{account.subscription?.expiresInHours !== undefined ? ` · ${account.subscription.expiresInHours}h token` : ""} · {usageLabel}</small>
                     </div>
                     <div className="settings-actions">
                       <Button
+                        variant={accountSelection === account.id ? "secondary" : "ghost"}
+                        aria-pressed={accountSelection === account.id}
+                        aria-label={accountSelection === account.id ? `Selected ChatGPT account: ${title}` : `Select ChatGPT account: ${title}`}
+                        disabled={!api || account.state !== "active" || account.subscription?.usable !== true || accountSelection === account.id}
+                        onClick={() => api && void runAction("Switch ChatGPT account", () => api.setChatGptAccountSelection(account.id))}
+                      >{accountSelection === account.id ? <><Check aria-hidden size={13} strokeWidth={1.9} /> Selected</> : <><Check aria-hidden size={13} strokeWidth={1.9} /> Select</>}</Button>
+                      <Button
                         variant="ghost"
                         disabled={!api || account.state !== "active" || account.subscription?.usable === true}
-                        onClick={() => api && void runAction(`Login ${account.label || account.id}`, () => api.loginChatGptSubscriptionAccount(account.id))}
+                        onClick={() => {
+                          if (!api) return;
+                          setLoginPendingId(account.id);
+                          void runAction(`Login ${account.label || "ChatGPT account"}`, () => api.loginChatGptSubscriptionAccount(account.id)).catch(() => setLoginPendingId(null));
+                        }}
                       ><LogIn aria-hidden size={13} strokeWidth={1.7} /> Login</Button>
                       <Button variant="ghost" disabled={!api || account.state === "revoked"} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
                     </div>

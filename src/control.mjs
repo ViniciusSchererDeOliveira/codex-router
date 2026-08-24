@@ -2805,7 +2805,7 @@ async function handleProviderPools(action, provider, value) {
   throw new Error("Usage: provider-pools status|policy <provider> <quota|round-robin|fill-first>|pause|resume <provider> <cred_id>");
 }
 
-async function handleChatGptAccountPool(action, value, extra) {
+async function handleChatGptAccountPool(action, value) {
   const {
     chatGPTSubscriptionAccountHome,
     chatGPTSubscriptionAccountPoolSnapshot,
@@ -2820,6 +2820,26 @@ async function handleChatGptAccountPool(action, value, extra) {
   if (!action || action === "status") {
     await ensureChatGPTProfileAccounts();
     const safe = chatGPTSubscriptionAccountPoolSnapshot();
+    const { readCodexAccountUsage } = await import("./codex-account-usage.mjs");
+    for (const account of Object.values(safe.accounts || {})) {
+      if (account.subscription?.usable !== true) continue;
+      try {
+        const usage = await readCodexAccountUsage({ codexHome: chatGPTSubscriptionAccountHome(account.id) });
+        const windows = [usage.primary, usage.secondary].filter(Boolean);
+        const weekly = windows.find((window) => window.windowDurationMins >= 7 * 24 * 60);
+        const monthly = windows.find((window) => window.windowDurationMins >= 28 * 24 * 60);
+        const selected = weekly || monthly || windows[0];
+        if (selected) {
+          account.subscription.usage = {
+            period: selected === weekly ? "weekly" : selected === monthly ? "monthly" : "current",
+            remainingPercent: selected.remainingPercent,
+            ...(selected.resetsAt ? { resetsAt: selected.resetsAt } : {}),
+          };
+        }
+      } catch {
+        // Account status remains usable even when the optional quota read is unavailable.
+      }
+    }
     process.stdout.write(`${JSON.stringify({
       ...safe,
       profile: chatGPTProfileSwitchSnapshot(),
@@ -2854,57 +2874,20 @@ async function handleChatGptAccountPool(action, value, extra) {
     process.stdout.write(`${JSON.stringify(removed)}\n`);
     return;
   }
-  if (action === "enable" || action === "disable") {
-    const result = await withChatGPTAccountPoolLock(() => {
-      const current = readChatGPTAccountPoolState();
-      current.policy.enabled = action === "enable";
-      return writeChatGPTAccountPoolState(current);
-    });
-    process.stdout.write(`${JSON.stringify({ ...sanitizeChatGPTAccountPool(result), profile: chatGPTProfileSwitchSnapshot() })}\n`);
-    return;
-  }
-  if (action === "strategy") {
-    if (!["quota", "round-robin", "fill-first"].includes(value)) throw new Error("Account-pool strategy is invalid.");
-    const result = await withChatGPTAccountPoolLock(() => {
-      const current = readChatGPTAccountPoolState();
-      current.policy.strategy = value;
-      return writeChatGPTAccountPoolState(current);
-    });
-    process.stdout.write(`${JSON.stringify({ ...sanitizeChatGPTAccountPool(result), profile: chatGPTProfileSwitchSnapshot() })}\n`);
-    return;
-  }
-  if (action === "mode") {
-    if (!["switch", "pool"].includes(value)) throw new Error("Account mode must be switch or pool.");
-    const result = await withChatGPTAccountPoolLock(() => {
-      const current = readChatGPTAccountPoolState();
-      current.policy.mode = value;
-      current.policy.enabled = true;
-      return writeChatGPTAccountPoolState(current);
-    });
-    process.stdout.write(`${JSON.stringify({ ...sanitizeChatGPTAccountPool(result), profile: chatGPTProfileSwitchSnapshot() })}\n`);
-    return;
-  }
   if (action === "select") {
     const selection = String(value || "").trim();
-    if (!selection || (!["primary", "auto"].includes(selection) && !/^acct_[A-Za-z0-9_-]{8,80}$/.test(selection))) {
-      throw new Error("Account selection must be automatic or a registered account id.");
+    if (!selection || !/^acct_[A-Za-z0-9_-]{8,80}$/.test(selection)) {
+      throw new Error("Select a registered ChatGPT account id.");
     }
-    const migration = await ensureChatGPTProfileAccounts();
-    const resolved = selection === "primary" ? migration.currentAccountId : selection;
-    if (!resolved) throw new Error("No logged-in ChatGPT account is available.");
+    const resolved = selection;
     const result = await withChatGPTAccountPoolLock(() => {
       const current = readChatGPTAccountPoolState();
-      if (resolved === "auto") {
-        current.policy.enabled = true;
-        delete current.policy.selectedAccountId;
-      } else {
-        const account = current.accounts[resolved];
-        if (!account || account.state !== "active" || account.paused) {
-          throw new Error("The selected subscription account is not active.");
-        }
-        current.policy.enabled = true;
-        current.policy.selectedAccountId = resolved;
+      const account = current.accounts[resolved];
+      if (!account || account.state !== "active" || account.paused) {
+        throw new Error("The selected subscription account is not active.");
       }
+      current.policy.enabled = true;
+      current.policy.selectedAccountId = resolved;
       return writeChatGPTAccountPoolState(current);
     });
     const profile = await requestChatGPTProfileSwitch(resolved);
@@ -2922,23 +2905,7 @@ async function handleChatGptAccountPool(action, value, extra) {
     }
     throw new Error("Usage: chatgpt-account-pool profile status|reconcile");
   }
-  if (action === "pause" || action === "resume") {
-    if (!value || !/^acct_[A-Za-z0-9_-]{8,80}$/.test(value)) throw new Error("Account id is invalid.");
-    const result = await withChatGPTAccountPoolLock(() => {
-      const current = readChatGPTAccountPoolState();
-      const account = current.accounts[value];
-      if (!account) throw new Error("Account id is not registered.");
-      account.paused = action === "pause";
-      current.policy.pausedAccountIds = action === "pause"
-        ? [...new Set([...current.policy.pausedAccountIds, value])]
-        : current.policy.pausedAccountIds.filter((id) => id !== value);
-      if (action === "pause" && current.policy.selectedAccountId === value) delete current.policy.selectedAccountId;
-      return writeChatGPTAccountPoolState(current);
-    });
-    process.stdout.write(`${JSON.stringify(sanitizeChatGPTAccountPool(result))}\n`);
-    return;
-  }
-  throw new Error("Usage: chatgpt-account-pool status|add [label]|home <acct_id>|remove <acct_id>|profile status|profile reconcile|enable|disable|mode <switch|pool>|strategy <quota|round-robin|fill-first>|select <auto|acct_id>|pause|resume <acct_id>");
+  throw new Error("Usage: chatgpt-account-pool status|add [label]|home <acct_id>|remove <acct_id>|select <acct_id>|profile status|profile reconcile");
 }
 
 async function handleRoutingPolicies(action, value, extra) {

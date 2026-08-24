@@ -3,11 +3,7 @@ import path from "node:path";
 
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { writePrivateJson } from "./file-security.mjs";
-import { CHATGPT_PROFILE_SWITCH_PATH, CODEX_HOME, NATIVE_SESSION_CONSENT_PATH } from "./paths.mjs";
-import {
-  chatGPTSubscriptionPoolHeaders,
-} from "./chatgpt-account-pool.mjs";
-import { readChatGPTProfileSwitchState } from "./chatgpt-profile-switch.mjs";
+import { CODEX_HOME, NATIVE_SESSION_CONSENT_PATH } from "./paths.mjs";
 
 // The ChatGPT session the local Codex install already holds.
 //
@@ -21,8 +17,8 @@ import { readChatGPTProfileSwitchState } from "./chatgpt-profile-switch.mjs";
 // shared router plane. The authorization is one owner-only marker carrying no
 // credential. DeepSeek Harness, Gemini CLI, and any future local client then
 // share that decision; asking the same OS user to sign in once per harness buys
-// nothing. The subscription account pool is separate: it can replace the
-// session attached to native Codex traffic when the user enables it.
+// nothing. Separate subscription profiles are activated by an explicit
+// account switch while Codex is closed; this fallback never rotates accounts.
 //
 // Access and refresh tokens are never logged, returned by a status call, or
 // put in an error message. The desktop status may include the verified email
@@ -221,16 +217,6 @@ export async function refreshViaCodex({ now = Date.now() } = {}) {
  * `undefined` when there is nothing to fall back to, so call sites can leave
  * the request exactly as it arrived.
  */
-export function nativeSubscriptionPoolHeaders({ sessionId } = {}) {
-  if (discoveryDisabled()) return undefined;
-  const profile = readChatGPTProfileSwitchState(CHATGPT_PROFILE_SWITCH_PATH);
-  if (profile.pending && profile.desired !== "auto") return undefined;
-  const pooled = chatGPTSubscriptionPoolHeaders({ sessionId });
-  if (!pooled) return undefined;
-  const { accountId: _accountId, ...headers } = pooled;
-  return headers;
-}
-
 export function nativeSessionHeaders() {
   if (discoveryDisabled()) return undefined;
   if (!nativeSessionSharingEnabled()) return undefined;

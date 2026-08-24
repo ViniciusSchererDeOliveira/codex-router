@@ -185,10 +185,6 @@ const bridgeSource = String.raw`
       record("setChatGptAccountSelection", selection);
       return { ok: true };
     },
-    setChatGptAccountPoolMode: async (mode) => {
-      record("setChatGptAccountPoolMode", mode);
-      return { ok: true };
-    },
     setSubagentModel: async () => ({ ok: true }),
     setSubagentEffort: async () => ({ ok: true }),
     onOperation: () => () => {},
@@ -376,15 +372,15 @@ test("the production renderer exposes model discovery and picker actions", { tim
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     const accountRows = page.locator(".subscription-account-row");
-    await page.getByText("ChatGPT subscription pool", { exact: true }).waitFor();
+    await page.getByText("ChatGPT accounts", { exact: true }).waitFor();
     assert.equal(await accountRows.count(), 2, "two logged-in accounts should be visible");
     assert.equal(await accountRows.filter({ hasText: "Removed account" }).count(), 0, "revoked accounts stay hidden");
     assert.equal(await accountRows.filter({ hasText: "secondary@example.com" }).count(), 1, "secondary email should be visible");
     const readySecondary = accountRows.filter({ hasText: "Secondary account" });
     assert.equal(await readySecondary.getByRole("button", { name: "Login", exact: true }).isDisabled(), true, "ready accounts cannot start a duplicate login");
-    await page.getByRole("combobox", { name: "ChatGPT account to use" }).selectOption("active");
+    await page.getByRole("button", { name: "Select ChatGPT account: primary@example.com", exact: true }).click();
     await page.waitForFunction(() => window.routerControlTest.calls()
-      .some((call) => call.name === "setChatGptAccountSelection" && call.args[0] === "active"));
+      .some((call) => call.name === "setChatGptAccountSelection" && call.args[0] === "current"));
     assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
   } finally {
     await browser.close();

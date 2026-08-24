@@ -1187,23 +1187,8 @@ export function registerIpcHandlers({
     const id = stringValue(accountId, "Account id", CHATGPT_ACCOUNT_ID);
     return runJson(["chatgpt-account-pool", "remove", id], { timeoutMs: 60_000 });
   });
-  handleAction("setChatGptAccountPoolEnabled", async ({ enabled } = {}) => {
-    if (typeof enabled !== "boolean") throw new Error("enabled must be boolean.");
-    return runJson(["chatgpt-account-pool", enabled ? "enable" : "disable"], { timeoutMs: 60_000 });
-  });
-  handleAction("setChatGptAccountPoolMode", async ({ mode } = {}) => {
-    oneOf(mode, ["switch", "pool"], "Account mode");
-    return runJson(["chatgpt-account-pool", "mode", mode], { timeoutMs: 60_000 });
-  });
-  handleAction("setChatGptAccountPoolStrategy", async ({ strategy } = {}) => {
-    oneOf(strategy, ["quota", "round-robin", "fill-first"], "Account-pool strategy");
-    return runJson(["chatgpt-account-pool", "strategy", strategy], { timeoutMs: 60_000 });
-  });
   handleAction("setChatGptAccountSelection", async ({ selection } = {}) => {
-    const value = selection === "auto"
-      ? selection
-      : stringValue(selection, "Account selection", CHATGPT_ACCOUNT_ID);
-    return runJson(["chatgpt-account-pool", "select", value], { timeoutMs: 60_000 });
+    return runJson(["chatgpt-account-pool", "select", stringValue(selection, "Account selection", CHATGPT_ACCOUNT_ID)], { timeoutMs: 60_000 });
   });
   handleAction("setPresence", async ({ mode } = {}) => runJson(["presence", "set", oneOf(mode, PRESENCE_MODES, "Presence mode")]));
   handleAction("controlService", async ({ action = "status" } = {}) => {

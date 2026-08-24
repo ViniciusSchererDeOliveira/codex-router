@@ -8,6 +8,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  lstatSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -33,6 +34,7 @@ import {
   chatGPTSubscriptionAccountStatus,
   isChatGPTAccountId,
   readChatGPTAccountPoolState,
+  writeChatGPTAccountPoolState,
   withChatGPTAccountPoolLock,
 } from "./chatgpt-account-pool.mjs";
 
@@ -206,7 +208,8 @@ function profileAuthPath(selection, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {
 
 function ensureAuthFile(filePath, label) {
   try {
-    if (!statSync(filePath).isFile()) throw new Error();
+    const file = lstatSync(filePath);
+    if (file.isSymbolicLink() || !file.isFile()) throw new Error();
     return filePath;
   } catch {
     throw new Error(`${label} login profile is unavailable.`);
@@ -215,6 +218,10 @@ function ensureAuthFile(filePath, label) {
 
 function atomicPrivateCopy(source, destination) {
   ensureAuthFile(source, "The selected");
+  if (existsSync(destination)) {
+    const target = lstatSync(destination);
+    if (target.isSymbolicLink()) throw new Error("Refusing to replace a symbolic-link login profile.");
+  }
   mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
   const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
   try {
@@ -239,8 +246,8 @@ function syncAuthProfile(source, destination) {
 function authIdentity(filePath) {
   if (!existsSync(filePath)) return undefined;
   try {
-    const file = statSync(filePath);
-    if (!file.isFile() || (process.platform !== "win32" && (file.mode & 0o077) !== 0)) return undefined;
+    const file = lstatSync(filePath);
+    if (file.isSymbolicLink() || !file.isFile() || (process.platform !== "win32" && (file.mode & 0o077) !== 0)) return undefined;
     const parsed = JSON.parse(readFileSync(filePath, "utf8"));
     const tokens = parsed?.tokens;
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : "";
@@ -261,11 +268,18 @@ function authIdentity(filePath) {
 function accountForAuth(state, authPath, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {}) {
   const identity = authIdentity(authPath);
   if (!identity) return undefined;
+  const matches = [];
   for (const id of Object.keys(state.accounts)) {
+    const bound = state.accounts[id]?.identity?.accountId;
+    if (bound && bound === identity.accountId) {
+      matches.push(id);
+      continue;
+    }
     const candidate = authIdentity(chatGPTSubscriptionAccountAuthPath(id, { homesDir }));
-    if (candidate?.accountId === identity.accountId) return id;
+    if (candidate?.accountId === identity.accountId) matches.push(id);
   }
-  return undefined;
+  if (matches.length > 1) throw new Error("The ChatGPT account identity is registered more than once.");
+  return matches[0];
 }
 
 function ensureProfileAccountLocked({
@@ -288,6 +302,15 @@ function ensureProfileAccountLocked({
       const created = createChatGPTSubscriptionAccount({ filePath, homesDir, label: "" });
       id = created.id;
       atomicPrivateCopy(source, chatGPTSubscriptionAccountAuthPath(id, { homesDir }));
+      state = readChatGPTAccountPoolState(filePath);
+    }
+    const account = state.accounts[id];
+    if (account?.identity?.accountId && account.identity.accountId !== identity.accountId) {
+      throw new Error("The saved ChatGPT account identity does not match its login profile.");
+    }
+    if (account) {
+      account.identity = { accountId: identity.accountId, ...(identity.email ? { email: identity.email } : {}) };
+      writeChatGPTAccountPoolState(state, filePath);
       state = readChatGPTAccountPoolState(filePath);
     }
     if (source === primaryAuthPath(primaryHome)) currentAccountId = id;
@@ -313,19 +336,26 @@ export async function ensureChatGPTProfileAccounts(options = {}) {
   );
 }
 
-export function codexDesktopRunning({ platform = process.platform, processList } = {}) {
-  if (platform !== "darwin") return false;
+export function codexDesktopRunning({ platform = process.platform, processList, processListReader } = {}) {
+  if (!["darwin", "win32", "linux", "freebsd"].includes(platform)) return true;
   let listing = processList;
   if (listing === undefined) {
     try {
-      listing = execFileSync("/bin/ps", ["-axo", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      listing = typeof processListReader === "function"
+        ? processListReader(platform)
+        : platform === "win32"
+          ? execFileSync("tasklist", ["/FO", "CSV", "/NH"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+          : execFileSync("/bin/ps", ["-axo", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
     } catch {
       return true;
     }
   }
-  return String(listing).split(/\r?\n/).some((line) =>
-    /\/((?:ChatGPT|Codex)\.app)\/Contents\/MacOS\/(?:ChatGPT|Codex)(?:\s|$)/.test(line),
-  );
+  const patterns = platform === "darwin"
+    ? [/\/((?:ChatGPT|Codex)\.app)\/Contents\/MacOS\/(?:ChatGPT|Codex)(?:\s|$)/]
+    : platform === "win32"
+      ? [/(?:^|[\\/\s",])(?:ChatGPT|Codex)\.exe(?:[\s",]|$)/i]
+      : [/(?:^|[\\/])(?:ChatGPT|Codex)(?:[- ]desktop)?(?:\.AppImage)?(?:\s|$)/i];
+  return String(listing).split(/\r?\n/).some((line) => patterns.some((pattern) => pattern.test(line)));
 }
 
 function validateSelection(selection, { filePath = CHATGPT_ACCOUNT_POOL_PATH, currentAccountId } = {}) {
@@ -371,6 +401,13 @@ async function applyLocked(selection, options) {
   const targetProfile = profileAuthPath(target, { homesDir });
   ensureAuthFile(activeProfile, "The active");
   ensureAuthFile(targetProfile, "The selected");
+  const poolState = readChatGPTAccountPoolState(filePath);
+  const targetIdentity = authIdentity(targetProfile);
+  const boundIdentity = poolState.accounts[target]?.identity?.accountId;
+  if (!targetIdentity) throw new Error("The selected ChatGPT login profile has no verified identity.");
+  if (boundIdentity && boundIdentity !== targetIdentity.accountId) {
+    throw new Error("The selected ChatGPT login profile identity does not match its saved account.");
+  }
   const catalogsEnabled = catalogHandlingEnabled(options);
   const globalCatalogSnapshot = catalogsEnabled ? snapshotGlobalCatalog(options) : undefined;
   if (catalogsEnabled) snapshotAccountCatalog(active, options);

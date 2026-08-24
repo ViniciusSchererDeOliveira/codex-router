@@ -148,7 +148,6 @@ import {
 import { VERSION } from "./version.mjs";
 import {
   nativeSessionHeaders,
-  nativeSubscriptionPoolHeaders,
 } from "./codex-native-session.mjs";
 import {
   installStableFetchTransport,
@@ -471,11 +470,8 @@ function nativeHeaders(request) {
   const routerLocal =
     presented !== undefined &&
     (secretEqual(presented, CALLER_KEY || "") || secretEqual(presented, INTERNAL_KEY || ""));
-  if (presented !== undefined && !routerLocal) {
-    const pooled = nativeSubscriptionPoolHeaders({ sessionId: nativeSessionAffinity(request) });
-    if (pooled) Object.assign(headers, pooled);
-  } else if (!headers.authorization || routerLocal) {
-    const fallback = nativeSessionHeaders({ sessionId: nativeSessionAffinity(request) });
+  if (!headers.authorization || routerLocal) {
+    const fallback = nativeSessionHeaders();
     if (fallback) {
       Object.assign(headers, fallback);
     } else if (routerLocal) {
@@ -486,16 +482,6 @@ function nativeHeaders(request) {
     }
   }
   return headers;
-}
-
-function nativeSessionAffinity(request) {
-  for (const name of ["x-codex-session-id", "x-codex-thread-id", "x-session-id", "x-thread-id"]) {
-    const value = request?.headers?.[name];
-    if (typeof value !== "string") continue;
-    const clean = value.trim();
-    if (clean && clean.length <= 256 && !/[\u0000-\u001f\u007f]/.test(clean)) return clean;
-  }
-  return undefined;
 }
 
 // The token out of an `Authorization: Bearer <token>` header, or undefined for
