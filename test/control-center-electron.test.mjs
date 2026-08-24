@@ -46,17 +46,20 @@ import { openBrowserCommand } from "../apps/control-center/electron/ipc.mjs";
 
 test("ChatGPT browser login waits for the OAuth URL after child close", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-login-"));
-  const executable = path.join(directory, "codex-test");
+  const windows = process.platform === "win32";
+  const executable = path.join(directory, windows ? "codex-test.cmd" : "codex-test");
   const openedUrls = [];
   let exited = false;
   try {
     await writeFile(
       executable,
-      "#!/usr/bin/env node\nprocess.stdout.write('https://auth.openai.com/oauth/authorize?state=test')\n",
+      windows
+        ? "@echo off\r\nnode -e \"process.stdout.write('https://auth.openai.com/oauth/authorize?state=test')\"\r\n"
+        : "#!/usr/bin/env node\nprocess.stdout.write('https://auth.openai.com/oauth/authorize?state=test')\n",
     );
-    await chmod(executable, 0o755);
+    if (!windows) await chmod(executable, 0o755);
     const result = await openBrowserCommand(executable, [], process.cwd(), {
-      environment: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      environment: { PATH: windows ? process.env.PATH || "" : "/usr/bin:/bin:/usr/sbin:/sbin" },
       openExternal: async (url) => { openedUrls.push(url); },
       onExit: () => { exited = true; },
     });
@@ -1577,7 +1580,8 @@ test("tray mutations detach before the GUI releases its mutation drain", async (
 });
 
 test("detached tray acceptance is labeled started, never completed", async () => {
-  const source = await readFile(new URL("../apps/control-center/src/App.tsx", import.meta.url), "utf8");
+  const source = (await readFile(new URL("../apps/control-center/src/App.tsx", import.meta.url), "utf8"))
+    .replaceAll("\r\n", "\n");
   const action = source.slice(source.indexOf("const runAction"), source.indexOf("const t = useCallback"));
   assert.match(action, /accepted[^\n]+=== true/);
   assert.match(action, /`\$\{label\} started\.`/);

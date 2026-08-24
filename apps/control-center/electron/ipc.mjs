@@ -26,6 +26,7 @@ import {
   runControlJson,
   runRouterScript,
 } from "./command-runner.mjs";
+import { spawnableCommand } from "../../../src/spawnable-command.mjs";
 
 // Codex is the one client-specific adapter this panel still exposes (native
 // GPT details and the current task default). Routed model identity and picker
@@ -269,7 +270,8 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
     node && path.dirname(node),
     ...String(environment.PATH || process.env.PATH || "").split(path.delimiter),
   ].filter(Boolean))].join(path.delimiter);
-  const child = spawn(executable, args, {
+  const command = spawnableCommand(executable, args);
+  const child = spawn(command.command, command.args, {
     cwd: resolvedCwd,
     env: { ...process.env, ...environment, PATH: childPath },
     // Codex prints the OAuth authorize URL before waiting for the callback.
@@ -280,6 +282,7 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
     detached: true,
     windowsHide: true,
     shell: false,
+    ...command.options,
   });
   let browserOpened = false;
   let urlObserved = false;

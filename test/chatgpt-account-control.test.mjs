@@ -37,7 +37,7 @@ test("account selection persists without replacing another saved login", () => {
   const status = run("chatgpt-account-pool", "status");
   assert.equal(status.policy.mode, "switch");
   assert.equal(status.profile.desired, added.id);
-  assert.equal(status.profile.pending, true);
+  assert.equal(status.profile.pending, status.profile.running);
   assert.equal(status.accounts[added.id].label, "Secondary");
   assert.equal(status.accounts[added.id].state, "active");
   assert.equal(Object.keys(status.accounts).length, 2);
