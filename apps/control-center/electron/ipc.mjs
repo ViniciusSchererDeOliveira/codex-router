@@ -44,6 +44,7 @@ const RETENTION_MAX_TTL_DAYS = 3_650;
 const MODEL_SLUG = /^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,200}$/;
 const PROVIDER_ID = /^[a-z0-9][a-z0-9-]{0,80}$/;
 const CHATGPT_ACCOUNT_ID = /^acct_[A-Za-z0-9_-]{8,80}$/;
+const CHATGPT_LOGIN_URL = /https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s"'<>]+/;
 const LOCAL_TAG = /^[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SESSION_UUID_IN_FILENAME = /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
@@ -75,7 +76,6 @@ const OAUTH_LOGIN_COMMANDS = Object.freeze({
   "devin-cli": { executable: "devin", args: ["auth", "login"] },
 });
 const WINDOWS_EXECUTABLE_EXTENSIONS = [".exe", ".com", ".cmd", ".bat"];
-const CHATGPT_LOGIN_URL = /^https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s"'<>]+$/;
 
 function cleanText(value, fallback = "", limit = 240) {
   if (typeof value !== "string") return fallback;
@@ -213,20 +213,12 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function openTerminalCommand(executable, args, cwd, { environment = {} } = {}) {
+function openTerminalCommand(executable, args, cwd) {
   if (!terminalAvailable()) throw new Error("Opening a terminal from the Control Center is currently available on macOS only.");
   if (!executable || !path.isAbsolute(executable) || !Array.isArray(args)) throw new Error("Harness command is unavailable.");
   if (args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) throw new Error("Harness command is invalid.");
   const resolvedCwd = cwd ? realpathSync(cwd) : discoverSourceRoot();
   if (!statSync(resolvedCwd).isDirectory()) throw new Error("The session workspace is unavailable.");
-  if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
-    throw new Error("Terminal environment is invalid.");
-  }
-  for (const [name, value] of Object.entries(environment)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== "string" || value.includes("\0")) {
-      throw new Error("Terminal environment is invalid.");
-    }
-  }
   const directory = mkdtempSync(path.join(os.tmpdir(), "codex-router-terminal-"));
   const script = path.join(directory, "launch.command");
   const executableDirectory = path.dirname(executable);
@@ -236,14 +228,13 @@ function openTerminalCommand(executable, args, cwd, { environment = {} } = {}) {
     "#!/bin/sh",
     `cd -- ${shellQuote(resolvedCwd)} || exit 1`,
     ...(searchDirectories.length ? [`export PATH=${shellQuote(searchDirectories.join(":"))}:"$PATH"`] : []),
-    ...Object.entries(environment).map(([name, value]) => `export ${name}=${shellQuote(value)}`),
     `rm -f -- ${shellQuote(script)}`,
     `rmdir -- ${shellQuote(directory)} 2>/dev/null || true`,
     `exec ${[executable, ...args].map(shellQuote).join(" ")}`,
     "",
   ].join("\n");
   writeFileSync(script, body, { encoding: "utf8", mode: 0o700, flag: "wx" });
-  const opened = spawnSync("/usr/bin/open", ["-a", "Terminal", path.resolve(script)], {
+  const opened = spawnSync("/usr/bin/open", ["-a", "Terminal", script], {
     encoding: "utf8",
     env: process.env,
     timeout: 5_000,
@@ -324,7 +315,7 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
     // A GUI-launched child can still emit terminal styling; remove it before
     // extracting the URL so the browser hand-off does not depend on a TTY.
     loginOutput = `${loginOutput}${String(chunk).replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, "")}`.slice(-128 * 1024);
-    const match = loginOutput.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s"'<>]+/);
+    const match = loginOutput.match(CHATGPT_LOGIN_URL);
     if (!match) return;
     urlObserved = true;
     openingBrowser = true;

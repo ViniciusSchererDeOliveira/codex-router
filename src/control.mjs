@@ -408,13 +408,14 @@ async function routerCatalogSnapshot() {
   const { subagentSettingsSnapshot } = await import("./multi-agent-state.mjs");
   const { applySubagentProofs } = await import("./subagent-proofs.mjs");
   const { routerDashboardState } = await import("./router-dashboard.mjs");
+  const { chatGPTSubscriptionAccountPoolSnapshot } = await import("./chatgpt-account-pool.mjs");
+  const { chatGPTProfileSwitchSnapshot } = await import("./chatgpt-profile-switch.mjs");
   const settings = subagentSettingsSnapshot();
   const picker = modelPickerSnapshot();
   const hidden = new Set(picker.hidden);
   const visible = new Set(picker.visible);
-  const selectedModels = selectedConfiguredListedModels();
   const models = applySubagentProofs(
-    selectedModels,
+    selectedConfiguredListedModels(),
     settings.proofs,
     { hidden, disabled: settings.disabled },
   ).map((model) => ({
@@ -446,7 +447,6 @@ async function routerCatalogSnapshot() {
     ...(Number.isFinite(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
     ...(Array.isArray(model.inputModalities) ? { inputModalities: model.inputModalities } : {}),
   }));
-  const { routerDashboardState } = await import("./router-dashboard.mjs");
   return {
     source: "codex-router",
     configured: existsSync(PROVIDER_SELECTION_PATH),
@@ -456,6 +456,11 @@ async function routerCatalogSnapshot() {
     picker,
     subagents: settings,
     dashboard: routerDashboardState({ models }),
+    accountPool: {
+      ...chatGPTSubscriptionAccountPoolSnapshot(),
+      sessions: { count: 0 },
+      profile: chatGPTProfileSwitchSnapshot(),
+    },
   };
 }
 
@@ -675,11 +680,6 @@ async function printProviderUsage() {
 async function printProviderOnboarding() {
   const { providerOnboardingSnapshot } = await import("./provider-onboarding.mjs");
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot(), null, 2)}\n`);
-}
-
-async function handleGenericProviders(...commandArgs) {
-  const { runGenericProviderCli } = await import("./generic-providers.mjs");
-  await runGenericProviderCli(commandArgs, { output: process.stdout });
 }
 
 async function installProviderCli(providerId) {
@@ -2777,35 +2777,7 @@ async function handleChatGptSession(action) {
   );
 }
 
-async function handleProviderPools(action, provider, value) {
-  const {
-    getProviderApiKeyPool,
-    readProviderApiKeyPoolState,
-    sanitizeApiKeyPool,
-    setProviderApiKeyPaused,
-    setProviderApiKeyPoolPolicy,
-  } = await import("./provider-api-key-pool.mjs");
-  if (!action || action === "status") {
-    const state = readProviderApiKeyPoolState();
-    const pools = Object.entries(state.providers || {}).map(([id, pool]) => sanitizeApiKeyPool(id, pool));
-    process.stdout.write(`${JSON.stringify(provider ? pools.find((pool) => pool.providerId === provider) || getProviderApiKeyPool(provider) : { pools })}\n`);
-    return;
-  }
-  if (!provider) throw new Error("Usage: provider-pools status|policy <provider> <quota|round-robin|fill-first>|pause|resume <provider> <cred_id>");
-  if (action === "policy") {
-    if (!["quota", "round-robin", "fill-first"].includes(value)) throw new Error("Pool strategy is invalid.");
-    process.stdout.write(`${JSON.stringify(setProviderApiKeyPoolPolicy(provider, { strategy: value }))}\n`);
-    return;
-  }
-  if (action === "pause" || action === "resume") {
-    if (!value) throw new Error("A credential id is required.");
-    process.stdout.write(`${JSON.stringify(setProviderApiKeyPaused(provider, value, action === "pause"))}\n`);
-    return;
-  }
-  throw new Error("Usage: provider-pools status|policy <provider> <quota|round-robin|fill-first>|pause|resume <provider> <cred_id>");
-}
-
-async function handleChatGptAccountPool(action, value) {
+async function handleChatGptAccountSwitch(action, value) {
   const {
     chatGPTSubscriptionAccountHome,
     chatGPTSubscriptionAccountPoolSnapshot,
@@ -2816,7 +2788,13 @@ async function handleChatGptAccountPool(action, value) {
     withChatGPTAccountPoolLock,
     writeChatGPTAccountPoolState,
   } = await import("./chatgpt-account-pool.mjs");
-  const { chatGPTProfileSwitchSnapshot, ensureChatGPTProfileAccounts, reconcileChatGPTProfileSwitch, requestChatGPTProfileSwitch } = await import("./chatgpt-profile-switch.mjs");
+  const {
+    chatGPTProfileSwitchSnapshot,
+    ensureChatGPTProfileAccounts,
+    reconcileChatGPTProfileSwitch,
+    requestChatGPTProfileSwitch,
+  } = await import("./chatgpt-profile-switch.mjs");
+
   if (!action || action === "status") {
     await ensureChatGPTProfileAccounts();
     const safe = chatGPTSubscriptionAccountPoolSnapshot();
@@ -2837,7 +2815,7 @@ async function handleChatGptAccountPool(action, value) {
           };
         }
       } catch {
-        // Account status remains usable even when the optional quota read is unavailable.
+        // A quota read is optional; authentication state remains authoritative.
       }
     }
     process.stdout.write(`${JSON.stringify({
@@ -2868,7 +2846,7 @@ async function handleChatGptAccountPool(action, value) {
       if (profile.running) throw new Error("Close Codex before removing the active subscription account.");
       const replacement = Object.values(state.accounts).find((account) => account.id !== value && account.state === "active" && !account.paused);
       if (!replacement) throw new Error("Cannot remove the only logged-in ChatGPT account.");
-      await requestChatGPTProfileSwitch(replacement.id);
+      await requestChatGPTProfileSwitch(replacement.id, { refreshCatalog: false });
     }
     const removed = await withChatGPTAccountPoolLock(() => removeChatGPTSubscriptionAccount(value));
     process.stdout.write(`${JSON.stringify(removed)}\n`);
@@ -2876,76 +2854,34 @@ async function handleChatGptAccountPool(action, value) {
   }
   if (action === "select") {
     const selection = String(value || "").trim();
-    if (!selection || !/^acct_[A-Za-z0-9_-]{8,80}$/.test(selection)) {
+    if (!/^acct_[A-Za-z0-9_-]{8,80}$/.test(selection)) {
       throw new Error("Select a registered ChatGPT account id.");
     }
-    const resolved = selection;
     const result = await withChatGPTAccountPoolLock(() => {
       const current = readChatGPTAccountPoolState();
-      const account = current.accounts[resolved];
+      const account = current.accounts[selection];
       if (!account || account.state !== "active" || account.paused) {
         throw new Error("The selected subscription account is not active.");
       }
       current.policy.enabled = true;
-      current.policy.selectedAccountId = resolved;
+      current.policy.selectedAccountId = selection;
       return writeChatGPTAccountPoolState(current);
     });
-    const profile = await requestChatGPTProfileSwitch(resolved);
+    const profile = await requestChatGPTProfileSwitch(selection, { refreshCatalog: false });
     process.stdout.write(`${JSON.stringify({ ...sanitizeChatGPTAccountPool(result), profile })}\n`);
     return;
   }
   if (action === "profile") {
     if (value === "reconcile") {
-      process.stdout.write(`${JSON.stringify(await reconcileChatGPTProfileSwitch())}\n`);
+      process.stdout.write(`${JSON.stringify(await reconcileChatGPTProfileSwitch({ refreshCatalog: false }))}\n`);
       return;
     }
     if (!value || value === "status") {
       process.stdout.write(`${JSON.stringify(chatGPTProfileSwitchSnapshot())}\n`);
       return;
     }
-    throw new Error("Usage: chatgpt-account-pool profile status|reconcile");
   }
-  throw new Error("Usage: chatgpt-account-pool status|add [label]|home <acct_id>|remove <acct_id>|select <acct_id>|profile status|profile reconcile");
-}
-
-async function handleRoutingPolicies(action, value, extra) {
-  const {
-    removeRoutingCombo,
-    routingPolicySnapshot,
-    setSearchSidecarConfig,
-    setSubagentRoutingPolicy,
-    setRoutingComboEnabled,
-  } = await import("./routing-policy-state.mjs");
-  if (!action || action === "status") {
-    process.stdout.write(`${JSON.stringify(routingPolicySnapshot())}\n`);
-    return;
-  }
-  if (action === "sidecar") {
-    if (!["on", "off"].includes(value)) throw new Error("Usage: routing-policy sidecar <on|off>");
-    if (value === "on") {
-      const current = routingPolicySnapshot().searchSidecar;
-      if (!current.providerId || !current.credentialRef) {
-        throw new Error("Configure a sidecar provider and opaque credential reference before enabling search sidecar.");
-      }
-    }
-    process.stdout.write(`${JSON.stringify(setSearchSidecarConfig({ enabled: value === "on" }))}\n`);
-    return;
-  }
-  if (action === "subagents") {
-    if (value === "allow-unverified" && ["on", "off"].includes(extra)) {
-      process.stdout.write(`${JSON.stringify(setSubagentRoutingPolicy({ allowUnverifiedModels: extra === "on" }))}\n`);
-      return;
-    }
-    throw new Error("Usage: routing-policy subagents allow-unverified <on|off>");
-  }
-  if (action === "combo" && (value === "remove" || value === "enable" || value === "disable")) {
-    if (!extra) throw new Error("A combo id is required.");
-    if (value === "remove") removeRoutingCombo(extra);
-    else setRoutingComboEnabled(extra, value === "enable");
-    process.stdout.write(`${JSON.stringify(routingPolicySnapshot())}\n`);
-    return;
-  }
-  throw new Error("Usage: routing-policy status|sidecar <on|off>|subagents allow-unverified <on|off>|combo <enable|disable|remove> <id>");
+  throw new Error("Usage: control chatgpt-account-pool status|add [label]|home <acct_id>|remove <acct_id>|select <acct_id>|profile status|profile reconcile");
 }
 
 // The public `/health` leaf intentionally contains only the router summary and
@@ -2979,8 +2915,6 @@ if (args.includes("--probe")) {
   await printProviderUsage();
 } else if (args[0] === "providers") {
   await printProviderOnboarding();
-} else if (args[0] === "generic-providers") {
-  await handleGenericProviders(...args.slice(1));
 } else if (args[0] === "install-cli") {
   if (!args[1]) throw new Error("Usage: control install-cli <oauth-provider>");
   await installProviderCli(args[1]);
@@ -3034,12 +2968,8 @@ if (args.includes("--probe")) {
 } else if (args[0] === "chatgpt-session") {
   if (args.length > 2) throw new Error("Usage: control chatgpt-session status|enable|disable");
   await handleChatGptSession(args[1]);
-} else if (args[0] === "provider-pools") {
-  await handleProviderPools(args[1], args[2], args[3]);
 } else if (args[0] === "chatgpt-account-pool") {
-  await handleChatGptAccountPool(args[1], args[2], args[3]);
-} else if (args[0] === "routing-policy") {
-  await handleRoutingPolicies(args[1], args[2], args[3]);
+  await handleChatGptAccountSwitch(args[1], args[2]);
 } else if (args[0] === "health") {
   await printHealth();
 } else if (args[0] === "maintenance") {

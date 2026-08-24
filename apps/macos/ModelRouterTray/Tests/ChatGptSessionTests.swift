@@ -25,6 +25,7 @@ struct ChatGptSessionTests {
         "session": "usable",
         "present": true,
         "expiresInHours": 11.5,
+        "email": "account@example.com",
         "token": "\(secret)",
         "accountId": "account-secret",
         "path": "/private/auth.json"
@@ -37,7 +38,7 @@ struct ChatGptSessionTests {
     #expect(decoded.chatgptSession?.present == true)
     #expect(decoded.chatgptSession?.expiresInHours == 11.5)
     let fields = Set(Mirror(reflecting: decoded.chatgptSession!).children.compactMap(\.label))
-    #expect(fields == ["sharing", "session", "present", "expiresInHours"])
+    #expect(fields == ["sharing", "session", "present", "expiresInHours", "email"])
     #expect(!String(reflecting: decoded.chatgptSession).contains(secret))
     #expect(!String(reflecting: decoded.chatgptSession).contains("/private/auth.json"))
   }

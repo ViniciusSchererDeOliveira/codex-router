@@ -1058,6 +1058,20 @@ and are not available while signed out. The equivalent local control command is
 `./bin/control auth-mode on` or `./bin/control auth-mode off`; when using the
 command directly, restart Codex yourself.
 
+### Native ChatGPT account switching
+
+Codex Router can keep multiple ChatGPT subscription logins in isolated
+profiles. Select an account in Control Center or the tray; the selection is
+applied to native Codex after Codex is closed and restarted. The previous
+login remains saved, and switching never removes another account's session.
+
+Each account keeps its own native model catalog and routed overlay. Usage is
+read from the selected account's isolated `CODEX_HOME`, using the weekly
+window when available and the monthly window otherwise. This is an explicit
+switch-only feature: it does not perform automatic quota or round-robin
+routing. See [the account switching guide](docs/CHATGPT-ACCOUNT-MODES.md) for
+the safety and token-refresh details.
+
 ### Use a local model in Codex (experimental)
 
 LM Studio can run as a second local backend alongside Ollama. Its models use

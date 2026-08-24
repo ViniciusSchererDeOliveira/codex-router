@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -64,14 +67,60 @@ function catalogHandlingEnabled(options = {}) {
 }
 
 function atomicContents(target, contents) {
-  mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const parent = path.dirname(target);
+  ensureNoSymlinkParents(parent);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  ensureNoSymlinkParents(parent);
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   try {
     writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600 });
+    ensureNoSymlinkParents(parent);
+    if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+      throw new Error("Refusing to replace a symbolic-link catalog artifact.");
+    }
     renameSync(temporary, target);
     chmodSync(target, 0o600);
   } finally {
     rmSync(temporary, { force: true });
+  }
+}
+
+function ensureNoSymlinkParents(target) {
+  const absolute = path.resolve(target);
+  const root = path.parse(absolute).root;
+  const relative = path.relative(root, absolute);
+  let current = root;
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      if (!isAllowedSystemTempLink(current)) {
+        throw new Error(`Refusing to traverse a symbolic-link path: ${current}`);
+      }
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`Profile path component is not a directory: ${current}`);
+    }
+  }
+}
+
+function isAllowedSystemTempLink(target) {
+  const normalized = path.resolve(target);
+  if (!["/var", "/tmp"].includes(normalized)) return false;
+  try {
+    const resolved = path.resolve(realpathSync(normalized));
+    return normalized === "/var"
+      ? resolved === "/private/var"
+      : resolved === "/private/tmp";
+  } catch {
+    return false;
   }
 }
 
@@ -84,7 +133,9 @@ function accountCatalogPath(accountId, artifact, options = {}) {
 
 function copyOptionalArtifact(source, destination) {
   if (!existsSync(source)) return false;
-  const file = statSync(source);
+  ensureNoSymlinkParents(path.dirname(source));
+  const file = lstatSync(source);
+  if (file.isSymbolicLink()) throw new Error(`Catalog artifact is a symbolic link: ${source}`);
   if (!file.isFile()) throw new Error(`Catalog artifact is not a regular file: ${source}`);
   atomicPrivateCopy(source, destination);
   return true;
@@ -117,7 +168,16 @@ function snapshotGlobalCatalog(options = {}) {
   return Object.fromEntries(
     CATALOG_ARTIFACTS.map(([artifact, key]) => [
       key,
-      existsSync(paths[key]) ? readFileSync(paths[key], "utf8") : undefined,
+      existsSync(paths[key])
+        ? (() => {
+            ensureNoSymlinkParents(path.dirname(paths[key]));
+            const file = lstatSync(paths[key]);
+            if (file.isSymbolicLink() || !file.isFile()) {
+              throw new Error(`Catalog artifact is not a regular file: ${paths[key]}`);
+            }
+            return readFileSync(paths[key], "utf8");
+          })()
+        : undefined,
     ]),
   );
 }
@@ -208,6 +268,7 @@ function profileAuthPath(selection, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {
 
 function ensureAuthFile(filePath, label) {
   try {
+    ensureNoSymlinkParents(path.dirname(filePath));
     const file = lstatSync(filePath);
     if (file.isSymbolicLink() || !file.isFile()) throw new Error();
     return filePath;
@@ -218,15 +279,21 @@ function ensureAuthFile(filePath, label) {
 
 function atomicPrivateCopy(source, destination) {
   ensureAuthFile(source, "The selected");
+  ensureNoSymlinkParents(path.dirname(destination));
   if (existsSync(destination)) {
     const target = lstatSync(destination);
     if (target.isSymbolicLink()) throw new Error("Refusing to replace a symbolic-link login profile.");
   }
   mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  ensureNoSymlinkParents(path.dirname(destination));
+  const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
   try {
-    copyFileSync(source, temporary);
+    copyFileSync(source, temporary, fsConstants.COPYFILE_EXCL);
     chmodSync(temporary, 0o600);
+    ensureNoSymlinkParents(path.dirname(destination));
+    if (existsSync(destination) && lstatSync(destination).isSymbolicLink()) {
+      throw new Error("Refusing to replace a symbolic-link login profile.");
+    }
     renameSync(temporary, destination);
     chmodSync(destination, 0o600);
   } finally {
@@ -246,6 +313,7 @@ function syncAuthProfile(source, destination) {
 function authIdentity(filePath) {
   if (!existsSync(filePath)) return undefined;
   try {
+    ensureNoSymlinkParents(path.dirname(filePath));
     const file = lstatSync(filePath);
     if (file.isSymbolicLink() || !file.isFile() || (process.platform !== "win32" && (file.mode & 0o077) !== 0)) return undefined;
     const parsed = JSON.parse(readFileSync(filePath, "utf8"));

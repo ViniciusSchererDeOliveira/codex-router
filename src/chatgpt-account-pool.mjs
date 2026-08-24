@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
@@ -124,6 +124,70 @@ function newAccountId(state) {
   }
   throw new Error("Could not allocate a unique ChatGPT account id.");
 }
+
+function ensurePrivateAccountDirectory(target, homesDir) {
+  const root = path.resolve(homesDir);
+  const absolute = path.resolve(target);
+  const relative = path.relative(root, absolute);
+  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    throw new Error("ChatGPT account profile escaped its private home directory.");
+  }
+  if (existsSync(root)) {
+    const rootStat = lstatSync(root);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw new Error("ChatGPT account home directory is not a private directory.");
+    }
+  } else {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+  }
+  mkdirSync(absolute, { recursive: true, mode: 0o700 });
+  ensureNoSymlinkParents(absolute, root);
+  const accountStat = lstatSync(absolute);
+  if (accountStat.isSymbolicLink() || !accountStat.isDirectory()) {
+    throw new Error("ChatGPT account profile directory is not a private directory.");
+  }
+  chmodSync(root, 0o700);
+  chmodSync(absolute, 0o700);
+}
+
+function ensureNoSymlinkParents(target, boundary = path.parse(path.resolve(target)).root) {
+  const absolute = path.resolve(target);
+  const root = path.resolve(boundary);
+  const relative = path.relative(root, absolute);
+  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    throw new Error("ChatGPT profile path escaped its private directory.");
+  }
+  let current = root;
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    let stat;
+    try { stat = lstatSync(current); } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      if (!isAllowedSystemPathLink(current)) {
+        throw new Error(`Refusing to traverse a symbolic-link path: ${current}`);
+      }
+      continue;
+    }
+    if (!stat.isDirectory()) throw new Error(`ChatGPT profile path component is not a directory: ${current}`);
+  }
+}
+
+function isAllowedSystemPathLink(target) {
+  const normalized = path.resolve(target);
+  if (!["/var", "/tmp"].includes(normalized)) return false;
+  try {
+    const resolved = path.resolve(realpathSync(normalized));
+    return normalized === "/var"
+      ? resolved === "/private/var"
+      : resolved === "/private/tmp";
+  } catch {
+    return false;
+  }
+}
+
 function nextAccountLabel(state) {
   const used = new Set(Object.values(state.accounts).filter((account) => account?.state !== "revoked").map((account) => {
     const match = /^ChatGPT account (\d+)$/.exec(account?.label || "");
@@ -138,8 +202,7 @@ export function createChatGPTSubscriptionAccount({ label = "", filePath = CHATGP
   if (Object.values(state.accounts).filter((account) => account?.state !== "revoked").length >= MAX_ACCOUNTS) throw new Error(`The ChatGPT account list supports at most ${MAX_ACCOUNTS} accounts.`);
   const id = newAccountId(state);
   const home = chatGPTSubscriptionAccountHome(id, { homesDir });
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  chmodSync(home, 0o700);
+  ensurePrivateAccountDirectory(home, homesDir);
   const account = normalizeAccount({ id, state: "active", label: text(label).slice(0, 120) || nextAccountLabel(state), createdAt: isoNow(now), subscription: { status: "pending" }, health: { state: "healthy" } }, id);
   state.accounts[id] = account;
   try { writeChatGPTAccountPoolState(state, filePath); } catch (error) { rmSync(home, { recursive: true, force: true }); throw error; }

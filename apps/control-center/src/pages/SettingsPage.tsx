@@ -257,7 +257,6 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                         variant={accountSelection === account.id ? "secondary" : "ghost"}
                         aria-pressed={accountSelection === account.id}
                         aria-label={accountSelection === account.id ? `Selected ChatGPT account: ${title}` : `Select ChatGPT account: ${title}`}
-                        disabled={!api || account.state !== "active" || account.subscription?.usable !== true || accountSelection === account.id}
                         onClick={() => api && void runAction("Switch ChatGPT account", () => api.setChatGptAccountSelection(account.id))}
                       >{accountSelection === account.id ? <><Check aria-hidden size={13} strokeWidth={1.9} /> Selected</> : <><Check aria-hidden size={13} strokeWidth={1.9} /> Select</>}</Button>
                       <Button

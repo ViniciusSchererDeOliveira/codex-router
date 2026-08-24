@@ -146,9 +146,7 @@ import {
   toolResultAgingEnabled,
 } from "./tool-result-aging-state.mjs";
 import { VERSION } from "./version.mjs";
-import {
-  nativeSessionHeaders,
-} from "./codex-native-session.mjs";
+import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import {
   installStableFetchTransport,
   loopbackProbeFetch,
@@ -956,28 +954,21 @@ function normalizeRoutedInput(input) {
     });
 }
 
-function nativeAgentRelayModels() {
+function nativeAgentRelayModel() {
   const configured = String(process.env.MODEL_ROUTER_AGENT_RELAY_MODEL || "").trim();
-  const candidates = configured ? [configured] : [];
+  if (configured) return configured;
   try {
     const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
     const models = Array.isArray(parsed?.models) ? parsed.models : [];
     const preferred = models.find((model) => model?.slug === "gpt-5.6-sol");
-    const listed = models
-      .filter((model) => typeof model?.slug === "string" && model.visibility === "list")
-      .map((model) => model.slug);
-    candidates.push(preferred?.slug, ...listed);
+    const listed = models.find(
+      (model) => typeof model?.slug === "string" && model.visibility === "list",
+    );
+    const available = models.find((model) => typeof model?.slug === "string");
+    return preferred?.slug || listed?.slug || available?.slug || "gpt-5.6-sol";
   } catch {
-    candidates.push("gpt-5.6-sol");
+    return "gpt-5.6-sol";
   }
-  candidates.push("gpt-5.4-mini", "gpt-5.4");
-  return [...new Set(candidates.filter((model) => typeof model === "string" && model))];
-}
-
-function relayModelUnavailable(upstream, bytes) {
-  if (![400, 403].includes(upstream.status)) return false;
-  const detail = bytes.toString("utf8").slice(0, 8_192).toLowerCase();
-  return /model|unsupported|not available|entitlement|plan|access/.test(detail);
 }
 
 // Every `encrypted_content` value OpenAI issues is a Fernet token: the version
@@ -1134,7 +1125,8 @@ function rememberAgentPayload(encrypted, plaintext) {
 async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
   const cached = cachedAgentPayload(encrypted);
   if (cached !== undefined) return cached;
-  const baseBody = {
+  const body = {
+    model: nativeAgentRelayModel(),
     stream: true,
     store: false,
     instructions:
@@ -1158,18 +1150,13 @@ async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
     ],
     tool_choice: { type: "function", name: AGENT_PAYLOAD_RELAY_TOOL },
   };
-  let upstream;
-  let bytes;
-  for (const model of nativeAgentRelayModels()) {
-    upstream = await fetch(nativeTarget("/responses", ""), {
-      method: "POST",
-      headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
-      body: JSON.stringify({ ...baseBody, model }),
-      signal,
-    });
-    bytes = Buffer.from(await upstream.arrayBuffer());
-    if (upstream.ok || !relayModelUnavailable(upstream, bytes)) break;
-  }
+  const upstream = await fetch(nativeTarget("/responses", ""), {
+    method: "POST",
+    headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const bytes = Buffer.from(await upstream.arrayBuffer());
   if (!upstream.ok) {
     const error = new Error(
       `Native collaboration payload relay failed with HTTP ${upstream.status}.`,
