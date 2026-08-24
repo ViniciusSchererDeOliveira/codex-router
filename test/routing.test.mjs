@@ -1087,6 +1087,58 @@ test("router relays encrypted Codex subagent payloads before external routing", 
   }
 });
 
+test("encrypted payload relay falls back when the selected account lacks the preferred native model", async () => {
+  const nativeModels = [];
+  const native = await mockServer(async (request, response) => {
+    const body = await bodyJson(request);
+    nativeModels.push(body.model);
+    if (nativeModels.length === 1) {
+      json(response, 400, { error: { message: "model is not supported by this plan" } });
+      return;
+    }
+    const args = JSON.stringify({ payload: "fallback payload" });
+    const event = `event: response.output_item.added\ndata: ${JSON.stringify({
+      type: "response.output_item.added",
+      item: { type: "function_call", id: "fc_fallback", name: "relay_external_agent_payload", arguments: args },
+    })}\n\ndata: [DONE]\n\n`;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(event);
+  });
+  const gateway = await mockServer(async (_request, response) => json(response, 200, { route: "external" }));
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_AGENT_RELAY_MODEL: "gpt-5.6-sol",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { Authorization: "Bearer CHATGPT_SESSION_TOKEN", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        input: [{
+          type: "agent_message",
+          content: [
+            { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
+            { type: "encrypted_content", encrypted_content: "gAAAAA-fallback-payload=" },
+          ],
+        }],
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(nativeModels.length, 2);
+    assert.equal(nativeModels[0], "gpt-5.6-sol");
+    assert.notEqual(nativeModels[1], "gpt-5.6-sol");
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+  }
+});
+
 test("router fails closed when an encrypted subagent payload cannot be relayed", async () => {
   const native = await mockServer(async (_request, response) => {
     json(response, 401, { error: { message: "native sign-in required" } });

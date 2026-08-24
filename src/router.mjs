@@ -146,7 +146,10 @@ import {
   toolResultAgingEnabled,
 } from "./tool-result-aging-state.mjs";
 import { VERSION } from "./version.mjs";
-import { nativeSessionHeaders } from "./codex-native-session.mjs";
+import {
+  nativeSessionHeaders,
+  nativeSubscriptionPoolHeaders,
+} from "./codex-native-session.mjs";
 import {
   installStableFetchTransport,
   loopbackProbeFetch,
@@ -468,8 +471,11 @@ function nativeHeaders(request) {
   const routerLocal =
     presented !== undefined &&
     (secretEqual(presented, CALLER_KEY || "") || secretEqual(presented, INTERNAL_KEY || ""));
-  if (!headers.authorization || routerLocal) {
-    const fallback = nativeSessionHeaders();
+  if (presented !== undefined && !routerLocal) {
+    const pooled = nativeSubscriptionPoolHeaders({ sessionId: nativeSessionAffinity(request) });
+    if (pooled) Object.assign(headers, pooled);
+  } else if (!headers.authorization || routerLocal) {
+    const fallback = nativeSessionHeaders({ sessionId: nativeSessionAffinity(request) });
     if (fallback) {
       Object.assign(headers, fallback);
     } else if (routerLocal) {
@@ -480,6 +486,16 @@ function nativeHeaders(request) {
     }
   }
   return headers;
+}
+
+function nativeSessionAffinity(request) {
+  for (const name of ["x-codex-session-id", "x-codex-thread-id", "x-session-id", "x-thread-id"]) {
+    const value = request?.headers?.[name];
+    if (typeof value !== "string") continue;
+    const clean = value.trim();
+    if (clean && clean.length <= 256 && !/[\u0000-\u001f\u007f]/.test(clean)) return clean;
+  }
+  return undefined;
 }
 
 // The token out of an `Authorization: Bearer <token>` header, or undefined for
@@ -954,21 +970,28 @@ function normalizeRoutedInput(input) {
     });
 }
 
-function nativeAgentRelayModel() {
+function nativeAgentRelayModels() {
   const configured = String(process.env.MODEL_ROUTER_AGENT_RELAY_MODEL || "").trim();
-  if (configured) return configured;
+  const candidates = configured ? [configured] : [];
   try {
     const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
     const models = Array.isArray(parsed?.models) ? parsed.models : [];
     const preferred = models.find((model) => model?.slug === "gpt-5.6-sol");
-    const listed = models.find(
-      (model) => typeof model?.slug === "string" && model.visibility === "list",
-    );
-    const available = models.find((model) => typeof model?.slug === "string");
-    return preferred?.slug || listed?.slug || available?.slug || "gpt-5.6-sol";
+    const listed = models
+      .filter((model) => typeof model?.slug === "string" && model.visibility === "list")
+      .map((model) => model.slug);
+    candidates.push(preferred?.slug, ...listed);
   } catch {
-    return "gpt-5.6-sol";
+    candidates.push("gpt-5.6-sol");
   }
+  candidates.push("gpt-5.4-mini", "gpt-5.4");
+  return [...new Set(candidates.filter((model) => typeof model === "string" && model))];
+}
+
+function relayModelUnavailable(upstream, bytes) {
+  if (![400, 403].includes(upstream.status)) return false;
+  const detail = bytes.toString("utf8").slice(0, 8_192).toLowerCase();
+  return /model|unsupported|not available|entitlement|plan|access/.test(detail);
 }
 
 // Every `encrypted_content` value OpenAI issues is a Fernet token: the version
@@ -1125,8 +1148,7 @@ function rememberAgentPayload(encrypted, plaintext) {
 async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
   const cached = cachedAgentPayload(encrypted);
   if (cached !== undefined) return cached;
-  const body = {
-    model: nativeAgentRelayModel(),
+  const baseBody = {
     stream: true,
     store: false,
     instructions:
@@ -1150,13 +1172,18 @@ async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
     ],
     tool_choice: { type: "function", name: AGENT_PAYLOAD_RELAY_TOOL },
   };
-  const upstream = await fetch(nativeTarget("/responses", ""), {
-    method: "POST",
-    headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const bytes = Buffer.from(await upstream.arrayBuffer());
+  let upstream;
+  let bytes;
+  for (const model of nativeAgentRelayModels()) {
+    upstream = await fetch(nativeTarget("/responses", ""), {
+      method: "POST",
+      headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
+      body: JSON.stringify({ ...baseBody, model }),
+      signal,
+    });
+    bytes = Buffer.from(await upstream.arrayBuffer());
+    if (upstream.ok || !relayModelUnavailable(upstream, bytes)) break;
+  }
   if (!upstream.ok) {
     const error = new Error(
       `Native collaboration payload relay failed with HTTP ${upstream.status}.`,

@@ -337,6 +337,10 @@ export function chatGPTSubscriptionAccountAuthPath(accountValue, options = {}) {
   return path.join(chatGPTSubscriptionAccountHome(accountValue, options), "auth.json");
 }
 
+export function chatGPTSubscriptionAccountCatalogDir(accountValue, options = {}) {
+  return path.join(chatGPTSubscriptionAccountHome(accountValue, options), "router-catalog");
+}
+
 export function removeChatGPTSubscriptionAccount(
   accountValue,
   { filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {},

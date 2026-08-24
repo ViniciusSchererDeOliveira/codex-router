@@ -18,8 +18,15 @@ import {
   CHATGPT_ACCOUNT_POOL_PATH,
   CHATGPT_PROFILE_SWITCH_PATH,
   CODEX_HOME,
+  MERGED_CATALOG_PATH,
+  MODELS_CACHE_PATH,
+  NATIVE_ALIAS_PATH,
+  NATIVE_CATALOG_PATH,
+  ANNOUNCED_MODELS_PATH,
+  SOURCE_ROOT,
 } from "./paths.mjs";
 import {
+  chatGPTSubscriptionAccountCatalogDir,
   createChatGPTSubscriptionAccount,
   chatGPTSubscriptionAccountHome,
   chatGPTSubscriptionAccountAuthPath,
@@ -32,6 +39,114 @@ import {
 const VERSION = 1;
 const LEGACY_PRIMARY = "primary";
 const AUTO = "auto";
+const CATALOG_ARTIFACTS = Object.freeze([
+  ["models_cache.json", "modelsCachePath"],
+  ["native-models.json", "nativeCatalogPath"],
+  ["merged-models.json", "mergedCatalogPath"],
+  ["native-aliases.json", "nativeAliasPath"],
+  ["announced-models.json", "announcedModelsPath"],
+]);
+
+function catalogPaths(options = {}) {
+  return {
+    modelsCachePath: options.modelsCachePath || MODELS_CACHE_PATH,
+    nativeCatalogPath: options.nativeCatalogPath || NATIVE_CATALOG_PATH,
+    mergedCatalogPath: options.mergedCatalogPath || MERGED_CATALOG_PATH,
+    nativeAliasPath: options.nativeAliasPath || NATIVE_ALIAS_PATH,
+    announcedModelsPath: options.announcedModelsPath || ANNOUNCED_MODELS_PATH,
+  };
+}
+
+function catalogHandlingEnabled(options = {}) {
+  return options.refreshCatalog !== false || CATALOG_ARTIFACTS.some(([, key]) => options[key]);
+}
+
+function atomicContents(target, contents) {
+  mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600 });
+    renameSync(temporary, target);
+    chmodSync(target, 0o600);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function accountCatalogPath(accountId, artifact, options = {}) {
+  return path.join(
+    chatGPTSubscriptionAccountCatalogDir(accountId, { homesDir: options.homesDir }),
+    artifact,
+  );
+}
+
+function copyOptionalArtifact(source, destination) {
+  if (!existsSync(source)) return false;
+  const file = statSync(source);
+  if (!file.isFile()) throw new Error(`Catalog artifact is not a regular file: ${source}`);
+  atomicPrivateCopy(source, destination);
+  return true;
+}
+
+function removeOptionalArtifact(target) {
+  rmSync(target, { force: true });
+}
+
+function snapshotAccountCatalog(accountId, options = {}) {
+  const paths = catalogPaths(options);
+  for (const [artifact, key] of CATALOG_ARTIFACTS) {
+    copyOptionalArtifact(paths[key], accountCatalogPath(accountId, artifact, options));
+  }
+}
+
+function restoreAccountCatalog(accountId, options = {}) {
+  const paths = catalogPaths(options);
+  for (const [artifact, key] of CATALOG_ARTIFACTS) {
+    const source = accountCatalogPath(accountId, artifact, options);
+    if (existsSync(source)) copyOptionalArtifact(source, paths[key]);
+    else if (artifact === "models_cache.json" || artifact === "native-models.json") {
+      removeOptionalArtifact(paths[key]);
+    }
+  }
+}
+
+function snapshotGlobalCatalog(options = {}) {
+  const paths = catalogPaths(options);
+  return Object.fromEntries(
+    CATALOG_ARTIFACTS.map(([artifact, key]) => [
+      key,
+      existsSync(paths[key]) ? readFileSync(paths[key], "utf8") : undefined,
+    ]),
+  );
+}
+
+function restoreGlobalCatalog(snapshot, options = {}) {
+  const paths = catalogPaths(options);
+  for (const [, key] of CATALOG_ARTIFACTS) {
+    const contents = snapshot[key];
+    if (contents === undefined) removeOptionalArtifact(paths[key]);
+    else atomicContents(paths[key], contents);
+  }
+}
+
+function refreshActiveCatalog(options = {}) {
+  if (options.refreshCatalog === false) return;
+  if (typeof options.refreshCatalog === "function") {
+    options.refreshCatalog();
+    return;
+  }
+  execFileSync(
+    process.execPath,
+    [path.join(SOURCE_ROOT, "src", "catalog.mjs"), "--refresh-native"],
+    {
+      cwd: SOURCE_ROOT,
+      env: process.env,
+      encoding: "utf8",
+      timeout: 120_000,
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+}
 
 function normalizeSelection(value) {
   const selection = String(value || "").trim();
@@ -256,16 +371,25 @@ async function applyLocked(selection, options) {
   const targetProfile = profileAuthPath(target, { homesDir });
   ensureAuthFile(activeProfile, "The active");
   ensureAuthFile(targetProfile, "The selected");
+  const catalogsEnabled = catalogHandlingEnabled(options);
+  const globalCatalogSnapshot = catalogsEnabled ? snapshotGlobalCatalog(options) : undefined;
+  if (catalogsEnabled) snapshotAccountCatalog(active, options);
   writeState({ ...current, desired: target, active, pending: true, phase: "preparing" }, switchPath);
   try {
     syncAuthProfile(primary, activeProfile);
     writeState({ ...current, desired: target, active, pending: true, phase: "backed-up" }, switchPath);
     atomicPrivateCopy(targetProfile, primary);
+    if (catalogsEnabled) {
+      restoreAccountCatalog(target, options);
+      refreshActiveCatalog(options);
+      snapshotAccountCatalog(target, options);
+    }
     writeState({ desired: target, active: target, pending: false, phase: "installed" }, switchPath);
     return writeState({ desired: target, active: target, pending: false, phase: "idle" }, switchPath);
   } catch (error) {
     try {
       restorePreviousProfile(active, { homesDir, primaryHome });
+      if (catalogsEnabled) restoreGlobalCatalog(globalCatalogSnapshot, options);
       writeState({ ...current, desired: target, active, pending: true, phase: "idle" }, switchPath);
     } catch {
       writeState({ ...current, desired: target, active, pending: true, phase: "backed-up" }, switchPath);

@@ -226,11 +226,9 @@ export function nativeSubscriptionPoolHeaders({ sessionId } = {}) {
   const profile = readChatGPTProfileSwitchState(CHATGPT_PROFILE_SWITCH_PATH);
   if (profile.pending && profile.desired !== "auto") return undefined;
   const pooled = chatGPTSubscriptionPoolHeaders({ sessionId });
-  if (pooled) {
-    const { accountId: _accountId, ...headers } = pooled;
-    return headers;
-  }
-  return undefined;
+  if (!pooled) return undefined;
+  const { accountId: _accountId, ...headers } = pooled;
+  return headers;
 }
 
 export function nativeSessionHeaders() {

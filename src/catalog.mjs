@@ -90,7 +90,11 @@ export function deriveBaseInstructions(modelMessages) {
 // newer schema or models absent from a stale account cache. Preserve the
 // account entry for every slug it lists (first occurrence wins on a
 // duplicate), then append bundled-only entries.
-export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
+export function mergeNativeCatalogs(
+  accountCatalog,
+  bundledCatalog,
+  { includeBundledOnly = true } = {},
+) {
   const account = validNativeCatalog(accountCatalog) ? accountCatalog.models : [];
   const fallback = validNativeCatalog(bundledCatalog) ? bundledCatalog.models : [];
   const fallbackBySlug = new Map(
@@ -117,7 +121,9 @@ export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
   return {
     models: [
       ...normalizedAccount,
-      ...fallback.filter((model) => !seen.has(String(model?.slug || ""))),
+      ...(includeBundledOnly
+        ? fallback.filter((model) => !seen.has(String(model?.slug || "")))
+        : []),
     ],
   };
 }
@@ -257,7 +263,9 @@ function captureNative(cache) {
   } catch (error) {
     fallbackError = error;
   }
-  const parsed = mergeNativeCatalogs(account, fallback);
+  const parsed = mergeNativeCatalogs(account, fallback, {
+    includeBundledOnly: !validNativeCatalog(account),
+  });
   if (!validNativeCatalog(parsed)) {
     const detail = accountError?.message || fallbackError?.message;
     throw new Error(
