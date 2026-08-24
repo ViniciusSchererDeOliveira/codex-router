@@ -32,14 +32,14 @@ test.after(() => rmSync(stateDir, { recursive: true, force: true }));
 test("account selection persists without replacing another saved login", () => {
   writeFileSync(
     path.join(stateDir, "auth.json"),
-    JSON.stringify({ tokens: { access_token: "current-token", account_id: "current" } }),
+    JSON.stringify({ tokens: { account_id: "current" } }),
     { mode: 0o600 },
   );
   const added = run("chatgpt-account-pool", "add", "Secondary").account;
   mkdirSync(path.join(stateDir, "chatgpt-accounts", added.id), { recursive: true });
   writeFileSync(
     path.join(stateDir, "chatgpt-accounts", added.id, "auth.json"),
-    JSON.stringify({ tokens: { access_token: "secondary-token", account_id: "secondary" } }),
+    JSON.stringify({ tokens: { account_id: "secondary" } }),
     { mode: 0o600 },
   );
   const selected = run("chatgpt-account-pool", "select", added.id);
