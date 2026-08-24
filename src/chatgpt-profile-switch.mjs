@@ -154,6 +154,10 @@ function copyOptionalArtifact(source, destination) {
 }
 
 function removeOptionalArtifact(target) {
+  ensureNoSymlinkParents(path.dirname(target));
+  if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+    throw new Error(`Refusing to remove a symbolic-link catalog artifact: ${target}`);
+  }
   rmSync(target, { force: true });
 }
 
@@ -738,7 +742,7 @@ export async function requestChatGPTProfileSwitch(selection, options = {}) {
 
 export async function reconcileChatGPTProfileSwitch(options = {}) {
   const state = readChatGPTProfileSwitchState(options.switchPath || CHATGPT_PROFILE_SWITCH_PATH);
-  if (!state.pending) return state;
+  if (!state.pending && state.phase === "idle") return state;
   return requestChatGPTProfileSwitch(state.desired, options);
 }
 

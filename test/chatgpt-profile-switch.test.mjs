@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -347,4 +347,53 @@ test("an interrupted switch rolls back durable auth and catalog before retrying"
   assert.equal(applied.pending, false);
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
   assert.equal(JSON.parse(readFileSync(modelsCachePath, "utf8")).account, "second");
+});
+
+test("reconcile completes an installed transaction after restart", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-installed-recovery-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const transactionDir = path.join(root, "chatgpt-profile", "switch-transaction");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), secondAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  mkdirSync(transactionDir, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(transactionDir, "primary-auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(path.join(transactionDir, "manifest.json"), JSON.stringify({
+    version: 1,
+    active: first.id,
+    target: second.id,
+    activeAccountId: "first",
+    targetAccountId: "second",
+    catalogsEnabled: false,
+  }), { mode: 0o600 });
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: second.id,
+    active: second.id,
+    pending: false,
+    phase: "installed",
+  }), { mode: 0o600 });
+
+  const recovered = await reconcileChatGPTProfileSwitch({
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "",
+    refreshCatalog: false,
+  });
+  assert.equal(recovered.active, second.id);
+  assert.equal(recovered.pending, false);
+  assert.equal(recovered.phase, "idle");
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
+  assert.equal(existsSync(transactionDir), false);
 });
