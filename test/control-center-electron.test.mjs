@@ -54,7 +54,7 @@ test("ChatGPT browser login waits for the OAuth URL after child close", async ()
     await writeFile(
       executable,
       windows
-        ? "@echo off\r\nnode -e \"process.stdout.write('https://auth.openai.com/oauth/authorize?state=test')\"\r\n"
+        ? "@echo off\r\necho https://auth.openai.com/oauth/authorize?state=test\r\n"
         : "#!/usr/bin/env node\nprocess.stdout.write('https://auth.openai.com/oauth/authorize?state=test')\n",
     );
     if (!windows) await chmod(executable, 0o755);
