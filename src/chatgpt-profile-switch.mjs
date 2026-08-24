@@ -383,6 +383,29 @@ function ensureProfileAccountLocked({
     }
     if (source === primaryAuthPath(primaryHome)) currentAccountId = id;
   }
+  let identitiesChanged = false;
+  const seenIdentities = new Map();
+  for (const [id, account] of Object.entries(state.accounts)) {
+    const identity = authIdentity(chatGPTSubscriptionAccountAuthPath(id, { homesDir }));
+    if (!identity) continue;
+    const bound = account?.identity?.accountId;
+    if (bound && bound !== identity.accountId) {
+      throw new Error("The saved ChatGPT account identity does not match its login profile.");
+    }
+    const duplicate = seenIdentities.get(identity.accountId);
+    if (duplicate && duplicate !== id) {
+      throw new Error("The ChatGPT account identity is registered more than once.");
+    }
+    seenIdentities.set(identity.accountId, id);
+    if (!bound) {
+      account.identity = { accountId: identity.accountId, ...(identity.email ? { email: identity.email } : {}) };
+      identitiesChanged = true;
+    }
+  }
+  if (identitiesChanged) {
+    writeChatGPTAccountPoolState(state, filePath);
+    state = readChatGPTAccountPoolState(filePath);
+  }
   if (currentAccountId) {
     const profile = readChatGPTProfileSwitchState(switchPath);
     const desired = profile.desired === LEGACY_PRIMARY ? currentAccountId : profile.desired;
