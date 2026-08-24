@@ -737,6 +737,7 @@ test("electron boundary does not enable node integration or shell argv", async (
   assert.match(preload, /require\("electron"\)/);
   assert.doesNotMatch(preload, /executeJavaScript|node:child_process|node:fs|node:path/);
   const main = await readFile(new URL("../apps/control-center/electron/main.mjs", import.meta.url), "utf8");
+  const ipc = await readFile(new URL("../apps/control-center/electron/ipc.mjs", import.meta.url), "utf8");
   assert.match(main, /contextIsolation:\s*true/);
   assert.match(main, /nodeIntegration:\s*false/);
   assert.match(main, /sandbox:\s*true/);
@@ -794,6 +795,16 @@ test("electron boundary does not enable node integration or shell argv", async (
   const builder = await readFile(new URL("../apps/control-center/electron-builder.yml", import.meta.url), "utf8");
   assert.match(builder, /extraResources:[\s\S]*icon\.png/);
   assert.match(builder, /from:\s*\.\.\/\.\.\/src\/spawnable-command\.mjs[\s\S]*to:\s*src\/spawnable-command\.mjs/);
+  const packageImport = "file:///tmp/x.app/Contents/Resources/app.asar/electron/ipc.mjs";
+  assert.equal(
+    new URL("../../src/spawnable-command.mjs", packageImport).pathname,
+    "/tmp/x.app/Contents/Resources/src/spawnable-command.mjs",
+  );
+  const devImport = "file:///tmp/repo/apps/control-center/electron/ipc.mjs";
+  assert.equal(
+    new URL("../../../src/spawnable-command.mjs", devImport).pathname,
+    "/tmp/repo/src/spawnable-command.mjs",
+  );
   assert.match(builder, /runAsNode:\s*true/);
   assert.match(builder, /enableEmbeddedAsarIntegrityValidation:\s*true/);
   assert.match(builder, /onlyLoadAppFromAsar:\s*true/);

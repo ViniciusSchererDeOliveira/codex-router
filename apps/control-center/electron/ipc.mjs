@@ -26,7 +26,11 @@ import {
   runControlJson,
   runRouterScript,
 } from "./command-runner.mjs";
-import { spawnableCommand } from "../../../src/spawnable-command.mjs";
+
+const spawnableCommandUrl = import.meta.url.includes("/app.asar/")
+  ? new URL("../../src/spawnable-command.mjs", import.meta.url)
+  : new URL("../../../src/spawnable-command.mjs", import.meta.url);
+const { spawnableCommand } = await import(spawnableCommandUrl);
 
 // Codex is the one client-specific adapter this panel still exposes (native
 // GPT details and the current task default). Routed model identity and picker
