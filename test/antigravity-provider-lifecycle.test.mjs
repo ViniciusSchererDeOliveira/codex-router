@@ -8,6 +8,7 @@ const root = mkdtempSync(path.join(os.tmpdir(), "antigravity-provider-lifecycle-
 process.env.CODEX_HOME = path.join(root, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(root, "state");
 process.env.MODEL_ROUTER_USER_MODELS = path.join(root, "state", "user-models.json");
+process.env.ANTIGRAVITY_TOKEN_PATH = path.join(root, "state", "antigravity-oauth.json");
 
 const {
   antigravityTokenPath,

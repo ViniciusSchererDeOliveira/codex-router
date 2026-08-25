@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { LAUNCH_AGENT_PATH } from "./paths.mjs";
 
 const KEYCHAIN_SERVICE = "gemini";
 const KEYCHAIN_PREFIX = "go-keyring-base64:";
@@ -42,7 +43,18 @@ const AGY_METADATA_PATH = path.join(
 );
 
 function enabled() {
-  return process.platform === "darwin" && process.env.ANTIGRAVITY_SESSION_SOURCE === "agy";
+  if (process.env.ANTIGRAVITY_TOKEN_PATH) return false;
+  if (process.platform !== "darwin") return false;
+  if (process.env.ANTIGRAVITY_SESSION_SOURCE === "agy") return true;
+  try {
+    if (existsSync(LAUNCH_AGENT_PATH)) {
+      const plist = readFileSync(LAUNCH_AGENT_PATH, "utf8");
+      return /<key>\s*ANTIGRAVITY_SESSION_SOURCE\s*<\/key>[\s\n]*<string>\s*agy\s*<\/string>/.test(plist);
+    }
+  } catch {
+    // A desktop launch may not be able to read launchd metadata.
+  }
+  return false;
 }
 
 export function agyExecutablePath() {
