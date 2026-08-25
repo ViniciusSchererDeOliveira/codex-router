@@ -27,6 +27,18 @@ test("translates a plain user turn into Gemini contents", () => {
   ]);
 });
 
+test("forwards the two Antigravity Claude Thinking model ids", () => {
+  for (const model of ["claude-sonnet-4-6-thinking", "claude-opus-4-6-thinking"]) {
+    const request = toAntigravityRequest({
+      model,
+      messages: [{ role: "user", content: "hello" }],
+    }, { projectId: "my-project" });
+    assert.equal(request.model, model);
+    assert.equal(request.project, "my-project");
+    assert.equal(request.request.contents[0].parts[0].text, "hello");
+  }
+});
+
 test("maps OpenAI tool choices onto Gemini function calling modes", () => {
   const base = {
     model: "gemini-3.6-flash",
