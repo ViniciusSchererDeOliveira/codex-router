@@ -284,9 +284,11 @@ async function main() {
   const antigravityForwarder = antigravityOAuthStatus().configured
     ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "antigravity-oauth-forwarder.mjs")])
     : undefined;
-  if (antigravityForwarder) agySessionKeeper = startAgySessionKeeper({
-    log: (message) => console.error(`[${FRONTEND.service}] ${message}`),
-  });
+  if (antigravityForwarder && process.env.ANTIGRAVITY_SESSION_SOURCE === "agy") {
+    agySessionKeeper = startAgySessionKeeper({
+      log: (message) => console.error(`[${FRONTEND.service}] ${message}`),
+    });
+  }
   const devinForwarder = devinCliRouted
     ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "devin-cli-forwarder.mjs")])
     : undefined;

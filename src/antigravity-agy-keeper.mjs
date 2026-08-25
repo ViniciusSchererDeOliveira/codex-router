@@ -9,11 +9,24 @@ import {
 
 const CHECK_INTERVAL_MS = 60_000;
 const REFRESH_WINDOW_SECONDS = 5 * 60;
+const REFRESH_TIMEOUT_MS = 45_000;
+const TERMINATION_GRACE_MS = 5_000;
 
 export function startAgySessionKeeper({ log = () => {} } = {}) {
+  if (process.env.ANTIGRAVITY_SESSION_SOURCE !== "agy") {
+    return { stop() {} };
+  }
   let stopped = false;
   let refreshing = false;
   let child;
+  let watchdogTimer;
+
+  const disarmWatchdog = () => {
+    if (watchdogTimer) {
+      clearTimeout(watchdogTimer);
+      watchdogTimer = undefined;
+    }
+  };
 
   const check = () => {
     if (stopped || refreshing) return;
@@ -30,7 +43,22 @@ export function startAgySessionKeeper({ log = () => {} } = {}) {
       stdio: "ignore",
       windowsHide: true,
     });
+    const spawnedChild = child;
+    watchdogTimer = setTimeout(() => {
+      if (spawnedChild && spawnedChild.exitCode === null && spawnedChild.signalCode === null) {
+        log("agy refresh timed out and was terminated.");
+        spawnedChild.kill("SIGTERM");
+        setTimeout(() => {
+          if (spawnedChild.exitCode === null && spawnedChild.signalCode === null) {
+            spawnedChild.kill("SIGKILL");
+          }
+        }, TERMINATION_GRACE_MS).unref();
+      }
+    }, REFRESH_TIMEOUT_MS);
+    watchdogTimer.unref();
+
     const finish = () => {
+      disarmWatchdog();
       refreshing = false;
       child = undefined;
       if (!stopped && !readAgySession()) {
@@ -48,6 +76,7 @@ export function startAgySessionKeeper({ log = () => {} } = {}) {
   return {
     stop() {
       stopped = true;
+      disarmWatchdog();
       clearInterval(timer);
       if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
