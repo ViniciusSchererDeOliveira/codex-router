@@ -320,12 +320,16 @@ test("an interrupted switch rolls back durable auth and catalog before retrying"
       refreshCatalog: () => process.kill(process.pid, "SIGKILL"),
     });
   `;
-  const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", childSource], {
-    cwd: path.resolve("."),
-    encoding: "utf8",
-  });
-  assert.equal(crashed.signal, "SIGKILL");
-  const interrupted = readChatGPTProfileSwitchState(switchPath);
+ const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", childSource], {
+   cwd: path.resolve("."),
+   encoding: "utf8",
+ });
+  if (process.platform === "win32") {
+    assert.ok(crashed.status !== 0 || crashed.signal !== null);
+  } else {
+    assert.equal(crashed.signal, "SIGKILL");
+  }
+ const interrupted = readChatGPTProfileSwitchState(switchPath);
   assert.equal(interrupted.phase, "backed-up");
   assert.equal(interrupted.pending, true);
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);

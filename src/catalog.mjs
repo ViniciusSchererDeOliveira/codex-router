@@ -254,20 +254,18 @@ function captureNative(cache) {
   // The bundled source supplies schema fields that the remote cache is allowed
   // to omit, so use both when available. If it fails, account-only entries are
   // still normalized above and remain preferable to an empty picker.
-  try {
-    fallback = JSON.parse(runCodex(["debug", "models", "--bundled"], {
-      encoding: "utf8",
-      timeout: 30_000,
-      maxBuffer: 32 * 1024 * 1024,
-    }));
-  } catch (error) {
-    fallbackError = error;
-  }
-  const parsed = mergeNativeCatalogs(account, fallback, {
-    includeBundledOnly: !validNativeCatalog(account),
-  });
-  if (!validNativeCatalog(parsed)) {
-    const detail = accountError?.message || fallbackError?.message;
+ try {
+   fallback = JSON.parse(runCodex(["debug", "models", "--bundled"], {
+     encoding: "utf8",
+     timeout: 30_000,
+     maxBuffer: 32 * 1024 * 1024,
+   }));
+ } catch (error) {
+   fallbackError = error;
+ }
+  const parsed = mergeNativeCatalogs(account, fallback);
+ if (!validNativeCatalog(parsed)) {
+   const detail = accountError?.message || fallbackError?.message;
     throw new Error(
       `Codex returned no valid native model catalog${detail ? ` (${detail})` : ""}.`,
     );
