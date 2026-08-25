@@ -26,6 +26,7 @@ blue accent and DeepSeek's original blue mark are preserved.
 | Venice | https://venice.ai/ | https://venice.ai/apple-touch-icon.png |
 | Nous Research | https://nousresearch.com/ | https://nousresearch.com/apple-touch-icon.png |
 | OpenRouter | https://openrouter.ai/ | https://openrouter.ai/favicon/glyph.png |
+| Google Antigravity | https://antigravity.google/ | Official Antigravity monochrome mark supplied for the tray |
 
 The Z.AI, Qwen, Ollama, Cline, MiniMax, and Meta AI marks were fetched on
 2026-08-15. The Venice, Nous Research, and OpenRouter marks were fetched on

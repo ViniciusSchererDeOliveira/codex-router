@@ -96,6 +96,9 @@ function environmentEntries() {
     ...(process.env.CODEX_ROUTER_PACKAGE_MANAGER
       ? { CODEX_ROUTER_PACKAGE_MANAGER: process.env.CODEX_ROUTER_PACKAGE_MANAGER }
       : {}),
+    ...(process.env.ANTIGRAVITY_SESSION_SOURCE
+      ? { ANTIGRAVITY_SESSION_SOURCE: process.env.ANTIGRAVITY_SESSION_SOURCE }
+      : {}),
   };
   if (process.env.KIMI_CODE_HOME) values.KIMI_CODE_HOME = process.env.KIMI_CODE_HOME;
   return Object.entries(values)

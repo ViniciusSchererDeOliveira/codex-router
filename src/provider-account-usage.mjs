@@ -8,6 +8,8 @@ import {
   githubCopilotAccountHeaders,
 } from "./github-copilot-session.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
+import { readAntigravityToken } from "./antigravity-oauth-session.mjs";
+import { antigravityBootstrapHeaders } from "./antigravity-oauth-constants.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { resolveProviderCredential } from "./provider-credentials.mjs";
 import { cooldownUntil } from "./rate-limit-headers.mjs";
@@ -445,6 +447,65 @@ export function githubCopilotQuotaMetrics(payload) {
   return metrics;
 }
 
+function antigravityRemainingAmount(value) {
+  if (value && typeof value === "object") {
+    return numberValue(value.value ?? value.amount ?? value.units);
+  }
+  return numberValue(value);
+}
+
+export function antigravityQuotaMetrics(payload) {
+  const metrics = [];
+  const groups = Array.isArray(payload?.groups)
+    ? payload.groups
+    : Array.isArray(payload?.quotaGroups)
+      ? payload.quotaGroups
+      : [];
+  for (const group of groups) {
+    if (!group || typeof group !== "object") continue;
+    const groupLabel = typeof group.displayName === "string" ? group.displayName.trim() : "";
+    const buckets = Array.isArray(group.buckets)
+      ? group.buckets
+      : Array.isArray(group.quotaBuckets)
+        ? group.quotaBuckets
+        : [];
+    for (const bucket of buckets) {
+      if (!bucket || typeof bucket !== "object") continue;
+      const bucketLabel = typeof bucket.displayName === "string" ? bucket.displayName.trim() : "";
+      const label = [groupLabel, bucketLabel].filter(Boolean).join(" · ") || "Antigravity limit";
+      const fraction = numberValue(bucket.remainingFraction);
+      if (Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
+        const remainingPercent = fraction * 100;
+        const resetAt = resetTimestamp(bucket.resetTime ?? bucket.reset_time);
+        metrics.push({
+          kind: "quota",
+          label,
+          usedPercent: 100 - remainingPercent,
+          remainingPercent,
+          used: 100 - remainingPercent,
+          limit: 100,
+          remaining: remainingPercent,
+          unit: "percent",
+          ...(resetAt !== undefined ? { resetAt } : {}),
+        });
+        continue;
+      }
+      const amount = antigravityRemainingAmount(bucket.remainingAmount);
+      if (Number.isFinite(amount)) {
+        metrics.push({
+          kind: "balance",
+          label,
+          value: amount,
+          currency: "units",
+          detail: "Reported by Google Antigravity",
+          available: amount > 0,
+        });
+      }
+    }
+  }
+  return metrics;
+}
+
 async function requestJson(url, key, headers = {}, fetchImpl = fetch) {
   const response = await fetchImpl(url, {
     method: "GET",
@@ -461,6 +522,69 @@ async function requestJson(url, key, headers = {}, fetchImpl = fetch) {
     throw error;
   }
   return response.json();
+}
+
+async function requestJsonPost(url, key, body, headers = {}, fetchImpl = fetch) {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const error = new Error(`HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
+const ANTIGRAVITY_QUOTA_URL =
+  process.env.ANTIGRAVITY_QUOTA_URL ||
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+const ANTIGRAVITY_DASHBOARD_URL =
+  "https://antigravity.google/g1-credits?utm_source=codex-router&utm_medium=tray";
+
+async function antigravityAccount(fetchImpl) {
+  let token;
+  try {
+    token = readAntigravityToken();
+  } catch {
+    return { status: "not-configured", source: "official-api", metrics: [] };
+  }
+  const fallback = (message) => ({
+    ...withHeaderQuota("antigravity-oauth", localOnly(message)),
+    dashboardUrl: ANTIGRAVITY_DASHBOARD_URL,
+  });
+  try {
+    const payload = await requestJsonPost(
+      ANTIGRAVITY_QUOTA_URL,
+      token.access_token,
+      {},
+      antigravityBootstrapHeaders(token.access_token),
+      fetchImpl,
+    );
+    const metrics = antigravityQuotaMetrics(payload);
+    if (!metrics.length) {
+      return fallback("Antigravity reported no account limits; showing router traffic");
+    }
+    return {
+      status: "available",
+      source: "official-api",
+      metrics,
+      dashboardUrl: ANTIGRAVITY_DASHBOARD_URL,
+    };
+  } catch (error) {
+    const message = error?.status === 403
+      ? "Antigravity does not expose account limits for this session; showing router traffic"
+      : "Antigravity account limits are unavailable; showing router traffic";
+    return fallback(message);
+  }
 }
 
 async function deepSeekAccount(fetchImpl) {
@@ -969,6 +1093,7 @@ async function accountUsageFor(providerId, fetchImpl) {
     if (providerId === "commandcode") return await commandCodeAccount(fetchImpl);
     if (providerId === "venice") return await veniceAccount(fetchImpl);
     if (providerId === "openrouter") return await openRouterAccount(fetchImpl);
+    if (providerId === "antigravity-oauth") return await antigravityAccount(fetchImpl);
     if (providerId === "nousresearch") {
       // Nous Portal shows credits and the subscription tier only in the
       // browser: the inference API answers 404 on both /credits and /key, so

@@ -11,6 +11,7 @@ import {
 import { devinCliStatus } from "./devin-cli-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
+import { refreshAgySession } from "./antigravity-agy-session.mjs";
 import { removeAntigravityToken } from "./antigravity-oauth-session.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
 import { MODELS, PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
@@ -231,6 +232,16 @@ const LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 export async function loginOauthProvider(providerId) {
   if (providerId === "antigravity-oauth") {
+    if (process.env.ANTIGRAVITY_SESSION_SOURCE === "agy") {
+      await refreshAgySession();
+      if (!oauthConfigured(providerId)) {
+        throw new Error("agy finished without a usable Antigravity session. Please try again.");
+      }
+      if (providerCatalogSources(providerId).length) {
+        await forgetProviderCatalogFamilyCache(providerId);
+      }
+      return;
+    }
     const { signInAntigravity } = await import("./antigravity-oauth-onboarding.mjs");
     await signInAntigravity();
     if (!oauthConfigured(providerId)) {

@@ -6,6 +6,7 @@ import {
   chutesSubscriptionMetrics,
   commandCodeCreditsMetrics,
   deepSeekBalanceMetrics,
+  antigravityQuotaMetrics,
   githubCopilotQuotaMetrics,
   grokCreditsMetrics,
   kimiApiBalanceMetrics,
@@ -14,6 +15,38 @@ import {
   opencodeGoUsageMetrics,
   providerAccountUsageSnapshot,
 } from "../src/provider-account-usage.mjs";
+
+test("normalizes Antigravity quota summary buckets", () => {
+  assert.deepEqual(antigravityQuotaMetrics({
+    groups: [{
+      displayName: "AI credits",
+      buckets: [
+        { displayName: "Daily", remainingFraction: 0.75, resetTime: "2026-09-01T00:00:00Z" },
+        { displayName: "Bonus", remainingAmount: { value: 12 } },
+      ],
+    }],
+  }), [
+    {
+      kind: "quota",
+      label: "AI credits · Daily",
+      usedPercent: 25,
+      remainingPercent: 75,
+      used: 25,
+      limit: 100,
+      remaining: 75,
+      unit: "percent",
+      resetAt: 1788220800,
+    },
+    {
+      kind: "balance",
+      label: "AI credits · Bonus",
+      value: 12,
+      currency: "units",
+      detail: "Reported by Google Antigravity",
+      available: true,
+    },
+  ]);
+});
 
 test("normalizes GitHub Copilot AI-credit quota", () => {
   assert.deepEqual(githubCopilotQuotaMetrics({

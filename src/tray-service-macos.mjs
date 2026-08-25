@@ -28,6 +28,13 @@ function xml(value) {
     .replaceAll("'", "&apos;");
 }
 
+function environmentEntries() {
+  if (process.env.ANTIGRAVITY_SESSION_SOURCE !== "agy") return "";
+  return "  <key>EnvironmentVariables</key>\n  <dict>\n" +
+    "    <key>ANTIGRAVITY_SESSION_SOURCE</key>\n    <string>agy</string>\n" +
+    "  </dict>\n";
+}
+
 // KeepAlive is conditional on purpose. `SuccessfulExit: false` restarts the tray
 // when it crashes or is killed, but leaves it down after the Quit menu item
 // exits cleanly — an unconditional KeepAlive would make Quit impossible.
@@ -48,6 +55,7 @@ function plist() {
     <string>${xml(TRAY_APP_BINARY)}</string>
     <string>--supervised</string>
   </array>
+${environmentEntries()}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

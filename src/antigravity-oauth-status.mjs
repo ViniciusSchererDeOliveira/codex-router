@@ -6,6 +6,7 @@ import {
   protectAntigravityToken,
   validateAntigravityToken,
 } from "./antigravity-oauth-session.mjs";
+import { readAgySession } from "./antigravity-agy-session.mjs";
 
 // The Antigravity credential is written by this router's own sign-in flow, not
 // lifted from another CLI's session file, so it is not gated on
@@ -13,6 +14,16 @@ import {
 // file is.
 
 export function antigravityOAuthStatus() {
+  const agy = readAgySession();
+  if (agy) {
+    return {
+      configured: true,
+      credentialPresent: true,
+      tokenPath: "keychain://gemini",
+      source: "agy keychain session",
+      projectId: agy.project_id || undefined,
+    };
+  }
   const tokenPath = antigravityTokenPath();
   if (!existsSync(tokenPath)) {
     return {
@@ -42,6 +53,14 @@ export function antigravityOAuthStatus() {
 }
 
 export function antigravityOAuthHealth() {
+  const agy = readAgySession();
+  if (agy) {
+    return {
+      status: "ok",
+      detail: "agy keychain session available",
+      projectId: agy.project_id || undefined,
+    };
+  }
   const tokenPath = antigravityTokenPath();
   if (!existsSync(tokenPath)) {
     return {

@@ -31,6 +31,7 @@ import {
   redactProxyCredentials,
 } from "./proxy-environment.mjs";
 import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
+import { startAgySessionKeeper } from "./antigravity-agy-keeper.mjs";
 
 // Before anything reads the environment or spawns a child. A service manager
 // hands this process the proxy the install recorded; a shell hands it whatever
@@ -201,6 +202,7 @@ const commonEnv = {
 
 const children = [];
 let shuttingDown = false;
+let agySessionKeeper;
 
 // Every child goes through `spawnableCommand` for the one case that needs it:
 // a Windows `.cmd`/`.bat` launcher, which Node has refused to spawn without a
@@ -258,6 +260,7 @@ const SIGKILL_AFTER_MS = SHUTDOWN_DRAIN_MS + SHUTDOWN_FLUSH_MS + 2_000;
 function stopChildren() {
   if (shuttingDown) return;
   shuttingDown = true;
+  agySessionKeeper?.stop();
   for (const child of children) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
   }
@@ -281,6 +284,9 @@ async function main() {
   const antigravityForwarder = antigravityOAuthStatus().configured
     ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "antigravity-oauth-forwarder.mjs")])
     : undefined;
+  if (antigravityForwarder) agySessionKeeper = startAgySessionKeeper({
+    log: (message) => console.error(`[${FRONTEND.service}] ${message}`),
+  });
   const devinForwarder = devinCliRouted
     ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "devin-cli-forwarder.mjs")])
     : undefined;

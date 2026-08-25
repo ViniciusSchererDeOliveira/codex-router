@@ -7,6 +7,7 @@ import {
   ANTIGRAVITY_TOKEN_URL,
   requireAntigravityClientSecret,
 } from "./antigravity-oauth-constants.mjs";
+import { readAgySession } from "./antigravity-agy-session.mjs";
 import { protectPrivateFile, writePrivateJson } from "./file-security.mjs";
 import { STATE_DIR } from "./paths.mjs";
 
@@ -72,10 +73,13 @@ export function validateAntigravityToken(value) {
     tier_id: typeof value.tier_id === "string" && value.tier_id ? value.tier_id : undefined,
     email: typeof value.email === "string" ? value.email : undefined,
     token_type: typeof value.token_type === "string" ? value.token_type : "Bearer",
+    session_source: value.session_source === "agy-keychain" ? value.session_source : undefined,
   };
 }
 
 export function readAntigravityToken() {
+  const agy = readAgySession();
+  if (agy) return validateAntigravityToken(agy);
   const tokenPath = antigravityTokenPath();
   if (!existsSync(tokenPath)) {
     throw unauthorizedError("Antigravity OAuth credentials were not found; run sign-in first.");
@@ -362,6 +366,11 @@ export async function ensureFreshAntigravitySession({
     const initial = readAntigravityToken();
     const initialNowSeconds = Math.floor(now() / 1_000);
     if (!force && !shouldRefresh(initial, initialNowSeconds)) return initial;
+    if (initial.session_source === "agy-keychain") {
+      const refreshed = readAgySession({ now });
+      if (refreshed && !shouldRefresh(refreshed, Math.floor(now() / 1_000))) return refreshed;
+      throw unauthorizedError("The agy session is expired; launch agy once to refresh it, then retry.");
+    }
 
     let result;
     try {
