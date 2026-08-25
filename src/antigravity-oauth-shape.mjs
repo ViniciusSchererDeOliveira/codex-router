@@ -374,7 +374,12 @@ function cleanAntigravitySchema(schema, depth = 0) {
   for (const [key, value] of Object.entries(schema)) {
     if (UNSUPPORTED_SCHEMA_KEYWORDS.includes(key)) continue;
     if (key === "const") {
-      if (!Array.isArray(schema.enum)) next.enum = [value];
+      if (!Array.isArray(schema.enum) && typeof value === "string") next.enum = [value];
+      continue;
+    }
+    if (key === "enum") {
+      if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) continue;
+      next.enum = value;
       continue;
     }
     if (["properties"].includes(key) && isPlainObject(value)) {

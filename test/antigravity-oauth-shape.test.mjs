@@ -139,6 +139,30 @@ test("sanitizes unsupported JSON Schema constructs for Antigravity", () => {
   assert.equal("$schema" in declaration.parameters, false);
 });
 
+test("drops non-string enum literals from Gemini function schemas", () => {
+  const source = {
+    type: "object",
+    properties: {
+      count: { type: "integer", enum: [1, 2] },
+      enabled: { type: "boolean", const: true },
+      mode: { type: "string", enum: ["fast", "safe"] },
+      label: { type: "string", const: "default" },
+    },
+  };
+  const request = toAntigravityRequest({
+    model: "gemini-3.7-flash",
+    messages: [{ role: "user", content: "use the tool" }],
+    tools: [{ type: "function", function: { name: "probe", parameters: source } }],
+  });
+  const properties = request.request.tools[0].functionDeclarations[0].parameters.properties;
+  assert.equal("enum" in properties.count, false);
+  assert.equal("enum" in properties.enabled, false);
+  assert.deepEqual(properties.mode.enum, ["fast", "safe"]);
+  assert.deepEqual(properties.label.enum, ["default"]);
+  assert.deepEqual(source.properties.count.enum, [1, 2]);
+  assert.equal(source.properties.enabled.const, true);
+});
+
 test("accumulates Gemini SSE parts into an OpenAI-style turn", () => {
   const state = createAntigravityTurnState();
   applyAntigravitySsePayload(state, {
