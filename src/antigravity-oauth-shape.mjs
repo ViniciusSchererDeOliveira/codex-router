@@ -368,16 +368,22 @@ const UNSUPPORTED_SCHEMA_KEYWORDS = Object.freeze([
 // Antigravity's protobuf-backed schema layer rejects annotations and
 // validation keywords that ordinary JSON Schema permits. This pass is pure:
 // tool schemas are caller-owned objects and must never be mutated in place.
-function cleanAntigravitySchema(schema, depth = 0) {
+function cleanAntigravitySchema(schema, depth = 0, { sanitizeEnums = false } = {}) {
   if (!isPlainObject(schema) || depth > MAX_SCHEMA_DEPTH) return schema;
   const next = {};
   for (const [key, value] of Object.entries(schema)) {
     if (UNSUPPORTED_SCHEMA_KEYWORDS.includes(key)) continue;
     if (key === "const") {
-      if (!Array.isArray(schema.enum) && typeof value === "string") next.enum = [value];
+      if (!Array.isArray(schema.enum)) {
+        if (sanitizeEnums) {
+          if (typeof value === "string") next.enum = [value];
+        } else {
+          next.enum = [value];
+        }
+      }
       continue;
     }
-    if (key === "enum") {
+    if (key === "enum" && sanitizeEnums) {
       if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) continue;
       next.enum = value;
       continue;
@@ -386,17 +392,17 @@ function cleanAntigravitySchema(schema, depth = 0) {
       next[key] = Object.fromEntries(
         Object.entries(value).map(([name, child]) => [
           name,
-          cleanAntigravitySchema(child, depth + 1),
+          cleanAntigravitySchema(child, depth + 1, { sanitizeEnums }),
         ]),
       );
       continue;
     }
     if (["items"].includes(key) && isPlainObject(value)) {
-      next[key] = cleanAntigravitySchema(value, depth + 1);
+      next[key] = cleanAntigravitySchema(value, depth + 1, { sanitizeEnums });
       continue;
     }
     if (["anyOf", "oneOf", "allOf"].includes(key) && Array.isArray(value)) {
-      next[key] = value.map((child) => cleanAntigravitySchema(child, depth + 1));
+      next[key] = value.map((child) => cleanAntigravitySchema(child, depth + 1, { sanitizeEnums }));
       continue;
     }
     next[key] = value;
@@ -407,14 +413,14 @@ function cleanAntigravitySchema(schema, depth = 0) {
   return next;
 }
 
-function antigravityToolSchema(schema) {
+function antigravityToolSchema(schema, options) {
   const normalized = normalizeSchemaLiterals(schema);
   if (!isPlainObject(normalized)) return { type: "object", properties: {} };
   const dereferenced = dereferenceAntigravitySchema(normalized);
   // Flatten while definitions are still present and references are already
   // materialized; stripping first is what used to erase ref-heavy tools.
   const objectRoot = objectRootToolSchema(dereferenced);
-  return cleanAntigravitySchema(objectRoot);
+  return cleanAntigravitySchema(objectRoot, 0, options);
 }
 
 function antigravityToolName(name) {
@@ -424,7 +430,7 @@ function antigravityToolName(name) {
   return cleaned || "tool";
 }
 
-function functionDeclarations(chat) {
+function functionDeclarations(chat, options) {
   return (Array.isArray(chat.tools) ? chat.tools : [])
     .filter((tool) => tool?.type === "function" && tool.function?.name)
     .map((tool) => ({
@@ -432,6 +438,7 @@ function functionDeclarations(chat) {
       description: tool.function.description,
       parameters: antigravityToolSchema(
         tool.function.parameters || { type: "object", properties: {} },
+        options,
       ),
     }));
 }
@@ -491,7 +498,7 @@ function resolveAntigravityModel(chat) {
   };
 }
 
-export function toAntigravityRequest(chat, { projectId = "", requestId = undefined } = {}) {
+export function toAntigravityRequest(chat, { projectId = "", requestId = undefined, sessionSource = undefined } = {}) {
   foldInterveningAssistantMessages(chat?.messages);
   const { contents, systemText } = messagesToContents(chat?.messages || []);
   const resolved = resolveAntigravityModel(chat);
@@ -516,7 +523,8 @@ export function toAntigravityRequest(chat, { projectId = "", requestId = undefin
       includeThoughts: true,
     };
   }
-  const declarations = functionDeclarations(chat);
+  const isAgy = sessionSource === "agy-keychain" || process.env.ANTIGRAVITY_SESSION_SOURCE === "agy";
+  const declarations = functionDeclarations(chat, { sanitizeEnums: isAgy });
   if (declarations.length) {
     request.tools = [{ functionDeclarations: declarations }];
     const choice = chat?.tool_choice;

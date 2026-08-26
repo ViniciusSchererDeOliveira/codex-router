@@ -493,6 +493,7 @@ async function handleChatCompletions(request, response) {
     shapedBody = toAntigravityRequest(chat, {
       projectId: current.projectId,
       requestId,
+      sessionSource: current.session?.session_source,
     });
     return requestAntigravityUpstream({
       accessToken: current.session.access_token,

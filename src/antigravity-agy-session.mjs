@@ -7,7 +7,7 @@ import { LAUNCH_AGENT_PATH } from "./paths.mjs";
 const KEYCHAIN_SERVICE = "gemini";
 const KEYCHAIN_PREFIX = "go-keyring-base64:";
 const AGY_REFRESH_PROMPT = "Reply with OK only.";
-const AGY_REFRESH_TIMEOUT_MS = 10 * 60_000;
+const AGY_REFRESH_TIMEOUT_MS = 45_000;
 const AGY_ENVIRONMENT_KEYS = [
   "HOME",
   "LANG",
@@ -164,7 +164,7 @@ export function refreshAgySession({ timeoutMs = AGY_REFRESH_TIMEOUT_MS } = {}) {
   );
   if (result.error || result.status !== 0) {
     if (result.error?.code === "ETIMEDOUT") {
-      throw new Error("agy did not finish refreshing its session within 10 minutes.");
+      throw new Error("agy did not finish refreshing its session within 45 seconds.");
     }
     throw new Error("agy could not refresh its session. Run agy once from a terminal, then retry.");
   }

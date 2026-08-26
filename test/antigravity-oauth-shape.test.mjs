@@ -151,7 +151,7 @@ test("sanitizes unsupported JSON Schema constructs for Antigravity", () => {
   assert.equal("$schema" in declaration.parameters, false);
 });
 
-test("drops non-string enum literals from Gemini function schemas", () => {
+test("drops non-string enum literals only for agy session schemas", () => {
   const source = {
     type: "object",
     properties: {
@@ -161,16 +161,32 @@ test("drops non-string enum literals from Gemini function schemas", () => {
       label: { type: "string", const: "default" },
     },
   };
-  const request = toAntigravityRequest({
+  // Standard Antigravity OAuth leaves non-string enums intact (preserves upstream contract)
+  const standardRequest = toAntigravityRequest({
     model: "gemini-3.7-flash",
     messages: [{ role: "user", content: "use the tool" }],
     tools: [{ type: "function", function: { name: "probe", parameters: source } }],
   });
-  const properties = request.request.tools[0].functionDeclarations[0].parameters.properties;
-  assert.equal("enum" in properties.count, false);
-  assert.equal("enum" in properties.enabled, false);
-  assert.deepEqual(properties.mode.enum, ["fast", "safe"]);
-  assert.deepEqual(properties.label.enum, ["default"]);
+  const stdProps = standardRequest.request.tools[0].functionDeclarations[0].parameters.properties;
+  assert.deepEqual(stdProps.count.enum, [1, 2]);
+  assert.deepEqual(stdProps.enabled.enum, [true]);
+  assert.deepEqual(stdProps.mode.enum, ["fast", "safe"]);
+  assert.deepEqual(stdProps.label.enum, ["default"]);
+
+  // agy session drops non-string enums to satisfy Google Cloud Code Assist protobuf schema
+  const agyRequest = toAntigravityRequest(
+    {
+      model: "gemini-3.7-flash",
+      messages: [{ role: "user", content: "use the tool" }],
+      tools: [{ type: "function", function: { name: "probe", parameters: source } }],
+    },
+    { sessionSource: "agy-keychain" },
+  );
+  const agyProps = agyRequest.request.tools[0].functionDeclarations[0].parameters.properties;
+  assert.equal("enum" in agyProps.count, false);
+  assert.equal("enum" in agyProps.enabled, false);
+  assert.deepEqual(agyProps.mode.enum, ["fast", "safe"]);
+  assert.deepEqual(agyProps.label.enum, ["default"]);
   assert.deepEqual(source.properties.count.enum, [1, 2]);
   assert.equal(source.properties.enabled.const, true);
 });

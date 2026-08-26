@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { startAgySessionKeeper } from "../src/antigravity-agy-keeper.mjs";
+import { refreshAgySession } from "../src/antigravity-agy-session.mjs";
 
 test("agy session keeper is a no-op when ANTIGRAVITY_SESSION_SOURCE is not agy", () => {
   const previous = process.env.ANTIGRAVITY_SESSION_SOURCE;
@@ -26,5 +27,23 @@ test("agy session keeper activates and stops cleanly when ANTIGRAVITY_SESSION_SO
   } finally {
     if (previous === undefined) delete process.env.ANTIGRAVITY_SESSION_SOURCE;
     else process.env.ANTIGRAVITY_SESSION_SOURCE = previous;
+  }
+});
+
+test("refreshAgySession throws if agy session source is not enabled", () => {
+  const previous = process.env.ANTIGRAVITY_SESSION_SOURCE;
+  const prevToken = process.env.ANTIGRAVITY_TOKEN_PATH;
+  try {
+    delete process.env.ANTIGRAVITY_SESSION_SOURCE;
+    process.env.ANTIGRAVITY_TOKEN_PATH = "/tmp/fake-token.json";
+    assert.throws(
+      () => refreshAgySession(),
+      /The agy session source is not enabled for this router/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.ANTIGRAVITY_SESSION_SOURCE;
+    else process.env.ANTIGRAVITY_SESSION_SOURCE = previous;
+    if (prevToken === undefined) delete process.env.ANTIGRAVITY_TOKEN_PATH;
+    else process.env.ANTIGRAVITY_TOKEN_PATH = prevToken;
   }
 });

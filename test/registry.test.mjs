@@ -39,6 +39,8 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "antigravity-oauth/gemini-3.5-flash",
       "antigravity-oauth/gemini-3.6-flash",
       "antigravity-oauth/gemini-3.7-flash",
+      "antigravity-oauth/claude-sonnet-4.6",
+      "antigravity-oauth/claude-opus-4.6",
       "clinepass/deepseek-v4-flash",
       "clinepass/deepseek-v4-pro",
       "clinepass/glm-5.2",
