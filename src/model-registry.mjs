@@ -719,6 +719,10 @@ const STATIC_MODEL_SLUG_ALIASES = new Map([
   // public slug routable while catalog publication carries picker state to
   // the protocol-namespaced replacement.
   ["opencode-go/grok-4.5", "opencode-go-responses/grok-4.5"],
+  // Z.ai withdrew the Ox Alpha preview and graduated GLM-5.3 Flash to its
+  // permanent public id on 2026-08. Keep the old slugs routable.
+  ["opencode-go/ox-alpha", "opencode-go/glm-5.3-flash"],
+  ["opencode-go/ox-alpha-free", "opencode-go/glm-5.3-flash"],
 ]);
 
 function validatedStaticModelSlugAliases({ models, providers }) {

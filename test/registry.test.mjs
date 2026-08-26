@@ -326,13 +326,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(venice.credential.file, "venice-api-key.secret");
   assert.deepEqual(venice.credential.keychainServices, ["codex-router-venice"]);
   // Venice arrived as catalog-only, and stayed that way until Ox Alpha was
-  // checked in for it. It now ships exactly that one entry -- the picker is not
-  // empty once a key is stored, and everything else on Venice still has to be
-  // curated -- so this asserts the entry rather than merely that something is
-  // listed, which would also pass if a curation bug leaked extra models in.
+  // checked in for it. GLM-5.3 Flash replaced Ox Alpha on 2026-08. It now ships
+  // exactly that one entry -- the picker is not empty once a key is stored, and
+  // everything else on Venice still has to be curated -- so this asserts the
+  // entry rather than merely that something is listed, which would also pass if
+  // a curation bug leaked extra models in.
   assert.deepEqual(
     LISTED_MODELS.filter(({ provider }) => provider === "venice").map(({ slug }) => slug),
-    ["venice/ox-alpha"],
+    ["venice/glm-5.3-flash"],
   );
   const opencodeFree = PROVIDERS.get("opencode-free");
   const opencodeFreeResponses = PROVIDERS.get("opencode-free-responses");
@@ -1148,11 +1149,6 @@ test("Nous Research free models are tagged isFree, Hermes 4 is not", () => {
     assert.ok(model, `${slug} should exist in registry`);
     assert.notEqual(model.isFree, true, `${slug} should not be tagged isFree: true`);
   }
-
-  // ox-alpha should remain isFree: true (existing)
-  const oxAlpha = MODEL_BY_SLUG.get("nousresearch/ox-alpha");
-  assert.ok(oxAlpha);
-  assert.strictEqual(oxAlpha.isFree, true, "nousresearch/ox-alpha should remain isFree: true");
 });
 
 // A keyless provider skips the credential requirement, which is only safe

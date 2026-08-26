@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-free/ox-alpha",
+      "gatewayModel": "opencode-free-ox-alpha",
+      "upstreamModel": "x-preview-f-free",
+      "provider": "opencode-free",
+      "listed": true,
+      "displayName": "Ox Alpha (OpenCode Free)",
+      "description": "Ox Alpha through the anonymous OpenCode Zen free tier. No API key; the free preview and its limits can end without notice.",
+      "priority": 95,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Quick reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "isFree": true,
+      "availabilityNux": "Ox Alpha is a 1M-context stealth reasoning model for coding and long-horizon agentic work. This route is free and needs no API key, so it can be tried immediately; the preview and its limits can end without notice.",
+      "requestProfile": "ox-alpha",
+      "compHash": "opencode-free-ox-alpha-v1"
+    }
+  ]
+}
