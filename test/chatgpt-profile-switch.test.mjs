@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
@@ -311,7 +312,7 @@ test("an interrupted switch rolls back durable auth and catalog before retrying"
 
   const modulePath = path.resolve("src/chatgpt-profile-switch.mjs");
   const childSource = `
-    import { requestChatGPTProfileSwitch } from ${JSON.stringify(modulePath)};
+    import { requestChatGPTProfileSwitch } from ${JSON.stringify(pathToFileURL(modulePath).href)};
     await requestChatGPTProfileSwitch(${JSON.stringify(second.id)}, {
       filePath: ${JSON.stringify(filePath)}, homesDir: ${JSON.stringify(homesDir)},
       primaryHome: ${JSON.stringify(primaryHome)}, switchPath: ${JSON.stringify(switchPath)},
