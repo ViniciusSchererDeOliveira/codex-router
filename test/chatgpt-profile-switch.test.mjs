@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,14 +10,35 @@ import {
   chatGPTSubscriptionAccountAuthPath,
   chatGPTSubscriptionAccountCatalogDir,
   createChatGPTSubscriptionAccount,
+  readChatGPTAccountPoolState,
+  writeChatGPTAccountPoolState,
 } from "../src/chatgpt-account-pool.mjs";
 import {
   codexDesktopRunning,
   chatGPTProfileSwitchSnapshot,
   readChatGPTProfileSwitchState,
   reconcileChatGPTProfileSwitch,
+  removeChatGPTProfileAccount,
   requestChatGPTProfileSwitch,
+  selectChatGPTProfileAccount,
 } from "../src/chatgpt-profile-switch.mjs";
+
+function runModuleChild(source) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source], {
+      cwd: path.resolve("."),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`child exited ${code ?? signal}: ${stderr.trim()}`));
+    });
+  });
+}
 
 test("a selected profile waits for Codex to close and preserves both account profiles", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-switch-"));
@@ -401,4 +422,101 @@ test("reconcile completes an installed transaction after restart", async () => {
   assert.equal(recovered.phase, "idle");
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
   assert.equal(existsSync(transactionDir), false);
+});
+
+test("cross-process account selections commit one matching policy and profile", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-policy-concurrent-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  const modulePath = pathToFileURL(path.resolve("src/chatgpt-profile-switch.mjs")).href;
+  const options = { filePath, homesDir, primaryHome, switchPath, platform: "darwin", processList: "", refreshCatalog: false };
+  const childSource = (selection) => `
+    import { selectChatGPTProfileAccount } from ${JSON.stringify(modulePath)};
+    await selectChatGPTProfileAccount(${JSON.stringify(selection)}, ${JSON.stringify(options)});
+  `;
+  await Promise.all([
+    runModuleChild(childSource(second.id)),
+    runModuleChild(childSource(first.id)),
+  ]);
+  const pool = readChatGPTAccountPoolState(filePath);
+  const profile = readChatGPTProfileSwitchState(switchPath);
+  assert.equal(profile.pending, false);
+  assert.equal(pool.policy.selectedAccountId, profile.active);
+  assert.equal(profile.desired, profile.active);
+  const activeIdentity = JSON.parse(readFileSync(path.join(primaryHome, "auth.json"), "utf8")).tokens.account_id;
+  assert.equal(activeIdentity, profile.active === first.id ? "first" : "second");
+});
+
+test("a policy commit failure rolls the native profile back to its prior account", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-policy-rollback-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  const options = { filePath, homesDir, primaryHome, switchPath, platform: "darwin", processList: "", refreshCatalog: false };
+  await requestChatGPTProfileSwitch(first.id, options);
+  const initialPool = readChatGPTAccountPoolState(filePath);
+  initialPool.policy.selectedAccountId = first.id;
+  writeChatGPTAccountPoolState(initialPool, filePath);
+  await assert.rejects(
+    selectChatGPTProfileAccount(second.id, {
+      ...options,
+      writeAccountPoolState: () => { throw new Error("simulated policy write failure"); },
+    }),
+    /simulated policy write failure/,
+  );
+  assert.equal(readChatGPTAccountPoolState(filePath).policy.selectedAccountId, first.id);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).active, first.id);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).desired, first.id);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+});
+
+test("a removal failure rolls back the required active-profile handoff", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-remove-rollback-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  const options = { filePath, homesDir, primaryHome, switchPath, platform: "darwin", processList: "", refreshCatalog: false };
+  await requestChatGPTProfileSwitch(first.id, options);
+  const initialPool = readChatGPTAccountPoolState(filePath);
+  initialPool.policy.selectedAccountId = first.id;
+  writeChatGPTAccountPoolState(initialPool, filePath);
+  await assert.rejects(
+    removeChatGPTProfileAccount(first.id, {
+      ...options,
+      removeAccount: () => { throw new Error("simulated account removal failure"); },
+    }),
+    /simulated account removal failure/,
+  );
+  assert.ok(readChatGPTAccountPoolState(filePath).accounts[first.id]);
+  assert.equal(readChatGPTAccountPoolState(filePath).policy.selectedAccountId, first.id);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).active, first.id);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
 });

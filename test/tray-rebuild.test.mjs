@@ -931,20 +931,6 @@ test("the native macOS tray owns one embedded Control Center", () => {
   assert.doesNotMatch(detached, /waitUntilExit/);
 });
 
-test("user launches show Codex Router in the Dock while supervision stays accessory", () => {
-  const source = readFileSync(
-    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
-    "utf8",
-  );
-  const info = readFileSync(
-    path.join(root, "apps", "macos", "ModelRouterTray", "Resources", "Info.plist"),
-    "utf8",
-  );
-  assert.match(source, /NSApp\.setActivationPolicy\(Self\.launchedByUser \? \.regular : \.accessory\)/);
-  assert.match(source, /applicationShouldHandleReopen[\s\S]*NSApp\.setActivationPolicy\(\.regular\)/);
-  assert.doesNotMatch(info, /LSUIElement/);
-});
-
 test("changes to the embedded Control Center make the macOS bundle stale", () => {
   const fakeRoot = scratch();
   try {

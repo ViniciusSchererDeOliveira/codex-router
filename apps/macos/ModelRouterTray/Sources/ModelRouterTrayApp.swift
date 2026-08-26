@@ -398,7 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var surfaceVisibility: AnyCancellable?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    NSApp.setActivationPolicy(Self.launchedByUser ? .regular : .accessory)
+    NSApp.setActivationPolicy(.accessory)
     islandController = IslandWindowController(store: store)
     desktopPanelController = DesktopPanelWindowController(store: store)
     surfaceVisibility = store.$surfacesVisible
@@ -426,9 +426,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   // Double-clicking an app that is already running sends this instead of a
-  // fresh launch.
+  // fresh launch. An LSUIElement app has no window and no Dock icon, so without
+  // handling it the second open is silently swallowed and the app reads as
+  // broken.
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-    NSApp.setActivationPolicy(.regular)
     store.revealForUserLaunch()
     ControlCenterLauncher.open()
     return true

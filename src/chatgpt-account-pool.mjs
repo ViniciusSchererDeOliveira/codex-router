@@ -211,13 +211,26 @@ export function createChatGPTSubscriptionAccount({ label = "", filePath = CHATGP
 export function chatGPTSubscriptionAccountHome(accountValue, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {}) { return path.join(homesDir, accountId(accountValue)); }
 export function chatGPTSubscriptionAccountAuthPath(accountValue, options = {}) { return path.join(chatGPTSubscriptionAccountHome(accountValue, options), "auth.json"); }
 export function chatGPTSubscriptionAccountCatalogDir(accountValue, options = {}) { return path.join(chatGPTSubscriptionAccountHome(accountValue, options), "router-catalog"); }
-export function removeChatGPTSubscriptionAccount(accountValue, { filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {}) {
+export function removeChatGPTSubscriptionAccount(accountValue, {
+  filePath = CHATGPT_ACCOUNT_POOL_PATH,
+  homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
+  selectedAccountId,
+} = {}) {
   const id = accountId(accountValue);
   const state = readChatGPTAccountPoolState(filePath);
   const removed = state.accounts[id];
   if (!removed) throw new Error("Account id is not registered.");
   delete state.accounts[id];
-  if (state.policy.selectedAccountId === id) delete state.policy.selectedAccountId;
+  if (selectedAccountId !== undefined) {
+    const selected = accountId(selectedAccountId);
+    const account = state.accounts[selected];
+    if (!account || account.state !== "active" || account.paused) {
+      throw new Error("The replacement ChatGPT account is not active.");
+    }
+    state.policy.selectedAccountId = selected;
+  } else if (state.policy.selectedAccountId === id) {
+    delete state.policy.selectedAccountId;
+  }
   writeChatGPTAccountPoolState(state, filePath);
   rmSync(chatGPTSubscriptionAccountHome(id, { homesDir }), { recursive: true, force: true });
   return sanitizeChatGPTAccount({ ...removed, state: "revoked", paused: true });

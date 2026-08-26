@@ -37,6 +37,8 @@ import {
   chatGPTSubscriptionAccountStatus,
   isChatGPTAccountId,
   readChatGPTAccountPoolState,
+  removeChatGPTSubscriptionAccount,
+  sanitizeChatGPTAccountPool,
   writeChatGPTAccountPoolState,
   withChatGPTAccountPoolLock,
 } from "./chatgpt-account-pool.mjs";
@@ -738,6 +740,139 @@ export async function requestChatGPTProfileSwitch(selection, options = {}) {
       ...(options.staleMs === undefined ? {} : { staleMs: options.staleMs }),
     },
   );
+}
+
+function accountPoolLockOptions(options) {
+  return {
+    filePath: options.filePath || CHATGPT_ACCOUNT_POOL_PATH,
+    ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
+    ...(options.retryMs === undefined ? {} : { retryMs: options.retryMs }),
+    ...(options.staleMs === undefined ? {} : { staleMs: options.staleMs }),
+  };
+}
+
+async function restoreAccountTransaction({ pool, profile }, options) {
+  const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
+  const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
+  const current = readChatGPTProfileSwitchState(switchPath);
+  if (current.phase !== "idle") {
+    throw new Error(`The ChatGPT profile rollback requires recovery from phase ${current.phase}.`);
+  }
+  if (profile.active && current.active !== profile.active) {
+    await applyLocked(profile.active, options);
+  }
+  writeState(profile, switchPath);
+  writeChatGPTAccountPoolState(pool, filePath);
+}
+
+/**
+ * Select an account and update the native profile under the same cross-process
+ * lock. A desktop-open selection is intentionally represented as
+ * policy.selectedAccountId === profile.desired with profile.pending === true.
+ */
+export async function selectChatGPTProfileAccount(selection, options = {}) {
+  return withChatGPTAccountPoolLock(async () => {
+    recoverInterruptedSwitchLocked(options);
+    const migration = ensureProfileAccountLocked(options);
+    const normalized = validateSelection(selection, {
+      ...options,
+      currentAccountId: migration.currentAccountId,
+    });
+    if (normalized === AUTO || normalized === LEGACY_PRIMARY) {
+      throw new Error("Select a registered ChatGPT account id.");
+    }
+    const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
+    const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
+    const before = {
+      pool: readChatGPTAccountPoolState(filePath),
+      profile: readChatGPTProfileSwitchState(switchPath),
+    };
+    try {
+      const profile = await applyLocked(normalized, options);
+      const current = readChatGPTAccountPoolState(filePath);
+      const account = current.accounts[normalized];
+      if (!account || account.state !== "active" || account.paused) {
+        throw new Error("The selected subscription account changed while the profile was switching.");
+      }
+      const selectedProfile = profile.desired || profile.active;
+      if (selectedProfile !== normalized || (profile.pending && profile.active === normalized)) {
+        throw new Error("The native profile selection did not reach a consistent state.");
+      }
+      current.policy.enabled = true;
+      current.policy.selectedAccountId = normalized;
+      const writePool = options.writeAccountPoolState || writeChatGPTAccountPoolState;
+      const pool = writePool(current, filePath);
+      return { pool: sanitizeChatGPTAccountPool(pool), profile };
+    } catch (error) {
+      try {
+        await restoreAccountTransaction(before, options);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "ChatGPT account selection and rollback both failed.");
+      }
+      throw error;
+    }
+  }, accountPoolLockOptions(options));
+}
+
+/** Remove an account, including any required profile handoff, under one lock. */
+export async function removeChatGPTProfileAccount(accountId, options = {}) {
+  if (!isChatGPTAccountId(accountId)) throw new Error("Account id is invalid.");
+  return withChatGPTAccountPoolLock(async () => {
+    recoverInterruptedSwitchLocked(options);
+    ensureProfileAccountLocked(options);
+    const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
+    const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
+    const before = {
+      pool: readChatGPTAccountPoolState(filePath),
+      profile: readChatGPTProfileSwitchState(switchPath),
+    };
+    const account = before.pool.accounts[accountId];
+    if (!account) throw new Error("Account id is not registered.");
+    if (before.profile.desired === accountId && before.profile.active !== accountId) {
+      throw new Error("Cannot remove a ChatGPT account with a pending native profile selection.");
+    }
+    try {
+      let profile = before.profile;
+      if (profile.active === accountId) {
+        if (codexDesktopRunning(options)) {
+          throw new Error("Close Codex before removing the active subscription account.");
+        }
+        const replacement = Object.values(before.pool.accounts).find(
+          (candidate) => candidate.id !== accountId
+            && candidate.state === "active"
+            && !candidate.paused,
+        );
+        if (!replacement) throw new Error("Cannot remove the only logged-in ChatGPT account.");
+        profile = await applyLocked(replacement.id, options);
+        if (profile.active !== replacement.id || profile.pending) {
+          throw new Error("The replacement ChatGPT profile did not become active.");
+        }
+      }
+      const current = readChatGPTAccountPoolState(filePath);
+      if (!current.accounts[accountId]) {
+        throw new Error("The ChatGPT account changed while it was being removed.");
+      }
+      const selected = profile.desired || profile.active;
+      const removeAccount = options.removeAccount || removeChatGPTSubscriptionAccount;
+      const removed = removeAccount(accountId, {
+        filePath,
+        homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
+        ...(selected && selected !== accountId ? { selectedAccountId: selected } : {}),
+      });
+      return {
+        removed,
+        pool: sanitizeChatGPTAccountPool(readChatGPTAccountPoolState(filePath)),
+        profile,
+      };
+    } catch (error) {
+      try {
+        await restoreAccountTransaction(before, options);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "ChatGPT account removal and rollback both failed.");
+      }
+      throw error;
+    }
+  }, accountPoolLockOptions(options));
 }
 
 export async function reconcileChatGPTProfileSwitch(options = {}) {

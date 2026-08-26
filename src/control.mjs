@@ -2784,16 +2784,14 @@ async function handleChatGptAccountSwitch(action, value) {
     createChatGPTSubscriptionAccount,
     readChatGPTAccountPoolState,
     refreshChatGPTSubscriptionAccount,
-    removeChatGPTSubscriptionAccount,
-    sanitizeChatGPTAccountPool,
     withChatGPTAccountPoolLock,
-    writeChatGPTAccountPoolState,
   } = await import("./chatgpt-account-pool.mjs");
   const {
     chatGPTProfileSwitchSnapshot,
     ensureChatGPTProfileAccounts,
     reconcileChatGPTProfileSwitch,
-    requestChatGPTProfileSwitch,
+    removeChatGPTProfileAccount,
+    selectChatGPTProfileAccount,
   } = await import("./chatgpt-profile-switch.mjs");
 
   if (!action || action === "status") {
@@ -2847,19 +2845,8 @@ async function handleChatGptAccountSwitch(action, value) {
     return;
   }
   if (action === "remove") {
-    const state = readChatGPTAccountPoolState();
-    const profile = chatGPTProfileSwitchSnapshot();
-    if (profile.desired === value && profile.active !== value) {
-      throw new Error("Cannot remove a ChatGPT account with a pending native profile selection.");
-    }
-    if (profile.active === value) {
-      if (profile.running) throw new Error("Close Codex before removing the active subscription account.");
-      const replacement = Object.values(state.accounts).find((account) => account.id !== value && account.state === "active" && !account.paused);
-      if (!replacement) throw new Error("Cannot remove the only logged-in ChatGPT account.");
-      await requestChatGPTProfileSwitch(replacement.id);
-    }
-    const removed = await withChatGPTAccountPoolLock(() => removeChatGPTSubscriptionAccount(value));
-    process.stdout.write(`${JSON.stringify(removed)}\n`);
+    const result = await removeChatGPTProfileAccount(value);
+    process.stdout.write(`${JSON.stringify(result.removed)}\n`);
     return;
   }
   if (action === "select") {
@@ -2867,18 +2854,8 @@ async function handleChatGptAccountSwitch(action, value) {
     if (!/^acct_[A-Za-z0-9_-]{8,80}$/.test(selection)) {
       throw new Error("Select a registered ChatGPT account id.");
     }
-    const result = await withChatGPTAccountPoolLock(() => {
-      const current = readChatGPTAccountPoolState();
-      const account = current.accounts[selection];
-      if (!account || account.state !== "active" || account.paused) {
-        throw new Error("The selected subscription account is not active.");
-      }
-      current.policy.enabled = true;
-      current.policy.selectedAccountId = selection;
-      return writeChatGPTAccountPoolState(current);
-    });
-    const profile = await requestChatGPTProfileSwitch(selection);
-    process.stdout.write(`${JSON.stringify({ ...sanitizeChatGPTAccountPool(result), profile })}\n`);
+    const { pool, profile } = await selectChatGPTProfileAccount(selection);
+    process.stdout.write(`${JSON.stringify({ ...pool, profile })}\n`);
     return;
   }
   if (action === "profile") {
