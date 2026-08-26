@@ -114,31 +114,16 @@ function veniceMetadata(item) {
         capabilities.supportsVideoInput ? "video" : undefined,
       ].filter(Boolean)
     : undefined;
-  const isOxAlpha = item?.id === "stealth-ox-alpha";
   const reasoningSupported = boolean(capabilities?.supportsReasoning);
   const configurable = boolean(capabilities?.supportsReasoningEffort);
   const reasoning = reasoningSupported !== undefined || configurable !== undefined || advertisedEfforts
     ? nonempty(compact({
         supported: reasoningSupported,
         configurable,
-        // Venice's Ox Alpha advertisement is known to disagree with the
-        // model. Preserve it below, while the effective ladder records what
-        // all six checked-in Ox routes have actually accepted in live probes.
-        supportedEfforts: isOxAlpha ? ["low", "high", "max"] : advertisedEfforts,
-        defaultEffort: isOxAlpha
-          ? undefined
-          : typeof capabilities?.defaultReasoningEffort === "string"
-            ? capabilities.defaultReasoningEffort.trim().toLowerCase()
-            : undefined,
-        ...(isOxAlpha
-          ? {
-              advertisedSupportedEfforts: advertisedEfforts,
-              advertisedDefaultEffort: typeof capabilities?.defaultReasoningEffort === "string"
-                ? capabilities.defaultReasoningEffort.trim().toLowerCase()
-                : undefined,
-              effectiveMetadataSource: "repository-live-probes",
-            }
-          : {}),
+        supportedEfforts: advertisedEfforts,
+        defaultEffort: typeof capabilities?.defaultReasoningEffort === "string"
+          ? capabilities.defaultReasoningEffort.trim().toLowerCase()
+          : undefined,
       }))
     : undefined;
   return nonempty(compact({

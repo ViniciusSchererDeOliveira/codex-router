@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "zai-coding/glm-5.3-flash",
+      "gatewayModel": "zai-coding-glm-5-3-flash",
+      "upstreamModel": "glm-5.3-flash",
+      "provider": "zai-coding",
+      "listed": true,
+      "displayName": "GLM-5.3 Flash (Coding Plan)",
+      "description": "GLM-5.3 Flash through the Z.ai GLM Coding Plan subscription. Faster variant optimized for low latency while maintaining the 1M context window and full low/high/max reasoning tiers.",
+      "priority": 11,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast reasoning for simple edits"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning with thinking enabled"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "searchTool": {
+        "mode": "standalone"
+      },
+      "behaviorTemplate": "gpt-5.6-sol",
+      "instructionOverlay": "efficient-agentic",
+      "requestProfile": "glm-thinking",
+      "compHash": "zai-coding-glm-5-3-flash-v1"
+    }
+  ]
+}

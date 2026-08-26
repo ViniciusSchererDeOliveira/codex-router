@@ -416,7 +416,7 @@ the operator explicitly selects them.
 | Picker label | Model ID |
 | --- | --- |
 | Grok 4.5 (opencode Go) | `opencode-go-responses/grok-4.5` |
-| GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` |
+| GLM-5.3 Flash (opencode Go) | `opencode-go/glm-5.3-flash` |
 | GLM-5.3 (opencode Go) | `opencode-go/glm-5.3` |
 | GLM-5.2 (opencode Go) | `opencode-go/glm-5.2` |
 | GLM-5.1 (opencode Go) | `opencode-go/glm-5.1` |
@@ -574,7 +574,7 @@ CLI session.
 
 | Picker label | Model ID |
 | --- | --- |
-| Ox Alpha (Command Code) | `commandcode/ox-alpha` |
+| GLM-5.3 Flash (Command Code) | `commandcode/glm-5.3-flash` |
 | DeepSeek V4 Flash (Command Code) | `commandcode/deepseek-v4-flash` |
 | DeepSeek V4 Pro (Command Code) | `commandcode/deepseek-v4-pro` |
 | GLM-5.2 (Command Code) | `commandcode/glm-5.2` |
@@ -608,57 +608,30 @@ remaining credits and its 5-hour and weekly windows from the same undocumented
 billing route the official CLI polls, and links to Command Code Studio when
 that route is unavailable.
 
-### Ox Alpha
+### GLM-5.3 Flash
 
-Ox Alpha is a stealth reasoning model for coding and long-horizon agentic work:
-a 1,048,576-token context window, 131,072 tokens of output, text and image
-input, and tool calling. **The free preview was withdrawn from OpenCode Zen,
-OpenCode Go, OpenRouter, and Nous Research as of 2026-08-26.** It remains
-available under the Ox Alpha name on Command Code and Venice. On OpenCode Go,
-the preview graduated to the named, metered `glm-5.3-flash` model.
+GLM-5.3 Flash is Z.ai's faster variant of GLM-5.3, optimized for low latency
+while maintaining the 1,048,576-token context window with 131,072 tokens of
+output. It is available on six providers:
 
 | Picker label | Model ID | Needs a key | Status |
 | --- | --- | --- | --- |
-| Ox Alpha (Command Code) | `commandcode/ox-alpha` | Command Code | Available |
-| Ox Alpha (Venice) | `venice/ox-alpha` | Venice | Available |
-| ~~Ox Alpha (OpenCode Free)~~ | `opencode-free/ox-alpha` | ~~no~~ | Withdrawn |
-| GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` | opencode | Named replacement |
-| ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
-| ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
+| GLM-5.3 Flash (opencode Go) | `opencode-go/glm-5.3-flash` | opencode Go | Available |
+| GLM-5.3 Flash (OpenRouter) | `openrouter/glm-5.3-flash` | OpenRouter | Available |
+| GLM-5.3 Flash (Command Code) | `commandcode/glm-5.3-flash` | Command Code | Available |
+| GLM-5.3 Flash (Nous Research) | `nousresearch/glm-5.3-flash` | Nous Portal | Available |
+| GLM-5.3 Flash (Venice) | `venice/glm-5.3-flash` | Venice | Available |
+| GLM-5.3 Flash (Coding Plan) | `zai-coding/glm-5.3-flash` | Z.ai Coding | Available |
 
-The checked-in OpenCode Free pin (`opencode-free/ox-alpha`, upstream
-`x-preview-f-free`) is stale versus the live `/models` catalog; the endpoint may
-still answer or start failing without notice.
+Reasoning effort is **low · high · max** on OpenRouter, Command Code, Nous Research, Venice, and Z.ai Coding routes; **high · max** on opencode Go, all defaulting to `max`.
 
-Reasoning effort is **low · high · max** on the remaining routes and the named
-OpenCode Go replacement, defaulting to `max`. Only three rungs exist because
-the model always thinks and its upstream says so outright — anything else comes
-back as `400 — This model always engages in thinking and cannot be disabled;
-please use low, high, or max`. Codex has more rungs than that, and a Codex older
-than 0.143 has no `max` at all, so the router clamps whatever effort you pick
-onto the three the model accepts. Existing `opencode-go/ox-alpha` and locally
-curated `opencode-go/ox-alpha-free` selections migrate to
-`opencode-go/glm-5.3-flash` automatically.
-
-The picker retains OpenCode Go's advertised 1M context, but Codex compacts this
-route at 400K. In live multimodal tasks, larger Flash histories repeatedly
-returned empty completions before the advertised limit; the conservative
-threshold avoids presenting those blank turns as usable context. OpenCode Go's
-content moderation still applies to the compaction request itself, so a
-sensitive transcript may be rejected even when the ordinary task turn worked.
-
-For the remaining routes, store the key and enable the provider:
-
-```sh
-./bin/model-router codex provider-key venice set
-./bin/model-router codex providers enable venice
-```
-
-> **The free preview is a preview.** No lab has claimed this model, the routes
-> that serve it can narrow or withdraw it without notice, and the retention
-> terms differ per provider — OpenCode advertised zero data retention, Venice
-> anonymizes, and other resellers say less. Treat it as a way to try a model,
-> not as something to depend on.
+> **Note:** The Ox Alpha preview model was withdrawn from all providers as of
+> 2026-08-26. These GLM-5.3 Flash routes replace it.
+>
+> **Live verification (2026-08-27):** Command Code, OpenRouter, and Z.ai Coding
+> returned HTTP 200 with assistant responses to test prompts. OpenCode Go and
+> Venice timed out from the test network. Nous Research listed the model but
+> rejected requests with insufficient credits.
 
 ### Meta Model API
 
@@ -706,9 +679,8 @@ configuration available to that account through the installed Devin CLI; the
 provider still ships no preselected models.
 
 Three more providers work the same way but arrive with the single checked-in
-[Ox Alpha](#ox-alpha) entry (which is currently available on Command Code and
-Venice but has been withdrawn from OpenCode, OpenRouter, and Nous), so their
-picker is not empty once a key is stored:
+[GLM-5.3 Flash](#glm-53-flash) entry, so their picker is not empty once a key is
+stored:
 
 | Provider | Provider ID | Base URL | Key from |
 | --- | --- | --- | --- |

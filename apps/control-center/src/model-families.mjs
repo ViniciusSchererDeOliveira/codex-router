@@ -8,13 +8,6 @@ function withoutProviderQualifier(value) {
 
 export function modelFamilyName(model) {
   const name = withoutProviderQualifier(model?.displayName || model?.slug);
-  // OpenCode exposed Ox Alpha under this opaque preview id before the router
-  // shipped a canonical display name. A stale local entry can still arrive in
-  // a mixed-version snapshot, so group it with Ox instead of painting a second
-  // family while the backend migration catches up.
-  if (model?.slug === "opencode-free/x-preview-f-free" || name === "Ox Alpha Free") {
-    return "Ox Alpha";
-  }
   return name;
 }
 

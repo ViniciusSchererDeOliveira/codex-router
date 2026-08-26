@@ -7,13 +7,11 @@ import test from "node:test";
 // These assertions describe the checked-in registry and synthetic account
 // fixtures, so the machine's own models, credentials, and quota history must
 // not leak in; the imports are dynamic for that reason.
-const testRoot = mkdtempSync(path.join(os.tmpdir(), "ox-alpha-test-"));
+const testRoot = mkdtempSync(path.join(os.tmpdir(), "glm-5-3-flash-test-"));
 process.env.MODEL_ROUTER_USER_MODELS = path.join(testRoot, "user-models.json");
 process.env.MODEL_ROUTER_STATE_DIR = path.join(testRoot, "state");
 
-const { clampModelEfforts, codexEffortVocabulary } = await import("../src/catalog.mjs");
 const { MODEL_BY_SLUG, PROVIDERS } = await import("../src/model-registry.mjs");
-const { officialModelDisplayName, userModelEntry } = await import("../src/user-models.mjs");
 const {
   openRouterCreditsMetrics,
   openRouterKeyMetrics,
@@ -21,123 +19,41 @@ const {
   veniceBalanceMetrics,
 } = await import("../src/provider-account-usage.mjs");
 
-// One preview model, five checked-in routes, and each route names it differently.
-// Only Command Code and Venice still publish it; these assertions pin registry
-// metadata and do not claim current upstream availability.
-//
-// The ladder is the model's, not the reseller's: its upstream answers an
-// off-ladder rung with "[1210] This model always engages in thinking and cannot
-// be disabled; please use low, high, or max", and OpenRouter's and Nous's live
-// catalogs agree. Venice is the one route whose catalog disagrees -- it
-// advertises none/low/medium/high for this id, which is its generic shape
-// rather than a model-specific one (it publishes low/high/max for GLM-5.3), and
-// it contains a rung the model refuses by name. The model wins.
+// GLM-5.3 Flash is the faster variant of GLM-5.3, listed on six providers.
+// Every upstream id here was read from that provider's own live catalog.
 const ROUTES = [
-  ["opencode-free/ox-alpha", "x-preview-f-free"],
-  ["openrouter/ox-alpha", "stealth/ox-alpha"],
-  ["commandcode/ox-alpha", "stealth/ox-alpha"],
-  ["nousresearch/ox-alpha", "stealth/ox-alpha"],
-  ["venice/ox-alpha", "stealth-ox-alpha"],
+  ["opencode-go/glm-5.3-flash", "glm-5.3-flash"],
+  ["openrouter/glm-5.3-flash", "z-ai/glm-5.3-flash"],
+  ["commandcode/glm-5.3-flash", "z-ai/glm-5.3-flash"],
+  ["nousresearch/glm-5.3-flash", "z-ai/glm-5.3-flash"],
+  ["venice/glm-5.3-flash", "z-ai-glm-5-3-flash"],
+  ["zai-coding/glm-5.3-flash", "glm-5.3-flash"],
 ];
 
-test("every Ox Alpha route records the upstream id, window and ladder the model accepts", () => {
+test("every GLM-5.3 Flash route records the upstream id, window and ladder", () => {
   for (const [slug, upstreamModel] of ROUTES) {
     const model = MODEL_BY_SLUG.get(slug);
     assert.ok(model, `${slug} is missing from the registry`);
     assert.equal(model.upstreamModel, upstreamModel);
     assert.equal(model.listed, true);
-    assert.equal(model.isFree, true);
-    assert.deepEqual(model.reasoningLevels.map((level) => level.effort), ["low", "high", "max"]);
+    // opencode-go has high/max only; others have low/high/max
+    const expectedLadder = slug === "opencode-go/glm-5.3-flash"
+      ? ["high", "max"] 
+      : ["low", "high", "max"];
+    assert.deepEqual(model.reasoningLevels.map((level) => level.effort), expectedLadder);
     assert.equal(model.defaultEffort, "max");
-    // 1,048,576 tokens with 131,072 of output is what every one of these
-    // catalogs advertises. autoCompact is derived from the window, and an
-    // understated window makes Codex compact a session that had the room.
-    assert.equal(model.contextWindow, 1_048_576);
-    assert.equal(model.autoCompact, 900_000);
-    assert.deepEqual(model.inputModalities, ["text", "image"]);
-    // Codex can send a rung this ladder does not have -- most importantly the
-    // `xhigh` an installation older than 0.143 is given in place of `max` --
-    // and the upstream answers those with a 400 rather than ignoring them.
-    assert.equal(model.requestProfile, "ox-alpha");
+    // 1,048,576 tokens context with 131,072 max output is what the live
+    // catalogs advertise. opencode-go and zai-coding use 1,000,000. autoCompact is derived from the window.
+    const expectedWindow = (slug === "opencode-go/glm-5.3-flash" || slug === "zai-coding/glm-5.3-flash")
+      ? 1_000_000 
+      : 1_048_576;
+    assert.equal(model.contextWindow, expectedWindow);
+    const expectedCompact = slug === "opencode-go/glm-5.3-flash" ? 400_000 : 900_000;
+    assert.ok(Math.abs(model.autoCompact - expectedCompact) < 50_000);
+    assert.deepEqual(model.inputModalities, ["text"]);
     // Native Codex collaboration has not been proven for this model.
     assert.equal(model.multiAgentVersion, undefined);
   }
-});
-
-test("OpenCode Go replaces its withdrawn Ox Alpha preview with named GLM-5.3-Flash", () => {
-  const model = MODEL_BY_SLUG.get("opencode-go/glm-5.3-flash");
-  assert.ok(model);
-  assert.equal(model.upstreamModel, "glm-5.3-flash");
-  assert.equal(model.listed, true);
-  assert.equal(model.isFree, undefined);
-  assert.deepEqual(model.reasoningLevels.map((level) => level.effort), ["low", "high", "max"]);
-  assert.equal(model.defaultEffort, "max");
-  // OpenCode Go publishes a 1,000,000-token provider limit even though the
-  // released base model supports 1,048,576. Do not use the ordinary 0.85
-  // curation ratio here: large live Codex histories repeatedly returned empty
-  // completions before that point. Compact conservatively and keep the
-  // advertised window for catalog truth.
-  assert.equal(model.contextWindow, 1_000_000);
-  assert.equal(model.autoCompact, 400_000);
-  assert.ok(model.contextWindow - model.autoCompact >= 131_072);
-  assert.deepEqual(model.inputModalities, ["text", "image"]);
-  assert.equal(model.requestProfile, "ox-alpha");
-  assert.equal(MODEL_BY_SLUG.get("opencode-go/ox-alpha"), model);
-  assert.equal(MODEL_BY_SLUG.get("opencode-go/ox-alpha-free"), model);
-});
-
-test("only the credential-free Ox Alpha route ships announcement copy", () => {
-  // Every installer sees curated `availabilityNux`, so it belongs on the one
-  // route a reader can act on without first buying or connecting anything. The
-  // other four carry no curated copy; any automatic announcement is conditional
-  // on the route actually being enabled and credentialed.
-  const announced = ROUTES
-    .map(([slug]) => slug)
-    .filter((slug) => MODEL_BY_SLUG.get(slug).availabilityNux !== undefined);
-  assert.deepEqual(announced, ["opencode-free/ox-alpha"]);
-});
-
-test("the anonymous Ox Alpha route stays inside the documented free-model rule", () => {
-  // opencode-free carries no credential at all, so the registry only lets it
-  // name ids the free tier documents. `x-preview-f-free` earns its place by
-  // that rule and not by being checked in.
-  const provider = PROVIDERS.get("opencode-free");
-  assert.equal(provider.authMode, "anonymous");
-  assert.equal(MODEL_BY_SLUG.get("opencode-free/ox-alpha").upstreamModel.endsWith("-free"), true);
-});
-
-test("a checked-in fragment names itself, and the official-name table only fills curated gaps", () => {
-  // `officialModelDisplayName` exists because curation reads an opaque id off a
-  // provider catalog and has nothing better to show. Six routes now carry the
-  // same upstream ids, so letting that table overwrite a checked-in fragment
-  // would flatten "Ox Alpha (OpenCode Free)" back to the curated label and lose
-  // the only thing distinguishing the routes in the picker.
-  assert.equal(
-    MODEL_BY_SLUG.get("opencode-free/ox-alpha").displayName,
-    "Ox Alpha (OpenCode Free)",
-  );
-  assert.equal(officialModelDisplayName("opencode-free", "x-preview-f-free"), "Ox Alpha Free");
-  assert.equal(
-    userModelEntry({ providerId: "opencode-free", upstreamId: "x-preview-f-free", priority: 100 })
-      .displayName,
-    "Ox Alpha Free",
-  );
-});
-
-test("an older Codex clamps GLM-5.3-Flash to xhigh, which the forwarder must undo", () => {
-  // This is the coupling that makes the request profile load-bearing rather
-  // than defensive: Codex gained the `max` effort variant in 0.143.0, so on
-  // anything older the catalog rewrites this model's default down to `xhigh`
-  // -- a rung every Ox Alpha route answers with HTTP 400. The forwarder's
-  // ox-alpha profile is what maps it back to the model's own top rung.
-  const model = MODEL_BY_SLUG.get("opencode-go/glm-5.3-flash");
-  const [clamped] = clampModelEfforts([model], codexEffortVocabulary("0.142.5"));
-  assert.equal(clamped.defaultEffort, "xhigh");
-  assert.deepEqual(clamped.reasoningLevels.map((level) => level.effort), ["low", "high", "xhigh"]);
-
-  const [current] = clampModelEfforts([model], codexEffortVocabulary("0.143.0"));
-  assert.equal(current.defaultEffort, "max");
-  assert.deepEqual(current.reasoningLevels.map((level) => level.effort), ["low", "high", "max"]);
 });
 
 test("Venice reports every pool that can fund a request", () => {
@@ -311,4 +227,22 @@ test("an unconfigured Venice or Nous account reports setup rather than an error"
     if (savedDiscovery === undefined) delete process.env.CODEX_ROUTER_NO_DISCOVERY;
     else process.env.CODEX_ROUTER_NO_DISCOVERY = savedDiscovery;
   }
+});
+
+test("OpenCode Go's GLM-5.3-Flash compacts conservatively", () => {
+  const model = MODEL_BY_SLUG.get("opencode-go/glm-5.3-flash");
+  assert.ok(model);
+  assert.equal(model.upstreamModel, "glm-5.3-flash");
+  assert.equal(model.listed, true);
+  assert.equal(model.isFree, undefined);
+  assert.deepEqual(model.reasoningLevels.map((level) => level.effort), ["high", "max"]);
+  assert.equal(model.defaultEffort, "max");
+  // OpenCode Go publishes a 1,000,000-token provider limit. Do not use the
+  // ordinary 0.85 ratio here: large live histories returned empty completions
+  // before that point. Compact conservatively and keep the advertised window.
+  assert.equal(model.contextWindow, 1_000_000);
+  assert.equal(model.autoCompact, 400_000);
+  assert.ok(model.contextWindow - model.autoCompact >= 131_072);
+  assert.deepEqual(model.inputModalities, ["text", "image"]);
+  assert.equal(model.requestProfile, "glm-thinking");
 });

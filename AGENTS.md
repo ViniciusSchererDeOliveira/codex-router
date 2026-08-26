@@ -75,9 +75,9 @@ user.
    credentials already exist, use
    `configured` rather than showing providers that cannot authenticate.
    `openrouter`, `venice`, and `nousresearch` behave the same way with one
-   exception: each ships the single checked-in Ox Alpha entry described under
-   "Ox Alpha became GLM-5.3-Flash on OpenCode Go" below, so their picker is not empty after the
-   key is stored, and everything else on them still has to be curated.
+   exception: each ships the single checked-in GLM-5.3 Flash entry, so their
+   picker is not empty after the key is stored, and everything else on them
+   still has to be curated.
    `venice` and `nousresearch` are ordinary API-key providers — Venice keys come
    from venice.ai/settings/api and Nous Portal keys from
    portal.nousresearch.com; neither has a router-managed CLI sign-in path, and
@@ -88,8 +88,8 @@ user.
    the former and is never selected or curated separately),
    but they need no credential only for their documented free model subsets.
    `kilo-free` is catalog-only and needs `bin/curate-models kilo-free` after
-   selection; `opencode-free` ships only the Ox Alpha entry and needs curation
-   for anything else. `custom` is selectable on the
+   selection; `opencode-free` is now catalog-only as well after the Ox Alpha
+   preview withdrawal. `custom` is selectable on the
    same terms and is a container whose models each name their own endpoint, so
    enabling it asks for nothing and curating it is unnecessary. All three must
    be selected explicitly; never select one on the user's behalf just because
@@ -1160,85 +1160,29 @@ rule itself permits — `x-preview-f-free` earns its place by ending in `-free`,
 the same test `anonymousModelAllowed` applies to everything else, so removing
 the fragment would not make the id any less routable.
 
-## Ox Alpha became GLM-5.3-Flash on OpenCode Go
+## GLM-5.3 Flash ships on six providers
 
-Z.ai revealed the OpenCode Go Ox Alpha preview as GLM-5.3-Flash. OpenCode Go
-withdrew `ox-alpha-free` and now publishes `glm-5.3-flash` on Chat Completions.
-The checked-in route is `opencode-go/glm-5.3-flash`; the old public slug
-`opencode-go/ox-alpha` is a static migration alias so existing picker state and
-callers move to the live route instead of reaching a withdrawn upstream ID. The
-older curation slug `opencode-go/ox-alpha-free` is an alias to the same target.
-OpenCode Go publishes a 1,000,000-token context and 131,072-token output limit
-for the named route. Store the provider limit rather than the base model's
-1,048,576 architectural maximum. The ordinary 0.85 compaction ratio is not
-safe for this route in Codex: large live multimodal histories repeatedly
-returned empty completions before that point. Compact conservatively at 400,000
-while retaining the provider's advertised context as catalog metadata. This
-does not bypass provider moderation; a rejected remote compaction remains a
-provider limitation, not a router or stream crash.
+GLM-5.3 Flash is checked in for OpenCode Go (via #462), OpenRouter, Nous
+Research Portal, Command Code, Venice, and Z.AI Coding Plan. Each route follows
+the existing full `glm-5.3` pin for schema, picker metadata, and the
+`glm-thinking` request profile.
 
-Five other checked-in routes preserve the preview under the Ox Alpha name:
-`x-preview-f-free` on `opencode-free`, `stealth/ox-alpha` on `openrouter`,
-`commandcode` and `nousresearch`, and `stealth-ox-alpha` on `venice`. As of
-2026-08-26, only Command Code and Venice still publish it; OpenCode Free,
-OpenRouter, and Nous Research have withdrawn it, although the stale checked-in
-routes remain until their registry treatment is settled separately. Every ID
-was originally read from that provider's own live `/models` response;
-`test/ox-alpha.test.mjs` pins the repository values against local drift. A
-static test cannot discover a later upstream rename or withdrawal.
+**Reasoning levels:** Most routes support `low`/`high`/`max`. OpenCode Go
+supports `high`/`max` only. Z.AI Coding Plan supports `low`/`high`/`max`.
 
-The recorded effort ladder is `low`/`high`/`max` on all five checked-in preview
-routes and the named OpenCode Go replacement, and it is the **model's** ladder
-rather than any reseller's. The model always thinks, and its upstream
-refuses an off-ladder rung by name:
+**Context windows:** OpenCode Go and Z.AI Coding advertise 1,000,000 tokens.
+The other four advertise 1,048,576 tokens (the architectural maximum). OpenCode
+Go compacts conservatively at 400,000 after large live multimodal histories
+repeatedly returned empty completions before the generic 85% point.
 
-```
-HTTP 400 — [1210] This model always engages in thinking and cannot be
-disabled; please use low, high, or max
-```
+**Upstream IDs:**
+- OpenCode Go: `glm-5.3-flash`
+- OpenRouter, Nous, Command Code: `z-ai/glm-5.3-flash`
+- Venice: `z-ai-glm-5-3-flash` (Venice-specific naming)
+- Z.AI Coding: `glm-5.3-flash`
 
-`none`, `off`, `minimal`, `medium`, `xhigh`, `ultra`, `default` and `auto` all
-draw that response; `low`, `high` and `max` return 200 with monotonically rising
-reasoning-token counts, so the three rungs are real behavior and not just enum
-validation.
-
-**Venice is the one catalog that disagrees, and it is the one to distrust.** It
-advertises `none`/`low`/`medium`/`high` for this id. That is not a reseller
-knowing something the others do not: it is Venice's most generic shape, shared
-with eight unrelated models, and it contains `none` — a rung this model refuses
-by name. Venice is perfectly capable of publishing a model-specific ladder when
-it has one (`low`/`high`/`max` for GLM-5.3, `none`/`high`/`max` for GLM-5.2), so
-the generic shape here reads as an unverified onboarding default. OpenRouter's
-live API, Nous Portal's live API, and models.dev for `openrouter`,
-`opencode-go`, `opencode`, `kilo` and `nano-gpt` all say `low`/`high`/`max`.
-This is the standing exception to "the provider's own catalog decides": when a
-reseller's advertised ladder contains a rung the model itself rejects by name,
-the model wins, and the disagreement gets written down — here and in the
-fragment's `description` — rather than silently resolved.
-
-The ladder also collides with the effort clamp in `src/catalog.mjs`. Codex
-gained the `max` variant in 0.143.0, so on anything older the catalog rewrites
-this model's default down to `xhigh` — a rung every route refuses. The
-`ox-alpha` request profile in `src/api-forwarder.mjs` is what closes that loop:
-it clamps whatever Codex sent onto the rungs the model's own registry entry
-declares, so `xhigh` and `ultra` land back on `max`, and `medium` and `minimal`
-land on `low`. An absent effort stays absent so the upstream's own default
-applies, and `thinking` is always stripped because none of these routes document
-it and it cannot be switched off anyway.
-
-The five checked-in preview routes recorded a 1,048,576-token window with
-131,072 of output; the named OpenCode Go replacement advertises 1,000,000 with
-the same output limit. Forced `tool_choice: "required"` is observed to work
-everywhere, so no route needs `auto-tool-choice`. Only
-`opencode-free/ox-alpha` carries curated
-`availabilityNux`: it is the one route with no credential to buy first, and
-curated announcement copy is seen by every installer. The other four rely on the
-automatic seven-day announcement, which fires only once their provider is
-actually credentialed and enabled.
-
-Free is a preview, not a property. If the providers start billing it, the
-honest change is to drop `isFree` and rewrite the descriptions, not to leave a
-"Free" badge on a metered model.
+All routes use `glm-thinking` request profile for effort clamping.
+Forced `tool_choice: "required"` is observed to work on all routes.
 
 ## A provider whose models each name their own endpoint
 

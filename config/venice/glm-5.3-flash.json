@@ -2,13 +2,13 @@
   "version": 1,
   "models": [
     {
-      "slug": "nousresearch/ox-alpha",
-      "gatewayModel": "nousresearch-ox-alpha",
-      "upstreamModel": "stealth/ox-alpha",
-      "provider": "nousresearch",
+      "slug": "venice/glm-5.3-flash",
+      "gatewayModel": "venice-glm-5-3-flash",
+      "upstreamModel": "z-ai-glm-5-3-flash",
+      "provider": "venice",
       "listed": true,
-      "displayName": "Ox Alpha (Nous Research)",
-      "description": "Ox Alpha through the Nous Portal inference API, the endpoint the Hermes agent uses. Priced at zero during the stealth preview.",
+      "displayName": "GLM-5.3 Flash (Venice)",
+      "description": "GLM-5.3 Flash through Venice. Faster variant optimized for low latency with 1M context.",
       "priority": 91,
       "defaultEffort": "max",
       "reasoningLevels": [
@@ -28,12 +28,9 @@
       "contextWindow": 1048576,
       "autoCompact": 900000,
       "inputModalities": [
-        "text",
-        "image"
+        "text"
       ],
-      "isFree": true,
-      "requestProfile": "ox-alpha",
-      "compHash": "nousresearch-ox-alpha-v1"
+      "compHash": "venice-glm-5-3-flash-v1"
     }
   ]
 }

@@ -2,22 +2,15 @@
 
 ## Unreleased
 
-- **OpenCode Go's Ox Alpha preview has graduated to GLM-5.3-Flash.** The
-  authenticated catalog now publishes `glm-5.3-flash` and reports the old
-  `ox-alpha-free` ID unavailable, matching OpenCode's current Chat Completions
-  table and Z.ai's reveal. The picker now exposes
-  `opencode-go/glm-5.3-flash` as the named, metered 1M-context multimodal model;
-  existing `opencode-go/ox-alpha` and locally curated
-  `opencode-go/ox-alpha-free` selections migrate through static aliases,
-  and the preview's measured low/high/max effort normalization remains attached
-  to the named route. Codex now compacts this route conservatively at 400K after
-  large live multimodal histories returned empty completions before the generic
-  85% point of its advertised 1M window.
-
-- **README: Ox Alpha availability updated.** The preview was withdrawn from
-  OpenCode Zen, OpenCode Go, OpenRouter, and Nous Research as of 2026-08-26.
-  It remains available on Command Code and Venice. The checked-in
-  `opencode-free/ox-alpha` pin is now stale versus the live catalog.
+- **GLM-5.3 Flash ships on six providers.** OpenCode Go's Ox Alpha preview
+  graduated to `glm-5.3-flash` (PR #462), and five additional providers now ship
+  GLM-5.3 Flash: OpenRouter, Command Code, Nous Research, Venice, and Z.AI
+  Coding Plan. Each uses the upstream ID that provider's live catalog
+  advertises (`glm-5.3-flash` for Go and Z.AI Coding; `z-ai/glm-5.3-flash` for
+  OpenRouter, Command Code, Nous; `z-ai-glm-5-3-flash` for Venice). Context
+  windows: 1M for Go and Z.AI Coding, 1,048,576 for the others. Reasoning
+  levels: `low/high/max` on most routes; Go supports `high/max` only. All Ox
+  Alpha pins have been removed.
 
 ## 0.5.0
 

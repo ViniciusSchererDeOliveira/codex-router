@@ -2,13 +2,13 @@
   "version": 1,
   "models": [
     {
-      "slug": "openrouter/ox-alpha",
-      "gatewayModel": "openrouter-ox-alpha",
-      "upstreamModel": "stealth/ox-alpha",
-      "provider": "openrouter",
+      "slug": "commandcode/glm-5.3-flash",
+      "gatewayModel": "commandcode-glm-5-3-flash",
+      "upstreamModel": "z-ai/glm-5.3-flash",
+      "provider": "commandcode",
       "listed": true,
-      "displayName": "Ox Alpha (OpenRouter)",
-      "description": "Ox Alpha through OpenRouter. Priced at zero during the stealth preview; the preview and its limits can end without notice.",
+      "displayName": "GLM-5.3 Flash (Command Code)",
+      "description": "GLM-5.3 Flash through the Command Code Provider API. Faster variant with 1M context window.",
       "priority": 93,
       "defaultEffort": "max",
       "reasoningLevels": [
@@ -28,12 +28,9 @@
       "contextWindow": 1048576,
       "autoCompact": 900000,
       "inputModalities": [
-        "text",
-        "image"
+        "text"
       ],
-      "isFree": true,
-      "requestProfile": "ox-alpha",
-      "compHash": "openrouter-ox-alpha-v1"
+      "compHash": "commandcode-glm-5-3-flash-v1"
     }
   ]
 }
