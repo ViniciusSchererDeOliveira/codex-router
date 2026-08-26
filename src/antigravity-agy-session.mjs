@@ -8,6 +8,7 @@ const KEYCHAIN_SERVICE = "gemini";
 const KEYCHAIN_PREFIX = "go-keyring-base64:";
 const AGY_REFRESH_PROMPT = "Reply with OK only.";
 const AGY_REFRESH_TIMEOUT_MS = 45_000;
+const AGY_KEYCHAIN_TIMEOUT_MS = 5_000;
 const AGY_ENVIRONMENT_KEYS = [
   "HOME",
   "LANG",
@@ -22,6 +23,17 @@ const AGY_ENVIRONMENT_KEYS = [
   "XDG_CACHE_HOME",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
+];
+const AGY_PROXY_ENVIRONMENT_KEYS = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "NODE_USE_ENV_PROXY",
 ];
 
 export function agyRefreshArguments() {
@@ -80,9 +92,32 @@ export function agyProcessEnvironment(executable) {
   for (const key of AGY_ENVIRONMENT_KEYS) {
     if (typeof process.env[key] === "string" && process.env[key]) environment[key] = process.env[key];
   }
+  // The supervisor restores the proxy environment recorded at install time
+  // before it starts any children. Preserve that exact decision for agy too,
+  // including NODE_USE_ENV_PROXY=0 and deliberately empty proxy variables.
+  for (const key of AGY_PROXY_ENVIRONMENT_KEYS) {
+    if (typeof process.env[key] === "string") environment[key] = process.env[key];
+  }
   const directory = path.dirname(executable);
   environment.PATH = [directory, environment.PATH || "/usr/bin:/bin"].join(path.delimiter);
   return environment;
+}
+
+export function readAgyKeychainPassword({
+  execFile = execFileSync,
+  timeoutMs = AGY_KEYCHAIN_TIMEOUT_MS,
+} = {}) {
+  return execFile(
+    "/usr/bin/security",
+    ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 1024 * 1024,
+    },
+  ).trim();
 }
 
 function metadata() {
@@ -102,11 +137,7 @@ export function readAgySession({ now = Date.now, includeExpired = false } = {}) 
   if (!enabled()) return undefined;
   let raw;
   try {
-    raw = execFileSync(
-      "/usr/bin/security",
-      ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
+    raw = readAgyKeychainPassword();
   } catch {
     return undefined;
   }

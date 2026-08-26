@@ -31,7 +31,10 @@ import {
   redactProxyCredentials,
 } from "./proxy-environment.mjs";
 import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
-import { startAgySessionKeeper } from "./antigravity-agy-keeper.mjs";
+import {
+  antigravityAgyProcessPlan,
+  startAgySessionKeeper,
+} from "./antigravity-agy-keeper.mjs";
 
 // Before anything reads the environment or spawns a child. A service manager
 // hands this process the proxy the install recorded; a shell hands it whatever
@@ -281,14 +284,20 @@ async function main() {
   const kimiForwarder = run(process.execPath, [path.join(SOURCE_ROOT, "src", "oauth-forwarder.mjs")]);
   const api = run(process.execPath, [path.join(SOURCE_ROOT, "src", "api-forwarder.mjs")]);
   const grokForwarder = run(process.execPath, [path.join(SOURCE_ROOT, "src", "grok-oauth-forwarder.mjs")]);
-  const antigravityForwarder = antigravityOAuthStatus().configured
-    ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "antigravity-oauth-forwarder.mjs")])
-    : undefined;
-  if (antigravityForwarder && process.env.ANTIGRAVITY_SESSION_SOURCE === "agy") {
+  const antigravityPlan = antigravityAgyProcessPlan({
+    configured: antigravityOAuthStatus().configured,
+  });
+  // Explicit agy mode owns refresh independently of whether the credential is
+  // fresh at this instant. Otherwise an expired token prevents the keeper that
+  // would renew it from ever starting after a service restart.
+  if (antigravityPlan.startKeeper) {
     agySessionKeeper = startAgySessionKeeper({
       log: (message) => console.error(`[${FRONTEND.service}] ${message}`),
     });
   }
+  const antigravityForwarder = antigravityPlan.startForwarder
+    ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "antigravity-oauth-forwarder.mjs")])
+    : undefined;
   const devinForwarder = devinCliRouted
     ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "devin-cli-forwarder.mjs")])
     : undefined;
