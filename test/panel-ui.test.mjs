@@ -25,15 +25,15 @@ import { availableLanguages, getLanguage, setLanguage, t, translationKeys } from
 
 test("model picker search matches names, slugs, and provider labels", () => {
   const model = {
-    displayName: "Ox Alpha (OpenCode Free)",
-    slug: "opencode-free/ox-alpha",
-    provider: "opencode-free",
+    displayName: "GLM-5.3 Flash (opencode Go)",
+    slug: "opencode-go/glm-5.3-flash",
+    provider: "opencode-go",
   };
-  assert.equal(modelMatchesQuery(model, "ox alpha", "OpenCode Free"), true);
-  assert.equal(modelMatchesQuery(model, "opencode-free/ox", "OpenCode Free"), true);
-  assert.equal(modelMatchesQuery(model, "OpenCode", "OpenCode Free"), true);
-  assert.equal(modelMatchesQuery(model, "venice", "OpenCode Free"), false);
-  assert.equal(modelMatchesQuery(model, "   ", "OpenCode Free"), true);
+  assert.equal(modelMatchesQuery(model, "5.3 flash", "opencode Go"), true);
+  assert.equal(modelMatchesQuery(model, "opencode-go/glm", "opencode Go"), true);
+  assert.equal(modelMatchesQuery(model, "opencode", "opencode Go"), true);
+  assert.equal(modelMatchesQuery(model, "venice", "opencode Go"), false);
+  assert.equal(modelMatchesQuery(model, "   ", "opencode Go"), true);
 });
 
 test("desktop usage series fills missing local calendar days", () => {
