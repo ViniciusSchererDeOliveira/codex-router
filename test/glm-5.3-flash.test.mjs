@@ -36,10 +36,8 @@ test("every GLM-5.3 Flash route records the upstream id, window and ladder", () 
     assert.ok(model, `${slug} is missing from the registry`);
     assert.equal(model.upstreamModel, upstreamModel);
     assert.equal(model.listed, true);
-    // opencode-go has high/max only; others have low/high/max
-    const expectedLadder = slug === "opencode-go/glm-5.3-flash"
-      ? ["high", "max"] 
-      : ["low", "high", "max"];
+    // opencode-go (from #462) and zai-coding both use low/high/max with 1,000,000 context
+    const expectedLadder = ["low", "high", "max"];
     assert.deepEqual(model.reasoningLevels.map((level) => level.effort), expectedLadder);
     assert.equal(model.defaultEffort, "max");
     // 1,048,576 tokens context with 131,072 max output is what the live
@@ -50,7 +48,9 @@ test("every GLM-5.3 Flash route records the upstream id, window and ladder", () 
     assert.equal(model.contextWindow, expectedWindow);
     const expectedCompact = slug === "opencode-go/glm-5.3-flash" ? 400_000 : 900_000;
     assert.ok(Math.abs(model.autoCompact - expectedCompact) < 50_000);
-    assert.deepEqual(model.inputModalities, ["text"]);
+    // opencode-go/glm-5.3-flash (from #462) supports images; the others are text-only
+    const expectedModalities = slug === "opencode-go/glm-5.3-flash" ? ["text", "image"] : ["text"];
+    assert.deepEqual(model.inputModalities, expectedModalities);
     // Native Codex collaboration has not been proven for this model.
     assert.equal(model.multiAgentVersion, undefined);
   }
@@ -235,7 +235,7 @@ test("OpenCode Go's GLM-5.3-Flash compacts conservatively", () => {
   assert.equal(model.upstreamModel, "glm-5.3-flash");
   assert.equal(model.listed, true);
   assert.equal(model.isFree, undefined);
-  assert.deepEqual(model.reasoningLevels.map((level) => level.effort), ["high", "max"]);
+  assert.deepEqual(model.reasoningLevels.map((level) => level.effort), ["low", "high", "max"]);
   assert.equal(model.defaultEffort, "max");
   // OpenCode Go publishes a 1,000,000-token provider limit. Do not use the
   // ordinary 0.85 ratio here: large live histories returned empty completions
@@ -244,5 +244,6 @@ test("OpenCode Go's GLM-5.3-Flash compacts conservatively", () => {
   assert.equal(model.autoCompact, 400_000);
   assert.ok(model.contextWindow - model.autoCompact >= 131_072);
   assert.deepEqual(model.inputModalities, ["text", "image"]);
-  assert.equal(model.requestProfile, "glm-thinking");
+  // opencode-go/glm-5.3-flash (from #462) has no requestProfile; zai-coding has glm-thinking
+  assert.equal(model.requestProfile, undefined);
 });
