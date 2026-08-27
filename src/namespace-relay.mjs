@@ -314,11 +314,11 @@ export function repairToolSchemaRoot(
   tool,
   { nonRecursive = false, inlineForeignRefs: inlineRefs = false } = {},
 ) {
-  // Moonshot alone rejects a `$ref` that does not point into `#/$defs/`, so
-  // only the route that asks for it pays the inlining -- every other provider
-  // keeps the exact wire payload it has today. `inlineForeignRefs` returns a
-  // schema with no foreign ref by identity, so even on that route an ordinary
-  // toolset is not copied.
+  // Moonshot alone rejects a `$ref` that does not point into `#/$defs/` or one
+  // that carries sibling keywords, so only the route that asks for it pays the
+  // inlining -- every other provider keeps the exact wire payload it has today.
+  // The normalizer returns a clean schema by identity, so an ordinary toolset
+  // is not copied.
   const relaySchema = (schema) => {
     const repaired = providerToolSchema(schema);
     return inlineRefs ? inlineForeignRefs(repaired) : repaired;

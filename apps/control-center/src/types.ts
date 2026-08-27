@@ -247,6 +247,33 @@ export interface RouterSnapshot {
   chatgptSession?: ChatGptSessionStatus;
 }
 
+export interface RouterDashboardProvider {
+  id: string;
+  displayName: string;
+  kind: string;
+  enabled: boolean;
+  ownedBy?: string;
+  authMode?: string;
+}
+
+export interface RouterDashboardModel {
+  slug: string;
+  displayName: string;
+  provider: string;
+  enabled: boolean;
+  visible: boolean;
+  native?: boolean;
+  isFree?: boolean;
+}
+
+export interface RouterDashboardSnapshot {
+  version: number;
+  source: string;
+  enabledProviders: string[];
+  providers: RouterDashboardProvider[];
+  models: RouterDashboardModel[];
+}
+
 export interface ChatGptSessionStatus {
   sharing: "enabled" | "disabled";
   session: "usable" | "expired" | "unavailable";
@@ -263,6 +290,8 @@ export interface RouterCatalogSnapshot {
   knownModels?: RouterKnownModel[];
   picker: { hidden: string[]; visible?: string[]; hasExplicitVisibility?: boolean; path?: string };
   subagents: SubagentSettings;
+  /** Metadata-only route dashboard. No credentials, endpoints, or sessions. */
+  dashboard?: RouterDashboardSnapshot;
 }
 
 export interface ProviderSetup {

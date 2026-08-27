@@ -588,23 +588,20 @@ function normalizeAutoToolChoice(payload, route) {
 function needsZenFreeToolCompatibility(route) {
   const providerId = providerForModel(route)?.id;
   return (
-    (providerId === "opencode-free" && route.upstreamModel === "x-preview-f-free") ||
     (providerId === "opencode-free-responses" &&
       route.upstreamModel === "muse-spark-1.2-contributor-free")
   );
 }
 
-// Moonshot accepts a `$ref` only when it points into `#/$defs/` and rejects the
-// whole request -- not the one tool -- over any other pointer, including the
-// sibling-property pointers Codex App connector tools ship: Wego
-// `_flights_search` points `inboundTotalDurationRange` at its own sibling
-// `priceRange` (issue #353). Scope this to the provider the rejection was
-// reproduced on. The Moonshot platform keys (`kimi-api`, `kimi-api-cn`) reach a
-// different front end and were never observed rejecting these schemas, and
-// inlining for everyone would rewrite the wire payload for providers that work
-// today.
-function needsMoonshotDefsOnlyRefs(route) {
-  return providerForModel(route)?.id === "kimi-oauth";
+// Moonshot accepts only pure `$ref` pointers into `#/$defs/`, and rejects the
+// whole request -- not the one tool -- over any other pointer (issue #353) or a
+// definition reference carrying sibling keywords. The OAuth and platform-key
+// routes are separate products, but their first-party validators share this
+// schema flavor. Keep the rewrite off every non-Moonshot provider.
+const MOONSHOT_PROVIDER_IDS = new Set(["kimi-oauth", "kimi-api", "kimi-api-cn"]);
+
+function needsMoonshotSchemaCompatibility(route) {
+  return MOONSHOT_PROVIDER_IDS.has(providerForModel(route)?.id);
 }
 
 function zenFreeCompatibleInput(input, route) {
@@ -2321,7 +2318,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput, tokenMax
     tools = repairToolSchemaRoots(tools, { nonRecursive: true });
     tools = stripSearchContentTypes(tools);
   }
-  if (needsMoonshotDefsOnlyRefs(route)) {
+  if (needsMoonshotSchemaCompatibility(route)) {
     // After the namespace flattening above, so the connector tools Codex ships
     // inside `codex_app` are repaired in the shape Moonshot actually receives.
     tools = repairToolSchemaRoots(tools, { inlineForeignRefs: true });
@@ -3036,12 +3033,11 @@ async function handleResponses(request, response, requestUrl) {
       let envelopeCompat = route
         ? zaiResponsesCompatTransform(route.provider, contentType)
         : undefined;
-      // LiteLLM's Ox Chat -> Responses bridge can start assistant text after
-      // reasoning without its message envelope. Keep that repair exact.
+      // Z.ai Responses streams from GLM-5.3 can start assistant text after
+      // reasoning without its message envelope. Keep that repair provider-scoped.
       if (
         !envelopeCompat &&
-        route?.provider === "opencode-free" &&
-        route.upstreamModel === "x-preview-f-free" &&
+        route?.provider === "zai-coding" &&
         String(contentType).toLowerCase().includes("text/event-stream")
       ) {
         envelopeCompat = new ZaiResponsesCompatTransform();
@@ -3536,6 +3532,16 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
       writeIdleNoProviderError(response);
       return;
     }
+    const headers = nativeHeaders(request);
+    if (!hasNativeSession(headers)) {
+      writeJson(response, 401, {
+        error: {
+          type: "native_session_required",
+          message: "This native OpenAI route requires an active ChatGPT/Codex session.",
+        },
+      });
+      return;
+    }
     const encoded = await readRequestBody(request);
     const body = decodeBody(encoded, request.headers["content-encoding"]);
     const payload = await parseBodyAsync(body);
@@ -3547,7 +3553,6 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
       ...activityMetadataFromHeaders(request.headers),
     });
 
-    const headers = nativeHeaders(request);
     // The same slug translation the turn path does, for the same reason: these
     // endpoints normally carry their own model ("gpt-image-2", the search
     // model), but nothing stops a client from naming the picked one, and an

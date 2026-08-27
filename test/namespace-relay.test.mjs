@@ -16,7 +16,7 @@ import {
   repairToolSchemaRoots,
   stripSearchContentTypes,
 } from "../src/namespace-relay.mjs";
-import { mergeCodexAppTools } from "../src/codex-app-tools.mjs";
+import { CODEX_APP_TOOLS, mergeCodexAppTools } from "../src/codex-app-tools.mjs";
 
 function collect(stream) {
   return new Promise((resolve, reject) => {
@@ -1700,6 +1700,19 @@ function siblingRefs(value, found = []) {
   return found;
 }
 
+function refsWithSiblings(value, found = []) {
+  if (Array.isArray(value)) {
+    for (const entry of value) refsWithSiblings(entry, found);
+    return found;
+  }
+  if (!value || typeof value !== "object") return found;
+  if (typeof value.$ref === "string" && Object.keys(value).length > 1) {
+    found.push(value.$ref);
+  }
+  for (const entry of Object.values(value)) refsWithSiblings(entry, found);
+  return found;
+}
+
 test("the kimi route relays connector tools with no sibling ref left", () => {
   const { tools } = flattenNamespaceTools([connectorNamespace()]);
   const relayed = repairToolSchemaRoots(tools, { inlineForeignRefs: true });
@@ -1715,6 +1728,18 @@ test("the kimi route relays connector tools with no sibling ref left", () => {
     native.inboundTotalDurationRange.$ref,
     "#/properties/filters/properties/priceRange",
   );
+});
+
+test("the kimi route expands Codex automation definitions with sibling refs", () => {
+  const { tools } = flattenNamespaceTools(CODEX_APP_TOOLS);
+  const automation = tools.find((tool) => tool.name.endsWith("__automation_update"));
+  assert.ok(automation);
+  assert.notDeepEqual(refsWithSiblings(automation.parameters), []);
+
+  const relayed = repairToolSchemaRoots(tools, { inlineForeignRefs: true });
+  const repaired = relayed.find((tool) => tool.name.endsWith("__automation_update"));
+  assert.deepEqual(refsWithSiblings(repaired.parameters), []);
+  assert.equal(repaired.parameters.$defs.__schema0.$ref, undefined);
 });
 
 // The negative control is the point of the gate: every provider that accepts

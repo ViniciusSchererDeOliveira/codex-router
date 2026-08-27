@@ -363,6 +363,7 @@ enum RouterHindiText {
     "Current model or provider is visible in menu bar": "मेनू बार में वर्तमान मॉडल या प्रदाता दिखाई देता है",
     "Hide model name text in menu bar": "मेनू बार में मॉडल नाम टेक्स्ट छिपाएँ",
     "Menu bar icon": "मेनू बार आइकन",
+    "Router mark": "राउटर चिह्न",
     "Provider icon": "प्रदाता आइकन",
     "Activity dot": "गतिविधि बिंदु",
     "Preset icon": "प्रीसेट आइकन",

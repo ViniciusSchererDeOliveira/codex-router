@@ -45,6 +45,11 @@ import { relayCommandCodeGenerate } from "./commandcode-relay.mjs";
 import { VERSION } from "./version.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 import { zaiCacheUsageTransform } from "./zai-cache-usage.mjs";
+import {
+  createResponsesJsonTransform,
+  createResponsesStreamTransform,
+  normalizeOpenAIRequest,
+} from "./openai-adapters.mjs";
 
 installStableFetchTransport();
 
@@ -523,7 +528,7 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
-  const payload = JSON.parse(buffer.toString("utf8"));
+  let payload = JSON.parse(buffer.toString("utf8"));
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     const error = new Error("Request JSON must be an object.");
     error.status = 400;
@@ -554,6 +559,13 @@ function normalizeBody(buffer, contentType, route) {
     const error = new Error(`Model ${model.gatewayModel} does not support ${route}.`);
     error.status = 400;
     throw error;
+  }
+
+  // Responses providers get one checked boundary here. The request remains a
+  // Responses request, but legacy aliases are normalized before any provider
+  // sees it and the original payload remains available for retries.
+  if (provider.protocol === "openai-responses") {
+    payload = normalizeOpenAIRequest(payload);
   }
 
   // OpenAI Chat Completions providers place terminal usage in a final empty
@@ -811,7 +823,8 @@ function normalizeBody(buffer, contentType, route) {
     payload.thinking = { type: "adaptive" };
     payload.reasoning_split = true;
   } else if (model.requestProfile === "ox-alpha") {
-    // Ox Alpha always thinks, and every route validates reasoning_effort
+    // Ox Alpha -- now published on OpenCode Go as GLM-5.3-Flash -- always
+    // thinks, and every measured route validates reasoning_effort
     // against the rungs the model accepts -- an off-ladder value comes
     // back as HTTP 400 "This model always engages in thinking and cannot be
     // disabled" rather than being ignored. Every route accepts low/high/max;
@@ -859,7 +872,14 @@ function normalizeBody(buffer, contentType, route) {
   // endpoint answers where the request goes and what authenticates it. For
   // every provider but a per-model-endpoint one they are the same object.
   const endpoint = endpointForModel(model);
-  return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider, endpoint, payload };
+  return {
+    body: Buffer.from(JSON.stringify(payload), "utf8"),
+    model,
+    provider,
+    endpoint,
+    payload,
+    responseAdapter: provider.protocol === "openai-responses" ? "responses" : undefined,
+  };
 }
 
 function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = {}, endpoint = provider) {
@@ -1158,12 +1178,22 @@ async function handleRequest(request, response) {
   if (commandCode?.recheck && upstream.ok) {
     recordCommandCodeRoute(commandCode.id, credential.value, { providerApi: true });
   }
-  await pipeResponse(
-    upstream,
-    response,
-    undefined,
-    zaiCacheUsageTransform(normalized.provider.id, upstream.headers.get("content-type")),
-  );
+  const upstreamContentType = upstream.headers.get("content-type") || "";
+  const responsesStream = normalized.responseAdapter === "responses" &&
+    upstream.ok && upstreamContentType.toLowerCase().includes("text/event-stream");
+  const responsesJson = normalized.responseAdapter === "responses" &&
+    upstream.ok && upstreamContentType.toLowerCase().includes("application/json");
+  const transform = [
+    responsesStream ? createResponsesStreamTransform() : undefined,
+    responsesJson ? createResponsesJsonTransform() : undefined,
+    zaiCacheUsageTransform(normalized.provider.id, upstreamContentType),
+  ].filter(Boolean);
+  const denylist = transform.length
+    ? new Set([...HOP_BY_HOP_HEADERS, "content-type"])
+    : undefined;
+  if (responsesStream) response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  if (responsesJson) response.setHeader("Content-Type", "application/json; charset=utf-8");
+  await pipeResponse(upstream, response, denylist, transform);
   recordUpstreamLimits(normalized, upstream);
   if (!QUIET) {
     console.error(

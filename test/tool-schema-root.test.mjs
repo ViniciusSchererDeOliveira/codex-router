@@ -569,6 +569,122 @@ test("a $defs ref is the form Moonshot asks for and survives untouched", () => {
   assert.deepEqual(inlined.$defs, schema.$defs);
 });
 
+test("a $defs ref with sibling keywords is inlined for Moonshot", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      targetThreadId: { $ref: "#/$defs/__schema20" },
+    },
+    $defs: {
+      __schema2: { type: "string", minLength: 1 },
+      __schema20: {
+        $ref: "#/$defs/__schema2",
+        type: "string",
+        minLength: 1,
+        format: "uuid",
+        description: "Target thread UUID for heartbeat automations.",
+      },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.targetThreadId.$ref, "#/$defs/__schema20");
+  assert.deepEqual(inlined.$defs.__schema2, { type: "string", minLength: 1 });
+  assert.deepEqual(inlined.$defs.__schema20, {
+    type: "string",
+    minLength: 1,
+    format: "uuid",
+    description: "Target thread UUID for heartbeat automations.",
+  });
+  assert.deepEqual(schema.$defs.__schema20.$ref, "#/$defs/__schema2");
+});
+
+test("a decorated $defs alias chain resolves through pure aliases", () => {
+  const schema = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/decorated" } },
+    $defs: {
+      base: { type: "string", minLength: 2 },
+      alias: { $ref: "#/$defs/base" },
+      decorated: {
+        $ref: "#/$defs/alias",
+        type: "string",
+        minLength: 2,
+        format: "uuid",
+        description: "Decorated alias.",
+      },
+    },
+  };
+  const inlined = inlineForeignRefs(schema);
+  assert.equal(inlined.properties.value.$ref, "#/$defs/decorated");
+  assert.deepEqual(inlined.$defs.alias, { $ref: "#/$defs/base" });
+  assert.deepEqual(inlined.$defs.decorated, {
+    type: "string",
+    minLength: 2,
+    format: "uuid",
+    description: "Decorated alias.",
+  });
+  assert.deepEqual(schema.$defs.decorated.$ref, "#/$defs/alias");
+});
+
+test("a conflicting $defs ref sibling remains intact", () => {
+  const schema = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/narrow" } },
+    $defs: {
+      base: { type: "string", minLength: 2 },
+      narrow: {
+        $ref: "#/$defs/base",
+        type: "string",
+        minLength: 1,
+      },
+    },
+  };
+  assert.deepEqual(inlineForeignRefs(schema).$defs.narrow, {
+    $ref: "#/$defs/base",
+    type: "string",
+    minLength: 1,
+  });
+});
+
+test("a conflicting stricter $defs ref sibling also remains intact", () => {
+  const schema = {
+    type: "object",
+    properties: { value: { $ref: "#/$defs/narrow" } },
+    $defs: {
+      base: { type: "string", minLength: 1 },
+      narrow: {
+        $ref: "#/$defs/base",
+        type: "string",
+        minLength: 2,
+      },
+    },
+  };
+  assert.deepEqual(inlineForeignRefs(schema).$defs.narrow, {
+    $ref: "#/$defs/base",
+    type: "string",
+    minLength: 2,
+  });
+});
+
+test("a cyclic $defs ref sibling remains intact", () => {
+  const schema = {
+    type: "object",
+    properties: { node: { $ref: "#/$defs/node" } },
+    $defs: {
+      node: {
+        $ref: "#/$defs/node",
+        type: "object",
+        description: "Cyclic node.",
+      },
+    },
+  };
+  assert.deepEqual(inlineForeignRefs(schema).$defs.node, {
+    $ref: "#/$defs/node",
+    type: "object",
+    description: "Cyclic node.",
+  });
+});
+
 test("an unresolvable ref is left alone rather than guessed at", () => {
   const schema = {
     type: "object",

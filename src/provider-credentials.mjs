@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -13,7 +14,14 @@ import path from "node:path";
 
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { protectPrivateFile } from "./file-security.mjs";
-import { LEGACY_STATE_DIRS, STATE_DIR, TARGET } from "./paths.mjs";
+import { normalizeGenericProviderId } from "./generic-provider-identity.mjs";
+import {
+  GENERIC_PROVIDER_CREDENTIALS_DIR,
+  LEGACY_STATE_DIRS,
+  ROUTER_PLANE_TARGET,
+  STATE_DIR,
+  TARGET,
+} from "./paths.mjs";
 import { targetCli } from "./target-integration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import {
@@ -136,6 +144,56 @@ function resolvedCredential(provider, value, source, persistent) {
   return { value, source, persistent };
 }
 
+function canonicalProviderId(provider) {
+  return provider.variantOf || provider.id;
+}
+
+function genericCredentialProvider(providerId) {
+  const id = normalizeGenericProviderId(providerId);
+  return {
+    id,
+    kind: "openai-compatible",
+    credential: {
+      file: path.relative(STATE_DIR, path.join(GENERIC_PROVIDER_CREDENTIALS_DIR, `${id}.key`)),
+      label: "API key",
+      environment: [],
+      keychainServices: [],
+    },
+  };
+}
+
+export function genericProviderCredentialPath(providerId) {
+  return primaryCredentialPath(genericCredentialProvider(providerId));
+}
+
+function configuredProviderFileCredential(provider) {
+  for (const candidate of credentialPaths(provider)) {
+    let stat;
+    try {
+      stat = lstatSync(candidate);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) continue;
+    try {
+      const value = readFileSync(candidate, "utf8").trim();
+      if (value) {
+        const credential = resolvedCredential(
+          provider,
+          value,
+          "protected file",
+          true,
+        );
+        if (credential) return credential;
+      }
+    } catch {
+      // A file that cannot be read is not a usable credential source.
+    }
+  }
+  return undefined;
+}
+
 export function resolveProviderCredential(providerOrId, options = {}) {
   const provider =
     typeof providerOrId === "string" ? PROVIDERS.get(providerOrId) : providerOrId;
@@ -178,16 +236,27 @@ export function resolveProviderCredential(providerOrId, options = {}) {
     }
   }
   for (const candidate of credentialPaths(provider)) {
-    if (!existsSync(candidate)) continue;
-    const value = readFileSync(candidate, "utf8").trim();
-    if (value) {
-      const credential = resolvedCredential(
-        provider,
-        value,
-        `protected file (${candidate})`,
-        true,
-      );
-      if (credential) return credential;
+    let stat;
+    try {
+      stat = lstatSync(candidate);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) continue;
+    try {
+      const value = readFileSync(candidate, "utf8").trim();
+      if (value) {
+        const credential = resolvedCredential(
+          provider,
+          value,
+          `protected file (${candidate})`,
+          true,
+        );
+        if (credential) return credential;
+      }
+    } catch {
+      // An unreadable or non-text file is not a usable credential source.
     }
   }
   const keychain = keyFromKeychain(provider);
@@ -196,6 +265,83 @@ export function resolveProviderCredential(providerOrId, options = {}) {
     if (credential) return credential;
   }
   return undefined;
+}
+
+/**
+ * Resolve one metadata-only credential reference without changing the
+ * provider's existing single-credential path. References are bound to this
+ * target and to source names declared by the provider registry; raw secrets,
+ * arbitrary paths, services, and environment variables are rejected.
+ */
+export function resolveProviderCredentialReference(providerOrId, secretRef) {
+  const provider =
+    typeof providerOrId === "string" ? PROVIDERS.get(providerOrId) : providerOrId;
+  if (!provider || provider.kind !== "openai-compatible") return undefined;
+  if (!secretRef || typeof secretRef !== "object" || Array.isArray(secretRef)) {
+    return undefined;
+  }
+  const referenceKeys = new Set(["type", "providerId", "target", "service", "name"]);
+  if (Object.keys(secretRef).some((key) => !referenceKeys.has(key))) return undefined;
+  if (secretRef.target !== ROUTER_PLANE_TARGET) return undefined;
+  if (secretRef.providerId !== canonicalProviderId(provider)) {
+    return undefined;
+  }
+  if (discoveryDisabled()) return undefined;
+  const type = typeof secretRef.type === "string" ? secretRef.type.trim() : "";
+  if (type === "provider-file") {
+    if (secretRef.service !== undefined || secretRef.name !== undefined) return undefined;
+    return configuredProviderFileCredential(provider);
+  }
+  if (type === "environment") {
+    if (secretRef.service !== undefined) return undefined;
+    const name = typeof secretRef.name === "string" ? secretRef.name.trim() : "";
+    if (!provider.credential?.environment?.includes(name)) return undefined;
+    const value = process.env[name]?.trim();
+    if (!value) return undefined;
+    return resolvedCredential(provider, value, `environment (${name})`, false);
+  }
+  if (type === "keychain") {
+    if (secretRef.name !== undefined) return undefined;
+    if (process.platform !== "darwin") return undefined;
+    const service = typeof secretRef.service === "string" ? secretRef.service.trim() : "";
+    if (!provider.credential?.keychainServices?.includes(service)) return undefined;
+    const found = keychainSecret(service, Date.now());
+    return found
+      ? resolvedCredential(provider, found.value, `macOS Keychain (${service})`, true)
+      : undefined;
+  }
+  // OAuth sessions are provider-specific and remain owned by their existing
+  // refresh/session implementations. Returning undefined keeps a pool entry
+  // from accidentally forwarding an opaque session id as an API key.
+  return undefined;
+}
+
+/**
+ * Resolve a generic provider's deliberately narrow protected-file reference.
+ * Built-in provider resolution remains registry-bound above; this separate
+ * entry point cannot name environment variables, Keychain services, or paths.
+ */
+export function resolveGenericProviderCredentialReference(providerId, secretRef) {
+  let provider;
+  try {
+    provider = genericCredentialProvider(providerId);
+  } catch {
+    return undefined;
+  }
+  if (!secretRef || typeof secretRef !== "object" || Array.isArray(secretRef)) return undefined;
+  const referenceKeys = new Set(["type", "providerId", "target", "service", "name"]);
+  if (Object.keys(secretRef).some((key) => !referenceKeys.has(key))) return undefined;
+  if (
+    secretRef.type !== "provider-file" ||
+    secretRef.providerId !== provider.id ||
+    secretRef.target !== ROUTER_PLANE_TARGET ||
+    secretRef.service !== undefined ||
+    secretRef.name !== undefined ||
+    discoveryDisabled()
+  ) {
+    return undefined;
+  }
+  return configuredProviderFileCredential(provider);
 }
 
 export function credentialSetupHint(provider) {
@@ -235,6 +381,8 @@ export function writeProviderCredential(providerOrId, value) {
   mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   chmodSync(STATE_DIR, 0o700);
   const target = primaryCredentialPath(provider);
+  mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  chmodSync(path.dirname(target), 0o700);
   const temporary = `${target}.tmp.${process.pid}`;
   writeFileSync(temporary, `${key}\n`, { encoding: "utf8", mode: 0o600 });
   try {
@@ -247,6 +395,10 @@ export function writeProviderCredential(providerOrId, value) {
   }
   resetKeychainCache();
   return target;
+}
+
+export function writeGenericProviderCredential(providerId, value) {
+  return writeProviderCredential(genericCredentialProvider(providerId), value);
 }
 
 export function removeProviderCredential(providerOrId) {
@@ -263,6 +415,10 @@ export function removeProviderCredential(providerOrId) {
   // has to come from a fresh look.
   resetKeychainCache();
   return removed;
+}
+
+export function removeGenericProviderCredential(providerId) {
+  return removeProviderCredential(genericCredentialProvider(providerId));
 }
 
 export function credentialFileMode(providerOrId) {

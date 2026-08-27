@@ -85,11 +85,12 @@ under launchd continuously.
 The Settings tab's **Menu bar** controls allow configuring the menu bar layout and icon to reduce clutter or match your desktop aesthetics:
 
 - **Menu bar mode**:
-  - **Standard** (default): Displays the icon/activity dot alongside the active provider or model name and token usage text.
-  - **Icon only**: Displays a compact icon/indicator dot without model name text, taking minimal horizontal space in the macOS menu bar.
+  - **Standard**: Displays the icon/activity dot alongside the active provider or model name and token usage text.
+  - **Icon only** (default): Displays the compact Router mark without provider/model text, taking minimal horizontal space in the macOS menu bar.
 - **Show model name**: When using Standard mode, this toggle controls whether the active model/provider short name is rendered.
 - **Menu bar icon**:
-  - **Activity dot** (default, including existing installs): Renders a clean status circle tinted by router activity state (idle, thinking, starting, error).
+  - **Router mark** (default when no explicit preference is stored): Renders the smooth monochrome routing glyph from the bundled SVG and follows the menu bar's light or dark appearance. Active states add a status node to the upper route in the same template image.
+  - **Activity dot**: Renders a clean status circle tinted by router activity state (idle, thinking, starting, error).
   - **Provider icon**: Renders the logo of the provider handling the request, using the same `ProviderIcon` map as the rest of the tray.
   - **Preset icon**: Lets you choose from built-in SF Symbols (`cpu`, `brain`, `sparkles`, `terminal`, `bolt.horizontal.circle`, `network`).
   - **Custom image**: Copies a PNG, JPEG, SVG, or ICNS file into Application Support via "Choose Image…". If that copy later disappears, Settings shows that the image is missing instead of keeping a stale filename.
@@ -102,8 +103,8 @@ defaults write io.github.codex-router.tray ModelRouterTray.menuBarDisplayMode ic
 # Toggle model name visibility
 defaults write io.github.codex-router.tray ModelRouterTray.menuBarShowModelName -bool false
 
-# Set icon style (provider, indicator, preset, custom)
-defaults write io.github.codex-router.tray ModelRouterTray.menuBarIconStyle preset
+# Set icon style (router, provider, indicator, preset, custom)
+defaults write io.github.codex-router.tray ModelRouterTray.menuBarIconStyle router
 defaults write io.github.codex-router.tray ModelRouterTray.menuBarPresetIcon sparkles
 ```
 

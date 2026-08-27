@@ -363,6 +363,7 @@ enum RouterKoreanText {
     "Current model or provider is visible in menu bar": "현재 모델 또는 제공업체가 메뉴 막대에 표시됩니다",
     "Hide model name text in menu bar": "메뉴 막대에서 모델 이름 텍스트 숨기기",
     "Menu bar icon": "메뉴 막대 아이콘",
+    "Router mark": "라우터 마크",
     "Provider icon": "제공업체 아이콘",
     "Activity dot": "활동 점",
     "Preset icon": "프리셋 아이콘",

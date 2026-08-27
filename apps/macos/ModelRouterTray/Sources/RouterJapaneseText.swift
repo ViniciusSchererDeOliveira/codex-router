@@ -363,6 +363,7 @@ enum RouterJapaneseText {
     "Current model or provider is visible in menu bar": "現在のモデルまたはプロバイダーをメニューバーに表示",
     "Hide model name text in menu bar": "メニューバーにモデル名のテキストを表示しない",
     "Menu bar icon": "メニューバーアイコン",
+    "Router mark": "ルーターマーク",
     "Provider icon": "プロバイダーアイコン",
     "Activity dot": "アクティビティドット",
     "Preset icon": "プリセットアイコン",

@@ -143,6 +143,66 @@
 
 /* ----------------------------------------------------------------- panels */
 
+.dashboard-page .db-route-dashboard {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface-0);
+}
+
+.dashboard-page .db-route-dashboard .section-heading {
+  margin-bottom: 12px;
+}
+
+.dashboard-page .db-route-list {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--line);
+}
+
+.dashboard-page .db-route-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface-0);
+}
+
+.dashboard-page .db-route-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+}
+
+.dashboard-page .db-route-copy strong,
+.dashboard-page .db-route-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-page .db-route-copy strong {
+  color: var(--ink-strong);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dashboard-page .db-route-copy small {
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+
+.dashboard-page .db-route-row .button {
+  flex: 0 0 auto;
+  min-width: 68px;
+}
+
 .dashboard-page .db-panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));

@@ -17,8 +17,32 @@ struct MenuBarSettingsTests {
     #expect(abs((color?.blueComponent ?? 0) - 0.03) < 0.001)
   }
 
-  @Test("a missing key keeps the shipped activity-dot look")
-  func missingKeysKeepShippedLook() {
+  @Test("the bundled router SVG loads as a menu bar template image")
+  func bundledRouterMarkLoadsAsTemplate() {
+    guard let image = MenuBarRouterMarkImage.make() else {
+      Issue.record("RouterMark.svg could not be loaded from the SwiftPM resource bundle")
+      return
+    }
+    #expect(image.isTemplate)
+    #expect(image.size == NSSize(width: 32, height: 32))
+
+    guard let statusImage = MenuBarRouterMarkImage.make(size: 15) else {
+      Issue.record("RouterMark.svg could not be sized for the menu bar")
+      return
+    }
+    #expect(statusImage.isTemplate)
+    #expect(statusImage.size == NSSize(width: 15, height: 15))
+
+    guard let activeImage = MenuBarRouterMarkImage.make(resourceName: "RouterMarkActive", size: 15) else {
+      Issue.record("RouterMarkActive.svg could not be loaded from the SwiftPM resource bundle")
+      return
+    }
+    #expect(activeImage.isTemplate)
+    #expect(activeImage.size == NSSize(width: 15, height: 15))
+  }
+
+  @Test("a missing key uses the bundled router mark")
+  func missingKeysUseRouterMark() {
     let settings = RouterStore.resolveMenuBarSettings(
       storedDisplayMode: nil,
       storedShowModelName: nil,
@@ -26,14 +50,14 @@ struct MenuBarSettingsTests {
       storedPresetIcon: nil,
       storedCustomIconPath: nil
     )
-    #expect(settings.displayMode == .standard)
+    #expect(settings.displayMode == .iconOnly)
     #expect(settings.showModelName == true)
-    #expect(settings.iconStyle == .indicator)
+    #expect(settings.iconStyle == .router)
     #expect(settings.presetIcon == "cpu")
     #expect(settings.customIconPath == nil)
   }
 
-  @Test("an explicit choice always wins", arguments: ["provider", "indicator", "preset", "custom"])
+  @Test("an explicit choice always wins", arguments: ["router", "provider", "indicator", "preset", "custom"])
   func explicitIconStyleWins(raw: String) {
     let expected = TrayMenuBarIconStyle(rawValue: raw)
     let settings = RouterStore.resolveMenuBarSettings(
@@ -59,37 +83,26 @@ struct MenuBarSettingsTests {
       storedPresetIcon: nil,
       storedCustomIconPath: ""
     )
-    #expect(settings.displayMode == .standard)
-    #expect(settings.iconStyle == .indicator)
+    #expect(settings.displayMode == .iconOnly)
+    #expect(settings.iconStyle == .router)
     #expect(settings.presetIcon == "cpu")
     #expect(settings.customIconPath == nil)
   }
 
   @Test("standard mode keeps a reserved width even when the name is hidden")
   func standardWidthIsReserved() {
+    #expect(MenuBarLayoutMetrics.standardIconSize == 15)
+    #expect(MenuBarLayoutMetrics.iconOnlyIconSize == MenuBarLayoutMetrics.standardIconSize)
     #expect(MenuBarLayoutMetrics.statusItemWidth(displayMode: .standard) == 180)
-    #expect(MenuBarLayoutMetrics.statusItemWidth(displayMode: .iconOnly) == 28)
+    #expect(MenuBarLayoutMetrics.statusItemWidth(displayMode: .iconOnly) == 22)
     #expect(MenuBarLayoutMetrics.statusItemHeight(displayMode: .standard) == 22)
     #expect(MenuBarLayoutMetrics.statusItemHeight(displayMode: .iconOnly) == 22)
   }
 
-  @Test("the icon-only pulse reserves space for the rendered mark and badge")
+  @Test("the icon-only mark stays inside the native square during a pulse")
   func iconOnlyPulseKeepsScaledContentInsideBounds() {
-    #expect(
-      MenuBarLayoutMetrics.statusItemWidth(
-        displayMode: .iconOnly,
-        pulsing: true,
-        showsActivityBadge: false
-      ) == 28
-    )
-    #expect(
-      MenuBarLayoutMetrics.statusItemWidth(
-        displayMode: .iconOnly,
-        pulsing: true,
-        showsActivityBadge: true
-      ) == 36
-    )
-    #expect(MenuBarLayoutMetrics.statusItemHeight(displayMode: .iconOnly, pulsing: true) == 24)
+    #expect(MenuBarLayoutMetrics.statusItemWidth(displayMode: .iconOnly, pulsing: true) == 22)
+    #expect(MenuBarLayoutMetrics.statusItemHeight(displayMode: .iconOnly, pulsing: true) == 22)
     #expect(MenuBarLayoutMetrics.statusItemWidth(displayMode: .standard, pulsing: true) == 180)
     #expect(MenuBarLayoutMetrics.statusItemHeight(displayMode: .standard, pulsing: true) == 22)
   }
@@ -176,13 +189,6 @@ struct MenuBarSettingsTests {
     #expect(visibleRect.minY == 1)
     #expect(visibleRect.width == 6)
     #expect(visibleRect.height == 6)
-  }
-
-  @Test("the activity badge is not a second dot on the indicator style")
-  func indicatorHasNoSideBadge() {
-    #expect(MenuBarLayoutMetrics.showsActivityBadge(iconStyle: .indicator, isIdle: false) == false)
-    #expect(MenuBarLayoutMetrics.showsActivityBadge(iconStyle: .provider, isIdle: false) == true)
-    #expect(MenuBarLayoutMetrics.showsActivityBadge(iconStyle: .provider, isIdle: true) == false)
   }
 
   @Test("choosing a custom image copies it into Application Support")

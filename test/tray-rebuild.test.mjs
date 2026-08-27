@@ -1253,7 +1253,7 @@ test("menu bar settings resolve through a pure helper", () => {
   const nextDecl = declaration.search(/\r?\n  (nonisolated static func |init\(\)|func )/);
   const body = nextDecl > 0 ? declaration.slice(0, nextDecl) : declaration.slice(0, 1200);
   assert.doesNotMatch(body, /defaults\./);
-  assert.match(source, /\?\? \.indicator/);
+  assert.match(source, /\?\? \.router/);
   assert.doesNotMatch(
     source,
     /menuBarIconStyle = \.provider/,
@@ -1274,12 +1274,12 @@ test("menu bar provider marks reuse ProviderIcon instead of a second map", () =>
   assert.doesNotMatch(view, /NSImage\(contentsOfFile:/);
 });
 
-test("the status item keeps a reserved width in both menu-bar modes", () => {
+test("the status item keeps native square geometry in icon-only mode", () => {
   const source = readFileSync(
     path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
     "utf8",
   );
-  assert.match(source, /static let iconOnlyWidth: CGFloat = 28/);
+  assert.match(source, /static let iconOnlyWidth: CGFloat = standardHeight/);
   assert.match(
     source,
     /statusItemWidth\(\s*displayMode: store\.menuBarDisplayMode/,
@@ -1290,6 +1290,21 @@ test("the status item keeps a reserved width in both menu-bar modes", () => {
     /\.frame\(width: store\.menuBarShowModelName \? Self\.reservedWidth : nil/,
   );
   assert.doesNotMatch(source, /\.frame\(minWidth: 18\)/);
+});
+
+test("the active router status is baked into one SVG template image", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  const viewStart = source.indexOf("private struct MenuBarIconView");
+  const view = source.slice(viewStart, source.indexOf("private struct StatusItemLabel"));
+  assert.match(view, /store\.activityState == \.idle \? "RouterMark" : "RouterMarkActive"/);
+  const activeSVG = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "Resources", "RouterMarkActive.svg"),
+    "utf8",
+  );
+  assert.match(activeSVG, /<circle\b/);
 });
 
 test("a custom menu-bar image is copied into Application Support", () => {

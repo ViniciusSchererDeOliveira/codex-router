@@ -60,6 +60,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "commandcode/gemini-3.7-flash",
       "commandcode/glm-5.2-fast",
       "commandcode/glm-5.2",
+      "commandcode/glm-5.3-flash",
       "commandcode/gpt-5.5",
       "commandcode/gpt-5.6-luna",
       "commandcode/gpt-5.6-sol",
@@ -83,7 +84,6 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "commandcode/minimax-m3",
       "commandcode/muse-spark-1.2",
       "commandcode/nemotron-3-ultra",
-      "commandcode/ox-alpha",
       "commandcode/qwen3.7-flash",
       "commandcode/qwen3.7-max",
       "commandcode/qwen3.7-plus",
@@ -112,6 +112,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "nousresearch/deepseek-v4-pro",
       "nousresearch/gemini-3.7-flash",
       "nousresearch/glm-5.2",
+      "nousresearch/glm-5.3-flash",
       "nousresearch/glm-5.3",
       "nousresearch/gpt-5.6-terra",
       "nousresearch/grok-4.6",
@@ -128,7 +129,6 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "nousresearch/minimax-m3",
       "nousresearch/muse-spark-1.2-contributor",
       "nousresearch/nemotron-3-ultra",
-      "nousresearch/ox-alpha",
       "nousresearch/qwen3.7-max",
       "nousresearch/qwen3.8-max",
       "nousresearch/solar-pro4-free",
@@ -144,14 +144,18 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/deepseek-v4-pro",
       "opencode-go/glm-5.1",
       "opencode-go/glm-5.2",
+      "opencode-go/glm-5.3-flash",
       "opencode-go/glm-5.3",
+      "opencode-go/glm-5",
       "opencode-go/hy3",
+      "opencode-go/kimi-k2.5",
       "opencode-go/kimi-k2.6",
       "opencode-go/kimi-k2.7-code",
       "opencode-go/kimi-k3",
+      "opencode-go/longcat-2.0",
       "opencode-go/mimo-v2.5-pro",
       "opencode-go/mimo-v2.5",
-      "opencode-go/ox-alpha",
+      "opencode-go/qwen3.5-plus",
       "opencode-go-messages/minimax-m2.5",
       "opencode-go-messages/minimax-m2.7",
       "opencode-go-messages/minimax-m3",
@@ -163,8 +167,8 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-responses/grok-4.5",
       "opencode-go-responses/grok-4.6",
       "opencode-go-responses/muse-spark-1.2-contributor",
-      "opencode-free/ox-alpha",
-      "openrouter/ox-alpha",
+      "openrouter/glm-5.3-flash",
+      "openrouter/grok-4.6",
       "qwen-plan/deepseek-v4-flash-0731",
       "qwen-plan/deepseek-v4-pro-0813",
       "qwen-plan/deepseek-v4-pro",
@@ -174,7 +178,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "qwen-plan/qwen3.7-plus",
       "qwen-plan/qwen3.8-max-preview",
       "qwen-plan/qwen3.8-max",
-      "venice/ox-alpha",
+      "venice/glm-5.3-flash",
       "xiaomi-mimo/mimo-v2.5-pro",
       "xiaomi-mimo/mimo-v2.5",
       "zai-api/glm-4.7",
@@ -182,6 +186,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "zai-api/glm-5.3",
       "zai-coding/glm-5-turbo",
       "zai-coding/glm-5.2",
+      "zai-coding/glm-5.3-flash",
       "zai-coding/glm-5.3",
     ],
   );
@@ -328,13 +333,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(venice.credential.file, "venice-api-key.secret");
   assert.deepEqual(venice.credential.keychainServices, ["codex-router-venice"]);
   // Venice arrived as catalog-only, and stayed that way until Ox Alpha was
-  // checked in for it. It now ships exactly that one entry -- the picker is not
-  // empty once a key is stored, and everything else on Venice still has to be
-  // curated -- so this asserts the entry rather than merely that something is
-  // listed, which would also pass if a curation bug leaked extra models in.
+  // checked in for it. When Ox Alpha was withdrawn, GLM-5.3 Flash replaced it.
+  // Venice ships exactly that one entry -- the picker is not empty once a key
+  // is stored, and everything else on Venice still has to be curated -- so this
+  // asserts the entry rather than merely that something is listed, which would
+  // also pass if a curation bug leaked extra models in.
   assert.deepEqual(
     LISTED_MODELS.filter(({ provider }) => provider === "venice").map(({ slug }) => slug),
-    ["venice/ox-alpha"],
+    ["venice/glm-5.3-flash"],
   );
   const opencodeFree = PROVIDERS.get("opencode-free");
   const opencodeFreeResponses = PROVIDERS.get("opencode-free-responses");
@@ -701,6 +707,69 @@ test("GLM-5.3 on OpenCode Go carries the 1M GLM-5.3 window, not GLM-5.1's 200K",
   // verification that the upstream preserves tool/function-call history, and
   // no probe of the opencode Go relay has been recorded.
   assert.equal(model?.searchTool, undefined);
+});
+
+test("GLM-5.3-Flash replaces OpenCode Go's withdrawn Ox Alpha route", () => {
+  const model = MODEL_BY_SLUG.get("opencode-go/glm-5.3-flash");
+  assert.equal(model?.upstreamModel, "glm-5.3-flash");
+  assert.equal(model?.contextWindow, 1_000_000);
+  assert.equal(model?.autoCompact, 400_000);
+  assert.ok(model.contextWindow - model.autoCompact >= 131_072);
+  assert.deepEqual(model?.inputModalities, ["text", "image"]);
+  assert.equal(MODEL_SLUG_ALIASES.get("opencode-go/ox-alpha"), model.slug);
+  assert.equal(MODEL_SLUG_ALIASES.get("opencode-go/ox-alpha-free"), model.slug);
+  assert.equal(MODEL_BY_SLUG.get("opencode-go/ox-alpha"), model);
+});
+
+test("four additional OpenCode Go Chat routes retain their documented limits and conservative controls", () => {
+  const expected = {
+    "opencode-go/glm-5": {
+      contextWindow: 202_752,
+      autoCompact: 165_000,
+      outputLimit: 32_768,
+      efforts: ["high"],
+      modalities: ["text"],
+      description: /deprecated/,
+    },
+    "opencode-go/kimi-k2.5": {
+      contextWindow: 262_144,
+      autoCompact: 190_000,
+      outputLimit: 65_536,
+      efforts: ["high"],
+      modalities: ["text", "image"],
+      description: /deprecated/,
+      requestProfile: "auto-tool-choice",
+    },
+    "opencode-go/longcat-2.0": {
+      contextWindow: 1_000_000,
+      autoCompact: 850_000,
+      outputLimit: 131_072,
+      efforts: ["high"],
+      modalities: ["text"],
+      description: /toggle reasoning but no named effort ladder/,
+    },
+    "opencode-go/qwen3.5-plus": {
+      contextWindow: 262_144,
+      autoCompact: 190_000,
+      outputLimit: 65_536,
+      efforts: ["high"],
+      modalities: ["text", "image"],
+      description: /deprecated/,
+    },
+  };
+
+  for (const [slug, metadata] of Object.entries(expected)) {
+    const model = MODEL_BY_SLUG.get(slug);
+    assert.equal(model.provider, "opencode-go", slug);
+    assert.equal(model.requestProfile, metadata.requestProfile, slug);
+    assert.equal(model.contextWindow, metadata.contextWindow, slug);
+    assert.equal(model.autoCompact, metadata.autoCompact, slug);
+    assert.ok(model.contextWindow - model.autoCompact >= metadata.outputLimit, slug);
+    assert.deepEqual(model.reasoningLevels.map(({ effort }) => effort), metadata.efforts, slug);
+    assert.deepEqual(model.inputModalities, metadata.modalities, slug);
+    assert.match(model.description, metadata.description, slug);
+    assert.equal(model.multiAgentVersion, undefined, slug);
+  }
 });
 
 test("GLM-5.3 Coding Plan opts in to GPT-5.6 behavior, concise execution, and standalone search", () => {
@@ -1138,11 +1207,6 @@ test("Nous Research free models are tagged isFree, Hermes 4 is not", () => {
     assert.ok(model, `${slug} should exist in registry`);
     assert.notEqual(model.isFree, true, `${slug} should not be tagged isFree: true`);
   }
-
-  // ox-alpha should remain isFree: true (existing)
-  const oxAlpha = MODEL_BY_SLUG.get("nousresearch/ox-alpha");
-  assert.ok(oxAlpha);
-  assert.strictEqual(oxAlpha.isFree, true, "nousresearch/ox-alpha should remain isFree: true");
 });
 
 // A keyless provider skips the credential requirement, which is only safe
@@ -1512,6 +1576,14 @@ test("opencode's DeepSeek models never receive a forced tool_choice", () => {
   assert.equal(
     MODEL_SLUG_ALIASES.get("opencode-go/grok-4.5"),
     "opencode-go-responses/grok-4.5",
+  );
+  assert.equal(
+    MODEL_SLUG_ALIASES.get("opencode-go/ox-alpha"),
+    "opencode-go/glm-5.3-flash",
+  );
+  assert.equal(
+    MODEL_SLUG_ALIASES.get("opencode-go/ox-alpha-free"),
+    "opencode-go/glm-5.3-flash",
   );
   assert.equal(MODEL_BY_SLUG.get("opencode-go/grok-4.5"), goGrok);
 });

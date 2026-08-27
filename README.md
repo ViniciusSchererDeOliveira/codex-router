@@ -241,10 +241,11 @@ Other routed providers can use Codex's client-side (standalone) web search when
 the selected model has been verified for it. DeepSeek V4 Flash is enabled on
 its direct API and opencode Go routes. A compatible model declares
 `"searchTool": { "mode": "standalone" }` in its registry or user-model
-metadata, and the managed Codex provider table advertises
-`supports_standalone_web_search = true`. This is intentionally opt-in per
-model; the router does not infer search compatibility from an OpenAI-compatible
-endpoint.
+metadata. This capability is resolved from the selected model/provider pair;
+the router does not enable a global web-search switch or infer compatibility
+from an OpenAI-compatible endpoint. A model is advertised only after its
+provider path has been verified to preserve Codex search-result items and
+tool-call history.
 
 ```sh
 npm install -g @xai-official/grok
@@ -415,13 +416,18 @@ the operator explicitly selects them.
 
 | Picker label | Model ID |
 | --- | --- |
+| Grok 4.6 (opencode Go) | `opencode-go-responses/grok-4.6` |
 | Grok 4.5 (opencode Go) | `opencode-go-responses/grok-4.5` |
+| GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` |
 | GLM-5.3 (opencode Go) | `opencode-go/glm-5.3` |
 | GLM-5.2 (opencode Go) | `opencode-go/glm-5.2` |
 | GLM-5.1 (opencode Go) | `opencode-go/glm-5.1` |
+| GLM-5 (opencode Go, legacy) | `opencode-go/glm-5` |
 | Kimi K3 (opencode Go) | `opencode-go/kimi-k3` |
 | Kimi K2.7 Code (opencode Go) | `opencode-go/kimi-k2.7-code` |
 | Kimi K2.6 (opencode Go) | `opencode-go/kimi-k2.6` |
+| Kimi K2.5 (opencode Go, legacy) | `opencode-go/kimi-k2.5` |
+| LongCat-2.0 (opencode Go) | `opencode-go/longcat-2.0` |
 | DeepSeek V4 Pro (opencode Go) | `opencode-go/deepseek-v4-pro` |
 | DeepSeek V4 Flash (opencode Go) | `opencode-go/deepseek-v4-flash` |
 | DeepSeek V4 Flash Vision Exp (opencode Go) | `opencode-go/deepseek-v4-flash-vision-exp` |
@@ -435,11 +441,12 @@ the operator explicitly selects them.
 | Qwen3.7 Max (opencode Go) | `opencode-go-messages/qwen3.7-max` |
 | Qwen3.7 Plus (opencode Go) | `opencode-go-messages/qwen3.7-plus` |
 | Qwen3.6 Plus (opencode Go) | `opencode-go-messages/qwen3.6-plus` |
+| Qwen3.5 Plus (opencode Go, legacy) | `opencode-go/qwen3.5-plus` |
 | GPT 5.6 Luna (opencode Go) | `opencode-go-responses/gpt-5.6-luna` |
 
 `opencode-go` carries the Chat Completions models, `opencode-go-messages` the
 Anthropic Messages models, `opencode-go-responses` the Responses models
-(including Grok 4.5), and
+(including Grok 4.5 and Grok 4.6), and
 `opencode-zen` the pay-per-use Zen endpoint (no preselected models — curate
 the ones you want). All four are one selectable family: they share a single
 stored key, and enabling or disabling any of them toggles all of them
@@ -460,21 +467,19 @@ in code to its official endpoint.
 | OpenCode Free | `opencode-free` | `https://opencode.ai/zen/v1` | `big-pickle` and IDs ending in `-free` |
 | Kilo Free | `kilo-free` | `https://api.kilo.ai/api/gateway` | IDs ending in `:free` |
 
-Neither ships its free subset as checked-in metadata, with a single exception:
-**Ox Alpha** on OpenCode Free is checked in — see [Ox Alpha](#ox-alpha) below.
-Everything else comes from the provider's live `/models` response, filtered to
-the free subset and then added locally with `./bin/curate-models`. OpenCode Free
-curation routes `muse-spark-1.2-contributor-free` through its internal Responses
-sibling while keeping Ox Alpha Free (`x-preview-f-free`) and the other free IDs
-on Chat Completions; the provider remains one selection in setup and the picker.
-An existing Chat-routed copy of that one Muse model is migrated only when the
-operator explicitly runs `curate-models`; install, update, and catalog reads do
-not rewrite the user model or picker state. Zen's `/models` response publishes
-no context limits, so those two IDs are sized from OpenCode's own published
-per-free-ID metadata instead of the conservative 131K fallback, and each stored
-entry's `description` records where its window came from. Every other free ID
-keeps the conservative default, and any window is editable in
-`user-models.json`.
+Neither ships its free subset as checked-in metadata: everything comes from the
+provider's live `/models` response, filtered to the free subset and then added
+locally with `./bin/curate-models`. OpenCode Free curation routes
+`muse-spark-1.2-contributor-free` through its internal Responses sibling while
+keeping the other free IDs on Chat Completions; the provider remains one
+selection in setup and the picker. An existing Chat-routed copy of that one Muse
+model is migrated only when the operator explicitly runs `curate-models`;
+install, update, and catalog reads do not rewrite the user model or picker
+state. Zen's `/models` response publishes no context limits, so free IDs that
+OpenCode documents are sized from its published metadata instead of the
+conservative 131K fallback, and each stored entry's `description` records where
+its window came from. Every other free ID keeps the conservative default, and
+any window is editable in `user-models.json`.
 
 ```sh
 ./bin/model-router codex providers enable opencode-free
@@ -613,34 +618,42 @@ that route is unavailable.
 
 Ox Alpha is a stealth reasoning model for coding and long-horizon agentic work:
 a 1,048,576-token context window, 131,072 tokens of output, text and image
-input, and tool calling. Six of this repository's routes resell the same model,
-and it is priced at zero on all of them during the preview, so the entries carry
-a **Free** badge in the control center.
+input, and tool calling. **The free preview was withdrawn from OpenCode Zen,
+OpenCode Go, OpenRouter, and Nous Research as of 2026-08-26.** It remains
+available under the Ox Alpha name on Command Code and Venice. On OpenCode Go,
+the preview graduated to the named, metered `glm-5.3-flash` model.
 
-| Picker label | Model ID | Needs a key |
-| --- | --- | --- |
-| Ox Alpha (OpenCode Free) | `opencode-free/ox-alpha` | no |
-| Ox Alpha (opencode Go) | `opencode-go/ox-alpha` | opencode |
-| Ox Alpha (OpenRouter) | `openrouter/ox-alpha` | OpenRouter |
-| Ox Alpha (Command Code) | `commandcode/ox-alpha` | Command Code |
-| Ox Alpha (Nous Research) | `nousresearch/ox-alpha` | Nous Portal |
-| Ox Alpha (Venice) | `venice/ox-alpha` | Venice |
+| Picker label | Model ID | Needs a key | Status |
+| --- | --- | --- | --- |
+| Ox Alpha (Command Code) | `commandcode/ox-alpha` | Command Code | Available |
+| Ox Alpha (Venice) | `venice/ox-alpha` | Venice | Available |
+| ~~Ox Alpha (OpenCode Free)~~ | `opencode-free/ox-alpha` | ~~no~~ | Withdrawn |
+| GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` | opencode | Named replacement |
+| ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
+| ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
 
-Reasoning effort is **low · high · max** on every route, defaulting to `max`.
-Only three rungs exist because the model always thinks and its upstream says so
-outright — anything else comes back as `400 — This model always engages in
-thinking and cannot be disabled; please use low, high, or max`. Codex has more
-rungs than that, and a Codex older than 0.143 has no `max` at all, so the router
-clamps whatever effort you pick onto the three the model accepts. Switching
-effort in the picker is safe on all six routes.
+The checked-in OpenCode Free pin (`opencode-free/ox-alpha`, upstream
+`x-preview-f-free`) is stale versus the live `/models` catalog; the endpoint may
+still answer or start failing without notice.
 
-The quickest route needs nothing at all:
+Reasoning effort is **low · high · max** on the remaining routes and the named
+OpenCode Go replacement, defaulting to `max`. Only three rungs exist because
+the model always thinks and its upstream says so outright — anything else comes
+back as `400 — This model always engages in thinking and cannot be disabled;
+please use low, high, or max`. Codex has more rungs than that, and a Codex older
+than 0.143 has no `max` at all, so the router clamps whatever effort you pick
+onto the three the model accepts. Existing `opencode-go/ox-alpha` and locally
+curated `opencode-go/ox-alpha-free` selections migrate to
+`opencode-go/glm-5.3-flash` automatically.
 
-```sh
-./bin/model-router codex providers enable opencode-free
-```
+The picker retains OpenCode Go's advertised 1M context, but Codex compacts this
+route at 400K. In live multimodal tasks, larger Flash histories repeatedly
+returned empty completions before the advertised limit; the conservative
+threshold avoids presenting those blank turns as usable context. OpenCode Go's
+content moderation still applies to the compaction request itself, so a
+sensitive transcript may be rejected even when the ordinary task turn worked.
 
-For the credentialed routes, store the key and enable the provider:
+For the remaining routes, store the key and enable the provider:
 
 ```sh
 ./bin/model-router codex provider-key venice set
@@ -649,7 +662,7 @@ For the credentialed routes, store the key and enable the provider:
 
 > **The free preview is a preview.** No lab has claimed this model, the routes
 > that serve it can narrow or withdraw it without notice, and the retention
-> terms differ per provider — OpenCode advertises zero data retention, Venice
+> terms differ per provider — OpenCode advertised zero data retention, Venice
 > anonymizes, and other resellers say less. Treat it as a way to try a model,
 > not as something to depend on.
 
@@ -699,7 +712,9 @@ configuration available to that account through the installed Devin CLI; the
 provider still ships no preselected models.
 
 Three more providers work the same way but arrive with the single checked-in
-[Ox Alpha](#ox-alpha) entry, so their picker is not empty once a key is stored:
+[Ox Alpha](#ox-alpha) entry (which is currently available on Command Code and
+Venice but has been withdrawn from OpenCode, OpenRouter, and Nous), so their
+picker is not empty once a key is stored:
 
 | Provider | Provider ID | Base URL | Key from |
 | --- | --- | --- | --- |
@@ -924,7 +939,6 @@ model_catalog_json = "/absolute/path/to/.codex/codex-router/merged-models.json"
 name = "Codex Router (external models)"
 base_url = "http://127.0.0.1:4202/_codex-router/<generated-capability>/v1"
 wire_api = "responses"
-supports_standalone_web_search = true
 # END codex-router-provider-managed
 ```
 
@@ -1041,9 +1055,12 @@ mapped external provider. Models beyond the available native slots stay listed
 under their own slugs, and signing back in restores the native catalog
 untouched.
 
-Turning the switch off restores the exact root `model` and `model_provider`
-values that were present before the mode was enabled. The router does not
-modify or delete ChatGPT credentials. Native GPT models, ChatGPT usage, cloud
+For custom providers, the switch preserves the root `model_provider`,
+temporarily owns that provider's complete table, and restores the exact table
+plus the prior root `model`. Codex reserves the built-in `openai` provider id,
+so root-OpenAI configurations use the compatible `codex-router` provider while
+login-free mode is active and restore the prior provider afterward. The router
+does not modify or delete ChatGPT credentials. Native GPT models, ChatGPT usage, cloud
 tasks, and other account-backed features still require OpenAI authentication
 and are not available while signed out. The equivalent local control command is
 `./bin/control auth-mode on` or `./bin/control auth-mode off`; when using the

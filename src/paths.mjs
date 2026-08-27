@@ -113,6 +113,10 @@ export const LITELLM_CONFIG_PATH = path.join(STATE_DIR, "litellm.yaml");
 export const INTERNAL_SECRET_PATH = path.join(STATE_DIR, "internal-secret");
 export const CALLER_SECRET_PATH = path.join(STATE_DIR, "caller-secret");
 export const CODEX_PROVIDER_MODE_PATH = path.join(STATE_DIR, "codex-provider-mode.json");
+export const LOGIN_FREE_REFRESH_JOURNAL_PATH = path.join(
+  STATE_DIR,
+  "login-free-refresh.json",
+);
 export const SIGNED_PROVIDER_MODE_PATH = path.join(STATE_DIR, "signed-provider-mode.json");
 // An opt-in routed default for signed-in Codex. The router owns this small
 // state file, while Codex continues to own the actual config document.
@@ -133,6 +137,20 @@ export const PROVIDER_CATALOG_CACHE_PATH = path.join(STATE_DIR, "provider-catalo
 export const INSTALL_MANIFEST_PATH = path.join(STATE_DIR, "install-manifest.json");
 export const SKILL_OWNERSHIP_PATH = path.join(STATE_DIR, "managed-skills.json");
 export const MIGRATIONS_DIR = path.join(STATE_DIR, "migrations");
+// Provider credential metadata contains only opaque references. The actual
+// token remains in the existing provider file/keychain/OAuth store.
+export const PROVIDER_CREDENTIAL_STORE_PATH =
+  process.env.MODEL_ROUTER_PROVIDER_CREDENTIAL_STORE ||
+  path.join(STATE_DIR, "provider-credentials.json");
+export const PROVIDER_CREDENTIAL_MIGRATIONS_DIR =
+  process.env.MODEL_ROUTER_PROVIDER_CREDENTIAL_MIGRATIONS ||
+  path.join(MIGRATIONS_DIR, "provider-credentials");
+// User-defined OpenAI-compatible provider descriptors. The document contains
+// no raw credentials; credentialRef values point to the provider-neutral store.
+export const GENERIC_PROVIDERS_PATH =
+  process.env.MODEL_ROUTER_GENERIC_PROVIDERS ||
+  path.join(STATE_DIR, "generic-providers.json");
+export const GENERIC_PROVIDER_CREDENTIALS_DIR = path.join(STATE_DIR, "generic-provider-credentials");
 export const SUPPORT_DIR = path.join(STATE_DIR, "support");
 export const LOG_PATH = path.join(STATE_DIR, "router.log");
 export const SERVICE_PROCESS_STATE_PATH = path.join(STATE_DIR, "service-process.json");

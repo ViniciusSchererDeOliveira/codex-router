@@ -3,8 +3,8 @@ class CodexRouter < Formula
 
   desc "Use external coding models inside the Codex App and CLI"
   homepage "https://github.com/duolahypercho/codex-router"
-  url "https://github.com/duolahypercho/codex-router/releases/download/v0.4.0-beta.4/codex-router-0.4.0-beta.4.tar.gz"
-  sha256 "dfd08cccc7f60c91e854741b92f8154be02ff8882affaed3db7b4e223c95b350"
+  url "https://github.com/duolahypercho/codex-router/releases/download/v0.5.0/codex-router-0.5.0.tar.gz"
+  sha256 "89f494a21399c3c2a54f6f25531e10b0d64e7e5a238f17cb8f8f7f2c9222e076"
   license "MIT"
 
   depends_on "pkgconf" => :build

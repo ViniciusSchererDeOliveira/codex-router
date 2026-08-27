@@ -3,7 +3,6 @@ function text(value) {
 }
 
 export function catalogModelName(modelId) {
-  if (modelId === "x-preview-f-free") return "Ox Alpha Free";
   return text(modelId)
     .split(/[\/_-]+/)
     .filter(Boolean)

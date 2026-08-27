@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- **OpenCode Go's Ox Alpha preview has graduated to GLM-5.3-Flash.** The
+  authenticated catalog now publishes `glm-5.3-flash` and reports the old
+  `ox-alpha-free` ID unavailable, matching OpenCode's current Chat Completions
+  table and Z.ai's reveal. The picker now exposes
+  `opencode-go/glm-5.3-flash` as the named, metered 1M-context multimodal model;
+  existing `opencode-go/ox-alpha` and locally curated
+  `opencode-go/ox-alpha-free` selections migrate through static aliases,
+  and the preview's measured low/high/max effort normalization remains attached
+  to the named route. Codex now compacts this route conservatively at 400K after
+  large live multimodal histories returned empty completions before the generic
+  85% point of its advertised 1M window.
+
+- **OpenRouter now ships Grok 4.6 as a listed route.** The checked-in pin is
+  `openrouter/grok-4.6`, upstream id `x-ai/grok-4.6`, 500,000 context with
+  auto-compact at 440,000, text+image input, and the low/medium/high reasoning
+  ladder (matching Command Code, not Nous Research's xhigh-ladder route).
+
+- **README: Ox Alpha availability updated.** The preview was withdrawn from
+  OpenCode Zen, OpenCode Go, OpenRouter, and Nous Research as of 2026-08-26.
+  It remains available on Command Code and Venice. The checked-in
+  `opencode-free/ox-alpha` pin is now stale versus the live catalog.
+
 ## 0.5.0
 
 - **Grok 4.6 ships on opencode Go.** OpenCode's current Go list and endpoint
@@ -20,7 +44,6 @@
   still requires a Nous Portal API key (the `:free` ids are billed through the
   portal credential, not anonymous like OpenCode Free). This is not the full
   372-model catalog.
-
 - **Subagent selection is honoured again.** `applyMultiAgentSettings` only ever
   demoted: it read `disabled` and `hidden` and nothing else, so the three modes
   documented in `.claude/skills/codex-subagents/SKILL.md` — `proven`,
@@ -98,8 +121,8 @@
   fail closed. External model routes and Codex's own session pass-through are
   unchanged.
 
-- **Ox Alpha ships on six routes.** The stealth 1M-context reasoning model is
-  now checked in for `opencode-free` (no key), `opencode-go`, `openrouter`,
+- **Ox Alpha initially shipped on six routes.** The stealth 1M-context reasoning model was
+  checked in for `opencode-free` (no key), `opencode-go`, `openrouter`,
   `commandcode`, `nousresearch`, and `venice`, each under the upstream id that
   provider's own live catalog publishes. All six advertise 1,048,576 tokens
   with 131,072 of output, text+image input, and a low/high/max effort ladder
@@ -111,7 +134,7 @@
   load-bearing rather than defensive: a Codex older than 0.143 has no `max` in
   its enum, so the catalog sends the clamped `xhigh` and every turn would
   otherwise 400. Only the credential-free route carries curated announcement
-  copy; the other five use the automatic announcement once their provider is
+  copy; the other five used the automatic announcement once their provider was
   credentialed.
 
 - **Venice and Nous Research (Hermes) are new API-key providers.** Both are

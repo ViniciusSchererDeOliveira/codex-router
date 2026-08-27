@@ -35,6 +35,24 @@ test("parses the authoritative instance count, result, and launcher liveness", a
   assert.match(script, /ProcessId -ne \$PID/);
 });
 
+test("launcher discovery ignores manual foreground router processes", async () => {
+  let script;
+  const execFile = (_executable, args, _options, callback) => {
+    script = args.at(-1);
+    callback(null, "0|267014|0\n");
+  };
+
+  assert.deepEqual(await windowsScheduledTaskState({ execFile, platform: "win32" }), {
+    instanceCount: 0,
+    lastTaskResult: 267014,
+    launcherAlive: false,
+  });
+  assert.match(script, /\$task\.Definition\.Actions\.Item\(1\)/);
+  assert.match(script, /start-codex-router-hidden/);
+  assert.match(script, /\$null -ne \$_/);
+  assert.doesNotMatch(script, /src\*start\.mjs/);
+});
+
 test("a dead launcher process is reported as not alive", async () => {
   const execFile = (_e, _a, _o, callback) => callback(null, "1|267014|0\n");
   // Pinned like every other query test: off Windows the platform

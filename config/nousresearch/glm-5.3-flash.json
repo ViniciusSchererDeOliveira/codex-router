@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nousresearch/glm-5.3-flash",
+      "gatewayModel": "nousresearch-glm-5-3-flash",
+      "upstreamModel": "z-ai/glm-5.3-flash",
+      "provider": "nousresearch",
+      "listed": true,
+      "displayName": "GLM-5.3-Flash (Nous Portal)",
+      "description": "GLM-5.3-Flash through Nous Research Portal. The 1M-context route uses the model's low/high/max reasoning ladder.",
+      "priority": 102,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast reasoning for simple edits"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning with thinking enabled"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 400000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "nousresearch-glm-5-3-flash-v1"
+    }
+  ]
+}

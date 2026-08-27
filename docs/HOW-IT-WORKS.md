@@ -119,17 +119,34 @@ The integration deliberately keeps the built-in `openai` provider and points
 it at a loopback `openai_base_url`. This makes named models appear in the normal
 picker instead of replacing the provider with a generic `Custom` entry.
 
-The same managed config also defines an inert `codex-router` custom provider.
-The tray's login-free switch selects that provider for new Codex sessions, so
-Codex can send Responses requests to the local router without first acquiring
-OpenAI authentication. Model selection stays in the native Codex picker in
-both modes: login-free catalogs alias external models onto native slugs, and
-`control model-set` switches the active model from the command line. The switch snapshots the previous root
-`model_provider` in protected state and restores it when disabled. It never
-changes any ChatGPT credential. It keeps an already selected external model or
-selects the first model from a connected, enabled provider, snapshots the prior
-root model, and restores that model when disabled. External routes continue to
-replace incoming authentication with only the chosen provider's credential.
+For a selected custom provider, the tray's login-free switch keeps the provider
+id unchanged and temporarily replaces its complete table with a router-owned,
+auth-free table that points Responses requests at the local router. The
+built-in `openai` id is the deliberate
+exception: Codex 0.141 requires authentication for its implicit definition,
+while current Desktop builds reject any explicit `[model_providers.openai]`
+override as reserved. A root-OpenAI configuration therefore keeps the proven
+`codex-router` provider switch instead of writing a config one supported build
+cannot load. Model selection stays in the native Codex picker: login-free
+catalogs alias external models onto native slugs, and `control model-set`
+switches the active model from the command line.
+
+The switch snapshots every replaced custom-provider section and the prior root
+model in protected state, then restores them exactly after an ownership check.
+For the OpenAI fallback it also snapshots and restores the root
+`model_provider`. It never changes any ChatGPT credential. It keeps an already
+selected external model or selects the first model from a connected, enabled
+provider. External routes continue to replace incoming authentication with only
+the chosen provider's credential.
+
+Catalog refresh writes a protected operation journal before it temporarily
+parks this login-free transport. If the process or host stops in that window,
+rerunning `bin/refresh-catalog` resumes only when the journal still matches the
+exact provider state, provider tree, and model route. Ordinary config changes,
+install, and doctor repair refuse while that journal is pending and name the
+refresh command as the recovery path. State plus an inactive configuration
+without that journal remains ambiguous and fails closed; edits made during an
+interrupted refresh are never overwritten.
 
 The managed base URL contains a separate random caller capability. The router
 validates it before reading a model request or contacting any upstream. Codex
@@ -185,9 +202,11 @@ Codex sends the search result back through the normal routed Responses turn.
 This is a per-model compatibility declaration, not a claim that the upstream
 provider hosts search. Only enable it after verifying that the provider's
 model accepts Codex's web-search result items and preserves tool/function-call
-history. The managed Codex provider table must also set
-`supports_standalone_web_search = true` (on Codex versions that support that
-field); older clients ignore the field and continue without standalone search.
+history. Do not enable a global Codex feature or provider flag for this: Codex
+does not use those settings to gate the tool per model, so they would expose
+`web.run` to unrelated routed models and could select a native OpenAI search
+path without the required ChatGPT session. The registry declaration is the
+only capability switch, and it is scoped to the exact model/provider route.
 
 The checked-in registry currently enables this mode for DeepSeek V4 Flash on
 its direct API and opencode Go routes, DeepSeek V4 Flash Vision Exp, Xiaomi

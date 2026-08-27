@@ -45,19 +45,17 @@ import {
 
 test("Control Center groups provider routes under one model family", () => {
   const families = groupModelFamilies([
-    { slug: "opencode-free/ox-alpha", displayName: "Ox Alpha (OpenCode Free)", provider: "opencode-free", visible: false, enabled: true },
-    { slug: "opencode-go/ox-alpha", displayName: "Ox Alpha (opencode Go)", provider: "opencode-go", visible: true, enabled: true },
-    { slug: "opencode-free/x-preview-f-free", displayName: "Ox Alpha Free", provider: "opencode-free", visible: true, enabled: true },
+    { slug: "opencode-go/glm-5.3-flash", displayName: "GLM-5.3-Flash (opencode Go)", provider: "opencode-go", visible: true, enabled: true },
+    { slug: "opencode-go/glm-5.3", displayName: "GLM-5.3 (opencode Go)", provider: "opencode-go", visible: true, enabled: true },
     { slug: "deepseek/deepseek-v4-pro", displayName: "DeepSeek V4 Pro (API)", provider: "deepseek", visible: true, enabled: true },
   ]);
-  assert.equal(families.length, 2);
-  const ox = families.find((family) => family.id === "ox-alpha");
-  assert.equal(ox.displayName, "Ox Alpha");
-  assert.deepEqual(ox.routes.map((route) => route.slug), [
-    "opencode-free/ox-alpha",
-    "opencode-free/x-preview-f-free",
-    "opencode-go/ox-alpha",
-  ]);
+  assert.equal(families.length, 3);
+  const glmFlash = families.find((family) => family.id === "glm-5-3-flash");
+  assert.equal(glmFlash.displayName, "GLM-5.3-Flash");
+  assert.deepEqual(glmFlash.routes.map((route) => route.slug), ["opencode-go/glm-5.3-flash"]);
+  const glm = families.find((family) => family.id === "glm-5-3");
+  assert.equal(glm.displayName, "GLM-5.3");
+  assert.deepEqual(glm.routes.map((route) => route.slug), ["opencode-go/glm-5.3"]);
   assert.equal(modelFamilyKey({ displayName: "Kimi K3 (OAuth)" }), "kimi-k3");
   assert.equal(modelFamilyKey({ displayName: "Kimi K3 (opencode Go)" }), "kimi-k3");
 });
@@ -1264,7 +1262,8 @@ test("the model directory combines provider setup with de-duplicated model-famil
   assert.match(models, /const effortOptions = model\.reasoningLevels \?\? \[\]/);
   assert.doesNotMatch(models, /reasoningLevels\?\.map\(\(level\) => level\.effort\)/);
   assert.doesNotMatch(models, /<dt>Available<\/dt>/);
-  assert.match(catalogSearch, /x-preview-f-free[^\n]+Ox Alpha Free/);
+  assert.match(catalogSearch, /export function catalogModelName\(modelId\)/);
+  assert.doesNotMatch(catalogSearch, /if \(modelId === "x-preview-f-free"\)/);
 
   const components = await readFile(new URL("../apps/control-center/src/components.tsx", import.meta.url), "utf8");
   assert.match(components, /export function SkeletonBlock/);

@@ -2,9 +2,10 @@ import { execFile as execFileCallback } from "node:child_process";
 
 // Task Scheduler's `State` can remain Running after its only instance has
 // gone, and the COM instance enumeration can outlive its process too. The
-// launcher process tree is therefore probed directly: a wscript/cmd/node
-// process whose command line references the generated launcher is the one
-// authoritative sign that the managed task is still executing anything. A
+// launcher process tree is therefore probed directly: the registered task's
+// wscript process must still reference its exact generated VBS launcher. A
+// manually started `src/start.mjs` is deliberately not enough to prove that
+// Task Scheduler is supervising anything. A
 // query failure is deliberately inconclusive so a restricted shell cannot
 // turn a slow-but-valid startup into a false failure.
 export async function windowsScheduledTaskState({
@@ -25,10 +26,16 @@ export async function windowsScheduledTaskState({
     "  $scheduler = New-Object -ComObject Schedule.Service",
     "  $scheduler.Connect()",
     "  $task = $scheduler.GetFolder('\\').GetTask($env:CODEX_ROUTER_TASK)",
-    "  $instances = [array]$task.GetInstances(0)",
-    "  $launcher = Get-CimInstance Win32_Process -ErrorAction Stop |",
-    "    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and ($_.CommandLine -like '*start-codex-router*' -or $_.CommandLine -like '*codex-router*src*start.mjs*') } |",
-    "    Select-Object -First 1",
+    "  $instances = @($task.GetInstances(0) | Where-Object { $null -ne $_ })",
+    "  $action = $task.Definition.Actions.Item(1)",
+    "  $launcherMatch = [regex]::Match([string]$action.Arguments, '\"([^\"]*start-codex-router-hidden\\.vbs)\"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)",
+    "  $launcherPath = if ($launcherMatch.Success) { $launcherMatch.Groups[1].Value } else { $null }",
+    "  $launcher = $null",
+    "  if ($launcherPath -and [IO.Path]::GetFileName([string]$action.Path) -ieq 'wscript.exe') {",
+    "    $launcher = Get-CimInstance Win32_Process -ErrorAction Stop |",
+    "      Where-Object { $_.ProcessId -ne $PID -and $_.Name -ieq 'wscript.exe' -and $_.CommandLine -and $_.CommandLine.IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0 } |",
+    "      Select-Object -First 1",
+    "  }",
     "  [Console]::Out.Write($instances.Count.ToString() + '|' + $info.LastTaskResult + '|' + $(if ($launcher) { '1' } else { '0' }))",
     "} catch { exit 1 }",
   ].join("\n");

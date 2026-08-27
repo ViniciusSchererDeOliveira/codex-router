@@ -12,6 +12,7 @@ import {
 import { Badge, Button, EmptyState, InlineNotice, PageHeader, SectionHeading } from "../components";
 import { ProviderLogo } from "../provider-branding";
 import { ServiceHealthPanel } from "../ServiceHealth";
+import { useOptimisticValues, type RunAction } from "../useOptimisticValues";
 import {
   classNames,
   compactNumber,
@@ -27,6 +28,7 @@ import type {
   ProviderSetupSnapshot,
   ProviderUsageSnapshot,
   RouterControlApi,
+  RouterDashboardSnapshot,
   RouterHealth,
   RouterTarget,
   UsageEvent,
@@ -124,6 +126,7 @@ const TOKEN_ACTIVITY_WEEKS = 53;
 
 export function DashboardPage({
   target,
+  dashboard,
   health,
   account,
   providerUsage,
@@ -131,14 +134,17 @@ export function DashboardPage({
   refreshing,
   onRefresh,
   onNavigate,
+  runAction,
 }: {
   target?: RouterTarget;
+  dashboard?: RouterDashboardSnapshot;
   health?: RouterHealth;
   account?: AccountUsage;
   providerUsage?: ProviderUsageSnapshot;
   setup?: ProviderSetupSnapshot;
   presence?: PresenceSnapshot;
   api?: RouterControlApi;
+  runAction?: RunAction;
   refreshing: boolean;
   onRefresh: () => void;
   onNavigate: (view: ViewId, modelFocus?: ModelViewFocus) => void;
@@ -166,6 +172,15 @@ export function DashboardPage({
     : refreshing ? "starting" : "offline";
 
   const providers = providerUsage?.providers ?? [];
+  const routeProviders = dashboard?.providers ?? [];
+  const authoritativeRoutes = useMemo(
+    () => new Map(routeProviders.map((provider) => [provider.id, provider.enabled])),
+    [routeProviders],
+  );
+  const routeMutations = useOptimisticValues(
+    authoritativeRoutes,
+    runAction ?? (async (_label, action) => { await action(); }),
+  );
   const telemetryEvents24h = recentWindowEvents(target?.usageEvents, Date.now());
   const eventTokens24h = sumEventTokens(telemetryEvents24h);
   const eventRequests24h = eventsCountOrNull(target?.usageEvents, telemetryEvents24h);
@@ -306,6 +321,13 @@ export function DashboardPage({
 
       <ServiceHealthPanel health={health} compact onOpen={() => onNavigate("status")} />
 
+      <RouteDashboardPanel
+        providers={routeProviders}
+        routeMutations={routeMutations}
+        api={api}
+        onNavigate={onNavigate}
+      />
+
       <div className="db-summary-grid" role="list" aria-label="Router summary">
         {tiles.map((tile) => {
           const Icon = tile.icon;
@@ -445,6 +467,70 @@ export function DashboardPage({
         )}
       </section>
     </div>
+  );
+}
+
+function RouteDashboardPanel({
+  providers,
+  routeMutations,
+  api,
+  onNavigate,
+}: {
+  providers: RouterDashboardSnapshot["providers"];
+  routeMutations: {
+    value: (key: string, fallback: boolean) => boolean;
+    mutate: (key: string, next: boolean, label: string, action: () => Promise<unknown>) => Promise<void>;
+  };
+  api?: RouterControlApi;
+  onNavigate: (view: ViewId, modelFocus?: ModelViewFocus) => void;
+}) {
+  const visible = providers.filter((provider) => provider.kind !== "per-model");
+  return (
+    <section className="db-route-dashboard" aria-labelledby="db-route-dashboard-title">
+      <SectionHeading
+        title="Provider routes"
+        description="Enable or disable validated provider routes. Changes are saved atomically and shared with the tray."
+        action={<Button variant="ghost" onClick={() => onNavigate("models")}>Manage models</Button>}
+      />
+      {visible.length === 0 ? (
+        <EmptyState title="No provider routes" body="Connect a provider to make a route available here." />
+      ) : (
+        <div className="db-route-list" role="list" aria-label="Provider routes">
+          {visible.map((provider) => {
+            const enabled = routeMutations.value(provider.id, provider.enabled);
+            return (
+              <div className="db-route-row" key={provider.id} role="listitem">
+                <ProviderLogo providerId={provider.id} displayName={provider.displayName} size="small" />
+                <div className="db-route-copy">
+                  <strong>{provider.displayName}</strong>
+                  <small>{enabled ? "Route enabled" : "Route disabled"}</small>
+                </div>
+                <Badge tone={enabled ? "success" : "neutral"}>{enabled ? "Enabled" : "Disabled"}</Badge>
+                <Button
+                  variant={enabled ? "secondary" : "primary"}
+                  type="button"
+                  disabled={!api}
+                  aria-pressed={enabled}
+                  aria-label={`${enabled ? "Disable" : "Enable"} ${provider.displayName}`}
+                  onClick={() => {
+                    if (!api) return;
+                    const next = !enabled;
+                    void routeMutations.mutate(
+                      provider.id,
+                      next,
+                      `${next ? "Enable" : "Disable"} ${provider.displayName}`,
+                      () => api.setProviderEnabled(provider.id, next),
+                    );
+                  }}
+                >
+                  {enabled ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

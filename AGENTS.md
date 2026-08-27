@@ -76,7 +76,7 @@ user.
    `configured` rather than showing providers that cannot authenticate.
    `openrouter`, `venice`, and `nousresearch` behave the same way with one
    exception: each ships the single checked-in Ox Alpha entry described under
-   "Ox Alpha ships on six routes" below, so their picker is not empty after the
+   "Ox Alpha became GLM-5.3-Flash on OpenCode Go" below, so their picker is not empty after the
    key is stored, and everything else on them still has to be curated.
    `venice` and `nousresearch` are ordinary API-key providers — Venice keys come
    from venice.ai/settings/api and Nous Portal keys from
@@ -1160,19 +1160,36 @@ rule itself permits — `x-preview-f-free` earns its place by ending in `-free`,
 the same test `anonymousModelAllowed` applies to everything else, so removing
 the fragment would not make the id any less routable.
 
-## Ox Alpha ships on six routes, and the ladder belongs to the model
+## Ox Alpha became GLM-5.3-Flash on OpenCode Go
 
-Ox Alpha is one stealth model that six of this repository's providers resell,
-each under its own id: `x-preview-f-free` on `opencode-free`, `ox-alpha-free`
-on `opencode-go`, `stealth/ox-alpha` on `openrouter`, `commandcode` and
-`nousresearch`, and `stealth-ox-alpha` on `venice`. Every one of those was read
-from that provider's own live `/models` response; `test/ox-alpha.test.mjs` pins
-the repository values against local drift. A later upstream rename or withdrawal
-still needs a fresh authenticated catalog read or live inference probe; a static
-test cannot discover remote state.
+Z.ai revealed the OpenCode Go Ox Alpha preview as GLM-5.3-Flash. OpenCode Go
+withdrew `ox-alpha-free` and now publishes `glm-5.3-flash` on Chat Completions.
+The checked-in route is `opencode-go/glm-5.3-flash`; the old public slug
+`opencode-go/ox-alpha` is a static migration alias so existing picker state and
+callers move to the live route instead of reaching a withdrawn upstream ID. The
+older curation slug `opencode-go/ox-alpha-free` is an alias to the same target.
+OpenCode Go publishes a 1,000,000-token context and 131,072-token output limit
+for the named route. Store the provider limit rather than the base model's
+1,048,576 architectural maximum. The ordinary 0.85 compaction ratio is not
+safe for this route in Codex: large live multimodal histories repeatedly
+returned empty completions before that point. Compact conservatively at 400,000
+while retaining the provider's advertised context as catalog metadata. This
+does not bypass provider moderation; a rejected remote compaction remains a
+provider limitation, not a router or stream crash.
 
-The effort ladder is `low`/`high`/`max` on all six, and it is the **model's**
-ladder rather than any reseller's. The model always thinks, and its upstream
+Five other checked-in routes preserve the preview under the Ox Alpha name:
+`x-preview-f-free` on `opencode-free`, `stealth/ox-alpha` on `openrouter`,
+`commandcode` and `nousresearch`, and `stealth-ox-alpha` on `venice`. As of
+2026-08-26, only Command Code and Venice still publish it; OpenCode Free,
+OpenRouter, and Nous Research have withdrawn it, although the stale checked-in
+routes remain until their registry treatment is settled separately. Every ID
+was originally read from that provider's own live `/models` response;
+`test/ox-alpha.test.mjs` pins the repository values against local drift. A
+static test cannot discover a later upstream rename or withdrawal.
+
+The recorded effort ladder is `low`/`high`/`max` on all five checked-in preview
+routes and the named OpenCode Go replacement, and it is the **model's** ladder
+rather than any reseller's. The model always thinks, and its upstream
 refuses an off-ladder rung by name:
 
 ```
@@ -1209,11 +1226,13 @@ land on `low`. An absent effort stays absent so the upstream's own default
 applies, and `thinking` is always stripped because none of these routes document
 it and it cannot be switched off anyway.
 
-The window is 1,048,576 tokens with 131,072 of output on every route, and
-forced `tool_choice: "required"` is observed to work everywhere, so no route
-needs `auto-tool-choice`. Only `opencode-free/ox-alpha` carries curated
+The five checked-in preview routes recorded a 1,048,576-token window with
+131,072 of output; the named OpenCode Go replacement advertises 1,000,000 with
+the same output limit. Forced `tool_choice: "required"` is observed to work
+everywhere, so no route needs `auto-tool-choice`. Only
+`opencode-free/ox-alpha` carries curated
 `availabilityNux`: it is the one route with no credential to buy first, and
-curated announcement copy is seen by every installer. The other five rely on the
+curated announcement copy is seen by every installer. The other four rely on the
 automatic seven-day announcement, which fires only once their provider is
 actually credentialed and enabled.
 

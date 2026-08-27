@@ -407,6 +407,7 @@ async function routerCatalogSnapshot() {
   const { modelPickerSnapshot } = await import("./model-picker-state.mjs");
   const { subagentSettingsSnapshot } = await import("./multi-agent-state.mjs");
   const { applySubagentProofs } = await import("./subagent-proofs.mjs");
+  const { routerDashboardState } = await import("./router-dashboard.mjs");
   const settings = subagentSettingsSnapshot();
   const picker = modelPickerSnapshot();
   const hidden = new Set(picker.hidden);
@@ -452,6 +453,7 @@ async function routerCatalogSnapshot() {
     knownModels,
     picker,
     subagents: settings,
+    dashboard: routerDashboardState({ models }),
   };
 }
 
@@ -482,6 +484,7 @@ async function printOverview(asJson) {
     // The harness snapshot joins it for the same reason -- and it has to be
     // the variant that probes the web port, or the tray reads every running
     // harness as stopped and offers to start one that is already up.
+    const catalog = await routerCatalogSnapshot();
     process.stdout.write(
       `${JSON.stringify(
         {
@@ -489,7 +492,7 @@ async function printOverview(asJson) {
           // Keep this separate from `targets.codex`: native Codex entries and
           // login-free aliases are client concerns, while this catalog is the
           // durable router policy shared by Codex, DSH, and Gemini.
-          catalog: await routerCatalogSnapshot(),
+          catalog,
           // Explicit sharing consent and login usability are separate facts.
           // This projection contains no token, account id, credential path, or
           // filesystem age even though the underlying doctor status does.
@@ -655,6 +658,11 @@ async function printProviderUsage() {
 async function printProviderOnboarding() {
   const { providerOnboardingSnapshot } = await import("./provider-onboarding.mjs");
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot(), null, 2)}\n`);
+}
+
+async function handleGenericProviders(...commandArgs) {
+  const { runGenericProviderCli } = await import("./generic-providers.mjs");
+  await runGenericProviderCli(commandArgs, { output: process.stdout });
 }
 
 async function installProviderCli(providerId) {
@@ -2711,6 +2719,19 @@ async function handleHarness(action) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
+async function handleClientExport() {
+  const values = args.slice(1);
+  let secretEnv;
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] !== "--secret-env" || !values[index + 1]) {
+      throw new Error("Usage: control client-export [--secret-env NAME]");
+    }
+    secretEnv = values[++index];
+  }
+  const { renderRouterEndpointExport } = await import("./client-exports.mjs");
+  process.stdout.write(renderRouterEndpointExport(secretEnv ? { secretEnv } : {}));
+}
+
 async function handlePresence(action, value) {
   const { PRESENCE_MODES, presenceSnapshot, setPresenceMode } = await import(
     "./presence-state.mjs"
@@ -2770,6 +2791,8 @@ if (args.includes("--probe")) {
   await printProviderUsage();
 } else if (args[0] === "providers") {
   await printProviderOnboarding();
+} else if (args[0] === "generic-providers") {
+  await handleGenericProviders(...args.slice(1));
 } else if (args[0] === "install-cli") {
   if (!args[1]) throw new Error("Usage: control install-cli <oauth-provider>");
   await installProviderCli(args[1]);
@@ -2816,6 +2839,8 @@ if (args.includes("--probe")) {
   handleTray(args[1]);
 } else if (args[0] === "harness") {
   await handleHarness(args[1]);
+} else if (args[0] === "client-export") {
+  await handleClientExport();
 } else if (args[0] === "presence") {
   await handlePresence(args[1], args[2]);
 } else if (args[0] === "chatgpt-session") {

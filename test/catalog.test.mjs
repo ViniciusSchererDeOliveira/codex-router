@@ -281,23 +281,31 @@ test("ClinePass routed models omit the unsupported reasoning-effort selector", (
   assert.deepEqual(normal.supported_reasoning_levels, grok.reasoningLevels);
 });
 
-test("routed models advertise search and image detail only when the registry opts in", () => {
-  // Defaults stay off: external models must not claim capabilities untested.
+test("current Codex search contract distinguishes supported and unsupported routed models", () => {
+  // The managed provider opts in globally, while this catalog field is the
+  // second, per-model gate Codex requires before it exposes standalone search.
   const plain = routedModel(template, grok);
   assert.equal(plain.supports_search_tool, false);
-  assert.equal(plain.supports_image_detail_original, false);
-  const capable = routedModel(template, {
+  const hosted = routedModel(template, {
     ...grok,
     searchTool: { mode: "hosted" },
-    supportsImageDetailOriginal: true,
   });
-  assert.equal(capable.supports_search_tool, true);
-  assert.equal(capable.supports_image_detail_original, true);
+  assert.equal(hosted.supports_search_tool, true);
   const standalone = routedModel(template, {
     ...grok,
     searchTool: { mode: "standalone" },
   });
   assert.equal(standalone.supports_search_tool, true);
+});
+
+test("routed models advertise original image detail only when the registry opts in", () => {
+  const plain = routedModel(template, grok);
+  assert.equal(plain.supports_image_detail_original, false);
+  const capable = routedModel(template, {
+    ...grok,
+    supportsImageDetailOriginal: true,
+  });
+  assert.equal(capable.supports_image_detail_original, true);
 });
 
 test("routed models can explicitly narrow inherited tool capabilities", () => {

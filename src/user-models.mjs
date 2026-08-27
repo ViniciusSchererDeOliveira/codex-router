@@ -73,7 +73,6 @@ const METADATA_FIELDS = new Set([
 // and upstream id: the id remains the routing identity, and a reseller cannot
 // accidentally rename another provider's model with the same slug.
 const OFFICIAL_MODEL_DISPLAY_NAMES = new Map([
-  ["opencode-free/x-preview-f-free", "Ox Alpha Free"],
 ]);
 
 export function officialModelDisplayName(providerId, upstreamId) {

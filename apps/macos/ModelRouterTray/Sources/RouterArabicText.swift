@@ -363,6 +363,7 @@ enum RouterArabicText {
     "Current model or provider is visible in menu bar": "يظهر اسم النموذج أو المزوّد الحالي في شريط القوائم",
     "Hide model name text in menu bar": "إخفاء نص اسم النموذج في شريط القوائم",
     "Menu bar icon": "أيقونة شريط القوائم",
+    "Router mark": "علامة الموجّه",
     "Provider icon": "أيقونة المزوّد",
     "Activity dot": "نقطة النشاط",
     "Preset icon": "أيقونة محددة مسبقًا",

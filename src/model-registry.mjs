@@ -478,7 +478,7 @@ function endpointProblem(model, provider) {
 // an opaque id off a provider's catalog and has nothing better to show. A
 // checked-in fragment always knows, and more than one route can carry the same
 // upstream id, so the table must not overwrite a name the repository chose:
-// `opencode-free/ox-alpha` says which of the six Ox Alpha routes it is, and the
+// `opencode-free/ox-alpha` says which Ox Alpha route it is, and the
 // table would flatten that back to the curated label.
 function normalizedModel(model, provider, { curated = false } = {}) {
   const officialDisplayName = curated
@@ -717,6 +717,11 @@ function modelProblem(model, providers, slugs, gatewayModels) {
 }
 
 const STATIC_MODEL_SLUG_ALIASES = new Map([
+  // Z.ai revealed the OpenCode Go Ox Alpha preview as GLM-5.3-Flash. The
+  // provider withdrew ox-alpha-free when it published the named model, so
+  // preserve existing picker and caller state on the new live route.
+  ["opencode-go/ox-alpha", "opencode-go/glm-5.3-flash"],
+  ["opencode-go/ox-alpha-free", "opencode-go/glm-5.3-flash"],
   // OpenCode moved Grok 4.5 from Chat Completions to Responses. Keep the old
   // public slug routable while catalog publication carries picker state to
   // the protocol-namespaced replacement.

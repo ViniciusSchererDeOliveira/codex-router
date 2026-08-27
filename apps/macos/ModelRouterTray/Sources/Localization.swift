@@ -494,6 +494,7 @@ enum RouterChineseText {
     "Current model or provider is visible in menu bar": "在菜单栏中显示当前模型或提供商名称",
     "Hide model name text in menu bar": "在菜单栏中隐藏模型名称文本",
     "Menu bar icon": "菜单栏图标",
+    "Router mark": "路由器标志",
     "Provider icon": "提供商图标",
     "Activity dot": "活动状态点",
     "Preset icon": "预设图标",

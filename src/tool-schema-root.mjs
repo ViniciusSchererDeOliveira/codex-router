@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 // xAI rejects any tool whose parameter schema does not have an object at the
 // root: "tool parameter root must be an object type (root schema is an
 // anyOf/oneOf union with a non-object branch)". The rejection fails the whole
@@ -199,19 +201,23 @@ export function nonRecursiveToolSchema(schema) {
   return cloneWithoutClosingRefs(schema, closing);
 }
 
-// Moonshot validates every `$ref` a tool schema carries and accepts only
+// Moonshot validates every `$ref` a tool schema carries. It accepts only pure
 // pointers into `#/$defs/`, rejecting the whole request -- not the one tool --
-// over anything else. Codex App connector tools break that rule routinely: Wego
-// `_flights_search` points one property at a *sibling* property,
+// over other pointers and over a `$ref` that carries sibling keywords. Codex App
+// connector tools break the first rule routinely: Wego `_flights_search` points
+// one property at a *sibling* property,
 // `#/properties/filters/properties/priceRange`, so a kimi session that never
-// searches a flight still dies on its first message (issue #353).
+// searches a flight still dies on its first message (issue #353). Codex's
+// zod-generated dynamic tools break the second when a `$defs` entry combines a
+// reference with `type`, `format`, or validation constraints.
 //
 // Inlining replaces such a node with its resolved target merged under the
 // node's own siblings. Nothing is invented: the target is the schema the client
 // itself pointed at, and a `description` or `default` declared beside the `$ref`
-// still wins over whatever the target says. `#/$defs/` pointers are left exactly
-// as they are -- they are the form Moonshot asks for, and expanding them would
-// only grow the payload.
+// still wins over whatever the target says. Pure `#/$defs/` pointers are left
+// exactly as they are -- they are the form Moonshot asks for -- while a
+// definition reference carrying siblings is expanded only on a route that asks
+// for this strict validation flavor.
 //
 // Three bounds keep the walk finite. `seen` holds the refs on the current
 // expansion path, so a self-referential or mutually recursive schema stops at
@@ -237,14 +243,24 @@ const MAX_INLINE_DEPTH = 32;
 const MAX_INLINE_EXPANSIONS = 512;
 const MAX_INLINE_BYTES = 256 * 1024;
 
-function inlineChildRefs(node, root, state, seen, depth, refDepth) {
+function inlineChildRefs(node, root, state, seen, depth, refDepth, inlineDefsWithSiblings) {
   let next = node;
   const replace = (key, value) => {
     if (next === node) next = { ...node };
     next[key] = value;
   };
   const inlineChild = (schema) =>
-    isPlainObject(schema) ? inlineNodeRefs(schema, root, state, seen, depth + 1, refDepth) : schema;
+    isPlainObject(schema)
+      ? inlineNodeRefs(
+          schema,
+          root,
+          state,
+          seen,
+          depth + 1,
+          refDepth,
+          inlineDefsWithSiblings,
+        )
+      : schema;
 
   // `dependencies` is draft-07's mixed map: array values list property names
   // rather than schemas, and `inlineChild` passes those through untouched.
@@ -281,16 +297,45 @@ function inlineChildRefs(node, root, state, seen, depth, refDepth) {
   return next;
 }
 
-function inlineNodeRefs(node, root, state, seen, depth, refDepth) {
+function inlineNodeRefs(
+  node,
+  root,
+  state,
+  seen,
+  depth,
+  refDepth,
+  inlineDefsWithSiblings,
+  resolveDefsAliases = false,
+) {
   if (!isPlainObject(node) || depth > MAX_INLINE_DEPTH || state.exceeded) return node;
   const ref = node.$ref;
+  const hasSiblings = Object.keys(node).some((key) => key !== "$ref");
+  const isDefsRef = typeof ref === "string" && ref.startsWith(DEFS_REF_PREFIX);
+  const foreignRef = typeof ref === "string" && !ref.startsWith(DEFS_REF_PREFIX);
+  const defsRefWithSiblings =
+    inlineDefsWithSiblings &&
+    isDefsRef &&
+    hasSiblings;
+  // A decorated definition can point through a chain of pure aliases. Resolve
+  // those only while expanding that decorated reference; an ordinary pure
+  // definition elsewhere remains the valid untouched form Moonshot accepts.
+  const pureDefsAlias = inlineDefsWithSiblings && resolveDefsAliases && isDefsRef;
   const expandable =
-    typeof ref === "string" &&
-    !ref.startsWith(DEFS_REF_PREFIX) &&
+    (foreignRef || defsRefWithSiblings || pureDefsAlias) &&
     !seen.has(ref) &&
     refDepth < MAX_DEPTH;
   const target = expandable ? resolveRef(ref, root) : undefined;
-  if (!isPlainObject(target)) return inlineChildRefs(node, root, state, seen, depth, refDepth);
+  if (!isPlainObject(target)) {
+    return inlineChildRefs(
+      node,
+      root,
+      state,
+      seen,
+      depth,
+      refDepth,
+      inlineDefsWithSiblings,
+    );
+  }
 
   state.expansions += 1;
   if (state.expansions > MAX_INLINE_EXPANSIONS) {
@@ -300,14 +345,47 @@ function inlineNodeRefs(node, root, state, seen, depth, refDepth) {
   seen.add(ref);
   // The target takes the node's place rather than nesting inside it, so the
   // structural depth does not grow; the ref hop is what is charged.
-  const expanded = inlineNodeRefs(target, root, state, seen, depth, refDepth + 1);
+  const expanded = inlineNodeRefs(
+    target,
+    root,
+    state,
+    seen,
+    depth,
+    refDepth + 1,
+    inlineDefsWithSiblings,
+    isDefsRef,
+  );
   seen.delete(ref);
   if (state.exceeded) return node;
   state.inlined = true;
   const { $ref: _inlined, ...siblings } = node;
   // Only the siblings still need walking: the target came back already inlined,
   // and re-walking it would re-expand the very edges `seen` just protected.
-  return { ...expanded, ...inlineChildRefs(siblings, root, state, seen, depth, refDepth) };
+  const rewrittenSiblings = inlineChildRefs(
+    siblings,
+    root,
+    state,
+    seen,
+    depth,
+    refDepth,
+    inlineDefsWithSiblings,
+  );
+  const strictDefsRef = inlineDefsWithSiblings && isDefsRef;
+  // A definition expansion that still carries its own reference reached a
+  // cycle. Removing this node's siblings would weaken the original schema, so
+  // keep the decorated node intact and let the provider fail closed if it
+  // cannot represent that conjunction.
+  if (strictDefsRef && expanded.$ref !== undefined) return node;
+  if (strictDefsRef) {
+    const conflicts = Object.keys(rewrittenSiblings).some((key) => (
+      Object.hasOwn(expanded, key) && !isDeepStrictEqual(rewrittenSiblings[key], expanded[key])
+    ));
+    // Overwriting either assertion would weaken one side of the conjunction.
+    // Keep the original decorated node instead; this malformed case has no
+    // lossless expansion.
+    if (conflicts) return node;
+  }
+  return { ...expanded, ...rewrittenSiblings };
 }
 
 function jsonByteLength(value) {
@@ -321,7 +399,7 @@ function jsonByteLength(value) {
 export function inlineForeignRefs(schema) {
   if (!isPlainObject(schema)) return schema;
   const state = { expansions: 0, exceeded: false, inlined: false };
-  const inlined = inlineNodeRefs(schema, schema, state, new Set(), 0, 0);
+  const inlined = inlineNodeRefs(schema, schema, state, new Set(), 0, 0, true);
   if (state.exceeded || !state.inlined || inlined === schema) return schema;
   if (jsonByteLength(inlined) > MAX_INLINE_BYTES) return schema;
   return inlined;
