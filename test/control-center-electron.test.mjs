@@ -2023,6 +2023,7 @@ test("Electron uses the installed Windows Job Object owner", () => {
       command: "C:\\Program Files\\Codex Router\\router.exe",
       arguments: ["control.mjs", "doctor"],
       ownerProcessId: 4321,
+      windowsHide: true,
       windowsVerbatimArguments: false,
     },
   );

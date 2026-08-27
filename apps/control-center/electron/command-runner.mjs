@@ -627,6 +627,7 @@ export function windowsJobProcessInvocation(
     sourceRoot,
     environment = process.env,
     ownerPid = process.pid,
+    windowsHide = true,
     windowsVerbatimArguments = false,
   },
 ) {
@@ -634,6 +635,7 @@ export function windowsJobProcessInvocation(
     command,
     arguments: [...args],
     ownerProcessId: ownerPid,
+    windowsHide: Boolean(windowsHide),
     windowsVerbatimArguments: Boolean(windowsVerbatimArguments),
   }), "utf8").toString("base64");
   return {
