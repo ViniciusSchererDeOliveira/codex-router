@@ -114,7 +114,7 @@ test("each target publisher owns a finite tree and contracts its child deadline"
     },
   });
   assert.equal(invocation.command, "/runtime/node");
-  assert.deepEqual(invocation.args, ["/stable/router/src/catalog.mjs"]);
+  assert.deepEqual(invocation.args, [path.join("/stable/router", "src", "catalog.mjs")]);
   assert.equal(invocation.options.deadline, deadline);
   assert.equal(invocation.options.env.SENTINEL, "present");
   assert.equal(

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { writePrivateJson } from "../src/file-security.mjs";
 import { freePort } from "./port-pool.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -104,7 +105,7 @@ test("startup failure cleans up children and leaves a pending Antigravity proof 
   writeFileSync(path.join(stateDir, "caller-secret"), "startup-caller-key-with-sufficient-length\n", { mode: 0o600 });
   const antigravityTokenPath = path.join(stateDir, "antigravity-oauth.json");
   const activationGeneration = "77777777-7777-4777-8777-777777777777";
-  writeFileSync(antigravityTokenPath, `${JSON.stringify({
+  writePrivateJson(antigravityTokenPath, {
     version: 3,
     managed_by: "codex-router",
     session_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -124,7 +125,7 @@ test("startup failure cleans up children and leaves a pending Antigravity proof 
       state: "pending_activation",
       generation: activationGeneration,
     },
-  })}\n`, { mode: 0o600 });
+  });
 
   const child = spawn(process.execPath, [path.join(root, "src", "start.mjs")], {
     cwd: root,

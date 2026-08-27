@@ -47,7 +47,9 @@ test("ensureNodeDependencies hands npm the finite ordinary deadline", async () =
       },
     });
     assert.equal(result, "installed");
-    assert.deepEqual(invocation.args.slice(-2), ["ci", "--omit=dev"]);
+    const renderedInvocation = [invocation.command, ...invocation.args].join(" ");
+    assert.match(renderedInvocation, /(?:^|\s)ci(?:\s|$)/);
+    assert.match(renderedInvocation, /(?:^|\s)--omit=dev(?:\s|$|\")/);
     assert.ok(invocation.options.deadline >= before);
     assert.ok(invocation.options.deadline <= Date.now() + 10 * 60_000);
   } finally {

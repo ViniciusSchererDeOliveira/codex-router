@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { writePrivateJson } from "../src/file-security.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function isolatedEnvironment(testRoot, extra = {}) {
@@ -78,7 +80,7 @@ test("a signed-in but unverified session remains disabled and names the live pro
   writeFileSync(selectionPath, `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`, {
     mode: 0o600,
   });
-  writeFileSync(path.join(stateDir, "antigravity-oauth.json"), JSON.stringify({
+  writePrivateJson(path.join(stateDir, "antigravity-oauth.json"), {
     version: 3,
     managed_by: "codex-router",
     session_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -88,7 +90,7 @@ test("a signed-in but unverified session remains disabled and names the live pro
     refresh_token: "refresh",
     expires_at: Math.floor(Date.now() / 1000) + 3600,
     expires_in: 3600,
-  }), { mode: 0o600 });
+  });
   try {
     const env = isolatedEnvironment(testRoot);
     const enable = runNode(["src/providers.mjs", "enable", "antigravity-oauth"], env);

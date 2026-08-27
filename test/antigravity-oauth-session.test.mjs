@@ -39,6 +39,7 @@ import {
   antigravityOAuthStartupState,
   antigravityOAuthStatus,
 } from "../src/antigravity-oauth-status.mjs";
+import { writePrivateJson } from "../src/file-security.mjs";
 
 const CLIENT = Object.freeze({
   client_id: "operator-owned.apps.googleusercontent.com",
@@ -184,16 +185,15 @@ test("refuses an oversized regular credential before parsing it", async () => {
 async function withToken(token, run) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-oauth-"));
   const tokenPath = path.join(directory, "token.json");
-  const write = (value) => writeFileSync(
+  const write = (value) => writePrivateJson(
     tokenPath,
-    JSON.stringify({
+    {
       version: 3,
       managed_by: "codex-router",
       session_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       ...CLIENT,
       ...value,
-    }),
-    { mode: 0o600 },
+    },
   );
   write(token);
   const previousDiscovery = process.env.CODEX_ROUTER_NO_DISCOVERY;

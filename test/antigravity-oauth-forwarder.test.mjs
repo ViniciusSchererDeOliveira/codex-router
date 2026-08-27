@@ -13,6 +13,7 @@ import {
   parseAntigravitySseEvent,
   requestAntigravityUpstream,
 } from "../src/antigravity-oauth-forwarder.mjs";
+import { writePrivateJson } from "../src/file-security.mjs";
 import { openPort } from "./port-pool.mjs";
 
 const encoder = new TextEncoder();
@@ -42,7 +43,7 @@ async function startMockUpstream(handler) {
 
 function writeTestToken(directory, { verified = true, overrides = {} } = {}) {
   const tokenPath = path.join(directory, "antigravity-oauth.json");
-  writeFileSync(tokenPath, JSON.stringify({
+  writePrivateJson(tokenPath, {
     version: 3,
     managed_by: "codex-router",
     session_generation: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -69,7 +70,7 @@ function writeTestToken(directory, { verified = true, overrides = {} } = {}) {
       }
       : {}),
     ...overrides,
-  }), { mode: 0o600 });
+  });
   return tokenPath;
 }
 

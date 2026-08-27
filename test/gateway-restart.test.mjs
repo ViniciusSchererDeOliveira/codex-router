@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { writePrivateJson } from "../src/file-security.mjs";
 import { freePort } from "./port-pool.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -120,7 +121,7 @@ test("a ready stack activates its exact pending proof and survives a gateway res
   writeFileSync(path.join(stateDir, "caller-secret"), `${callerKey}\n`, { mode: 0o600 });
   const activationGeneration = "88888888-8888-4888-8888-888888888888";
   const antigravityTokenPath = path.join(stateDir, "antigravity-oauth.json");
-  writeFileSync(antigravityTokenPath, `${JSON.stringify({
+  writePrivateJson(antigravityTokenPath, {
     version: 3,
     managed_by: "codex-router",
     session_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -140,7 +141,7 @@ test("a ready stack activates its exact pending proof and survives a gateway res
       state: "pending_activation",
       generation: activationGeneration,
     },
-  })}\n`, { mode: 0o600 });
+  });
   const gatewayBin = writeFakeGateway(rootDir, path.join(rootDir, "fake-gateway.mjs"));
 
   const child = spawn(process.execPath, [path.join(root, "src", "start.mjs")], {
