@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { writePrivateJson } from "../src/file-security.mjs";
 
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-probe-"));
 const tokenPath = path.join(testRoot, "antigravity-oauth.json");
@@ -44,7 +46,7 @@ const VERIFIED = {
 };
 
 function writeToken(overrides = {}) {
-  writeFileSync(tokenPath, JSON.stringify({ ...TOKEN, ...overrides }), { mode: 0o600 });
+  writePrivateJson(tokenPath, { ...TOKEN, ...overrides });
 }
 
 function completion({ text = "OK", finishReason = "STOP", parts } = {}) {

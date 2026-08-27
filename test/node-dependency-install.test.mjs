@@ -47,9 +47,15 @@ test("ensureNodeDependencies hands npm the finite ordinary deadline", async () =
       },
     });
     assert.equal(result, "installed");
-    const renderedInvocation = [invocation.command, ...invocation.args].join(" ");
-    assert.match(renderedInvocation, /(?:^|\s)ci(?:\s|$)/);
-    assert.match(renderedInvocation, /(?:^|\s)--omit=dev(?:\s|$|\")/);
+    if (process.platform === "win32") {
+      assert.equal(path.basename(invocation.command).toLowerCase(), "cmd.exe");
+      assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
+      assert.match(invocation.args[3], /^".*[\\/]npm\.cmd ci --omit=dev"$/i);
+      assert.equal(invocation.options.windowsVerbatimArguments, true);
+    } else {
+      assert.deepEqual(invocation.args, ["ci", "--omit=dev"]);
+      assert.equal(invocation.options.windowsVerbatimArguments, false);
+    }
     assert.ok(invocation.options.deadline >= before);
     assert.ok(invocation.options.deadline <= Date.now() + 10 * 60_000);
   } finally {
