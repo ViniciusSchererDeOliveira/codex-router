@@ -382,7 +382,7 @@ test("ignores a dispatched journal that belongs to a different credential snapsh
     },
     async (_write, tokenPath) => {
       writeFileSync(`${tokenPath}.refresh-state.json`, `${JSON.stringify({
-        version: 1,
+        version: 2,
         epoch: 1,
         owner_nonce: SUCCESSOR_REFRESH_OWNER,
         phase: "dispatched",
@@ -392,6 +392,45 @@ test("ignores a dispatched journal that belongs to a different credential snapsh
       assert.equal(antigravityOAuthStatus().configured, true);
       assert.equal(antigravityOAuthHealth().status, "ok");
       assert.deepEqual(antigravityOAuthStartupState(), { startForwarder: true });
+    },
+  );
+});
+
+test("version-one fast-hash refresh journals fail closed after the verifier upgrade", async () => {
+  await withToken(
+    {
+      access_token: "active-access",
+      refresh_token: "active-refresh",
+      expires_at: 2_000_000_000,
+      expires_in: 3600,
+      project_id: "operator-project",
+      project_source: "managed",
+    },
+    async (_write, tokenPath) => {
+      const token = readAntigravityToken();
+      writeFileSync(`${tokenPath}.refresh-state.json`, `${JSON.stringify({
+        version: 1,
+        epoch: 1,
+        owner_nonce: SUCCESSOR_REFRESH_OWNER,
+        phase: "dispatched",
+        session_generation: token.session_generation,
+        token_fingerprint: "0".repeat(64),
+      }, null, 2)}\n`, { mode: 0o600 });
+      let fetchCalls = 0;
+      await assert.rejects(
+        ensureFreshAntigravitySession({
+          force: true,
+          now: () => 1_999_999_999_000,
+          fetchImpl: async () => {
+            fetchCalls += 1;
+            throw new Error("an old refresh journal must block provider dispatch");
+          },
+        }),
+        (error) => error?.code === "oauth_credential_recovery_required",
+      );
+      assert.equal(fetchCalls, 0);
+      assert.equal(antigravityOAuthStatus().configured, false);
+      assert.equal(antigravityOAuthStartupState().startForwarder, false);
     },
   );
 });

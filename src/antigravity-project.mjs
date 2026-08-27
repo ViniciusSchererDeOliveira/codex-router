@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import {
   ANTIGRAVITY_ENDPOINT,
@@ -72,7 +72,9 @@ function defaultTierId(allowedTiers) {
 }
 
 function projectCacheKey(sessionGeneration) {
-  return createHash("sha256").update(sessionGeneration).digest("hex");
+  // session_generation is already a validated router-created UUID. It is an
+  // in-memory cache namespace, not a credential and not persisted or exposed.
+  return sessionGeneration;
 }
 
 function projectGeneration(key) {

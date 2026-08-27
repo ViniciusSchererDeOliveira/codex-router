@@ -10,7 +10,7 @@ import {
   rmdirSync,
   unlinkSync,
 } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID, scryptSync } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
 import path from "node:path";
@@ -42,10 +42,22 @@ const REFRESH_LEASE_RETRY_MS = 250;
 const POSIX_REFRESH_LEASE_PORT_BASE = 20_000;
 const POSIX_TOKEN_MUTATION_LEASE_PORT_BASE = 10_000;
 const POSIX_OWNER_LEASE_PORT_COUNT = 10_000;
-const ANTIGRAVITY_REFRESH_STATE_VERSION = 1;
+// Version two replaced fast secret-derived hashes with a memory-hard verifier.
+// A version-one in-flight journal is intentionally refused: after dispatch,
+// treating an unknown one-time refresh-token outcome as reusable is unsafe.
+const ANTIGRAVITY_REFRESH_STATE_VERSION = 2;
 const REFRESH_PHASE_CLAIMED = "claimed";
 const REFRESH_PHASE_DISPATCHED = "dispatched";
 const REFRESH_PHASE_UNCERTAIN = "uncertain";
+const REFRESH_FINGERPRINT_SALT = "codex-router/antigravity-refresh-fence/v2";
+const REFRESH_FINGERPRINT_SCRYPT_OPTIONS = Object.freeze({
+  N: 16_384,
+  r: 8,
+  p: 1,
+  maxmem: 32 * 1024 * 1024,
+});
+const FNV64_OFFSET = 0xcbf29ce484222325n;
+const FNV64_PRIME = 0x100000001b3n;
 const PROVABLY_PRECONNECT_REFRESH_CODES = new Set([
   "EADDRNOTAVAIL",
   "ECONNREFUSED",
@@ -980,6 +992,28 @@ function writeRevokedTombstone(token, { reason } = {}) {
   );
 }
 
+function fnv1a64(value, seed = FNV64_OFFSET) {
+  let hash = seed;
+  for (const byte of Buffer.from(value, "utf8")) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * FNV64_PRIME);
+  }
+  return hash;
+}
+
+function ownerLeaseIdentity(value) {
+  // This is routing, not credential verification: a collision can only deny a
+  // lease, never admit two owners. A non-cryptographic digest states that
+  // contract plainly and avoids treating a credential pathname as a password.
+  const first = fnv1a64(`first\0${value}`);
+  const second = fnv1a64(`second\0${value}`, FNV64_OFFSET ^ 0x9e3779b97f4a7c15n);
+  return {
+    id: `${first.toString(16).padStart(16, "0")}${second.toString(16).padStart(16, "0")}`
+      .slice(0, 24),
+    portOffset: Number(first & 0xffffffffn),
+  };
+}
+
 function ownerLeaseEndpoint(namespace, posixPortBase) {
   const tokenPath = path.resolve(antigravityTokenPath());
   // Resolve only the existing parent. The credential itself is atomically
@@ -991,12 +1025,11 @@ function ownerLeaseEndpoint(namespace, posixPortBase) {
     path.basename(tokenPath),
   );
   if (process.platform === "win32") identity = identity.toLowerCase();
-  const digest = createHash("sha256").update(`${namespace}\0${identity}`).digest();
-  const id = digest.toString("hex").slice(0, 24);
+  const leaseIdentity = ownerLeaseIdentity(`${namespace}\0${identity}`);
   if (process.platform === "win32") {
     // Named-pipe ownership belongs to the server handle. Windows removes the
     // pipe instance when its process dies, and a suspended process retains it.
-    return `\\\\.\\pipe\\codex-router-antigravity-${namespace}-${id}`;
+    return `\\\\.\\pipe\\codex-router-antigravity-${namespace}-${leaseIdentity.id}`;
   }
   // Linux has abstract Unix sockets, but macOS does not. A deterministic
   // loopback listener gives both platforms the same kernel-owned lifetime and
@@ -1006,7 +1039,7 @@ function ownerLeaseEndpoint(namespace, posixPortBase) {
   return {
     host: "127.0.0.1",
     port: posixPortBase +
-      (digest.readUInt32BE(0) % POSIX_OWNER_LEASE_PORT_COUNT),
+      (leaseIdentity.portOffset % POSIX_OWNER_LEASE_PORT_COUNT),
     exclusive: true,
   };
 }
@@ -1179,20 +1212,20 @@ async function withRefreshLease(run, { signal } = {}) {
 }
 
 function refreshTokenFingerprint(token) {
-  const digest = createHash("sha256");
-  for (const value of [
+  const snapshot = [
     token.session_generation,
     token.client_id,
     token.client_secret,
     token.access_token,
     token.refresh_token,
     token.expires_at,
-  ]) {
-    const serialized = String(value);
-    digest.update(`${Buffer.byteLength(serialized, "utf8")}:`);
-    digest.update(serialized);
-  }
-  return digest.digest("hex");
+  ].map((value) => String(value));
+  return scryptSync(
+    JSON.stringify(snapshot),
+    REFRESH_FINGERPRINT_SALT,
+    32,
+    REFRESH_FINGERPRINT_SCRYPT_OPTIONS,
+  ).toString("hex");
 }
 
 function normalizeRefreshState(value) {
