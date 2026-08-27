@@ -139,6 +139,27 @@ An OAuth session created while the executable was allowed is not a durable
 workaround. The router invokes the official CLI again near token expiry, so the
 session eventually stops refreshing if Windows blocks the executable later.
 
+## Windows reports that process containment is unavailable
+
+Commands that can mutate router state run inside a kill-on-close Windows Job
+Object. The owner is compiled in-memory by Windows PowerShell before the target
+command starts. If the error names `ConstrainedLanguage`, `Add-Type`, AppLocker,
+or WDAC, the local application-control policy does not permit that safety
+boundary. The router fails before launching the mutation; `-ExecutionPolicy
+Bypass` does not and must not override system application control.
+
+Check the effective language mode without exposing credentials:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command '$ExecutionContext.SessionState.LanguageMode'
+```
+
+`FullLanguage` is required. Keep the policy enabled and ask the machine
+administrator to allow the reviewed checkout/helper through the organization's
+normal trusted-script policy, or run the router on a supported host where the
+boundary is permitted. Do not work around the failure by disabling AppLocker,
+WDAC, or antivirus protection.
+
 ## An API key is missing or invalid
 
 ```sh
@@ -466,17 +487,11 @@ Legacy migration rollback is separate:
 
 The generated mode-`600` JSON includes versions, doctor checks, service state,
 provider presence, config ownership, and file metadata. It excludes credential
-values, prompts, responses, and log contents.
-
-Only when log context is necessary:
-
-```sh
-./bin/support-bundle --include-logs
-```
-
-The log tail is mechanically redacted but may still contain private prompt or
-response text. Inspect it before uploading or attaching it anywhere. The tool
-never uploads a bundle automatically.
+values, prompts, responses, and log contents on every invocation. The legacy
+`--include-logs` option remains accepted for script compatibility, but is a
+deprecated no-op: an old log may contain a credential that was later rotated
+or deleted, so discovering only current values cannot prove a historical tail
+safe. The tool never uploads a bundle automatically.
 
 ## WebSocket warning followed by HTTP fallback
 

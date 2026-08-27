@@ -20,6 +20,8 @@ import { gatewaySupervisorLimits, superviseGateway } from "./gateway-supervisor.
 import { writeLiteLlmConfig } from "./litellm-config.mjs";
 import { MODELS } from "./model-registry.mjs";
 import { readLocalModelSelection } from "./local-models.mjs";
+import { antigravityOAuthStartupState } from "./antigravity-oauth-status.mjs";
+import { attemptAntigravityProbePromotionAfterReadiness } from "./antigravity-probe-activation.mjs";
 import { spawnableCommand } from "./spawnable-command.mjs";
 import { ensureOllamaHeadless } from "./ollama-runtime.mjs";
 import { venvRuntimeProblem } from "./venv-runtime.mjs";
@@ -30,7 +32,6 @@ import {
   inheritedProxyEnvironment,
   redactProxyCredentials,
 } from "./proxy-environment.mjs";
-import { antigravityOAuthStatus } from "./antigravity-oauth-status.mjs";
 
 // Before anything reads the environment or spawns a child. A service manager
 // hands this process the proxy the install recorded; a shell hands it whatever
@@ -278,7 +279,14 @@ async function main() {
   const kimiForwarder = run(process.execPath, [path.join(SOURCE_ROOT, "src", "oauth-forwarder.mjs")]);
   const api = run(process.execPath, [path.join(SOURCE_ROOT, "src", "api-forwarder.mjs")]);
   const grokForwarder = run(process.execPath, [path.join(SOURCE_ROOT, "src", "grok-oauth-forwarder.mjs")]);
-  const antigravityForwarder = antigravityOAuthStatus().configured
+  // An unverified account has no routable Antigravity model. A successful
+  // probe writes a nonpublishable pending generation, which is the sole
+  // exception to the active-proof gate: startup may boot and health-check its
+  // forwarder, then atomically promote that exact generation only after the
+  // whole local stack is ready. An unrelated listener on this otherwise-unused
+  // port therefore cannot take down an account that has never passed proof.
+  const antigravityStartup = antigravityOAuthStartupState();
+  const antigravityForwarder = antigravityStartup.startForwarder
     ? run(process.execPath, [path.join(SOURCE_ROOT, "src", "antigravity-oauth-forwarder.mjs")])
     : undefined;
   const devinForwarder = devinCliRouted
@@ -374,6 +382,24 @@ async function main() {
     frontendService,
     router,
   );
+
+  if (antigravityStartup.pendingActivationGeneration) {
+    const promoted = await attemptAntigravityProbePromotionAfterReadiness({
+      generation: antigravityStartup.pendingActivationGeneration,
+      sessionGeneration: antigravityStartup.pendingSessionGeneration,
+      children,
+    });
+    if (!promoted) {
+      // Never log the generation or any credential material. A concurrent
+      // replacement/disconnect, a newer probe, or a child death all leave the
+      // pending proof nonpublishable; the service can still serve every other
+      // provider while the initiating command reports that exact activation
+      // was not confirmed.
+      console.error(
+        "[codex-router] Antigravity live-proof activation was superseded or startup lost a child; the route remains disabled.",
+      );
+    }
+  }
 
   console.error(`[${frontendService}] ready (authenticated loopback endpoint)`);
   // Only the gateway is supervised. The forwarders and the router are ours and

@@ -566,7 +566,10 @@ export function ModelsPage({ target, catalog, setup, usage, api, refreshing, onR
           }}
           onSignIn={(entry) => {
             if (!api || !entry.setup) return;
-            void runProviderCredentialAction(entry.setup, `Start ${entry.displayName} sign-in`, () => api.connectProvider(entry.id));
+            const label = entry.setup.action === "probe"
+              ? `Run ${entry.displayName} live compatibility test`
+              : `Start ${entry.displayName} sign-in`;
+            void runProviderCredentialAction(entry.setup, label, () => api.connectProvider(entry.id));
           }}
           onKey={(entry) => entry.setup && setCredentialProvider(entry.setup)}
           onRemove={(entry) => entry.setup && setRemoveProvider(entry.setup)}
@@ -758,7 +761,9 @@ export function ModelsPage({ target, catalog, setup, usage, api, refreshing, onR
         onClose={() => setCredentialProvider(null)}
       />
       <Dialog open={Boolean(removeProvider)} title="Disconnect provider" description="The provider is withdrawn from installed clients before its managed credential is deleted." onClose={() => setRemoveProvider(null)}>
-        <div className="pm-credential-warning"><ShieldCheck aria-hidden size={17} strokeWidth={1.7} /><p>If a credential also exists in the environment or Keychain, the router will still report it as connected.</p></div>
+        <div className="pm-credential-warning"><ShieldCheck aria-hidden size={17} strokeWidth={1.7} /><p>{removeProvider?.id === "antigravity-oauth"
+          ? "This removes only the router-owned OAuth client, session, and live proof. Official Antigravity or agy credentials are never read or changed."
+          : "If a credential also exists in the environment or Keychain, the router will still report it as connected."}</p></div>
         <div className="dialog-actions">
           <Button variant="secondary" onClick={() => setRemoveProvider(null)}>Cancel</Button>
           <Button variant="danger" onClick={() => { const provider = removeProvider; setRemoveProvider(null); if (provider && api) void runProviderCredentialAction(provider, `Remove ${provider.displayName} credential`, () => api.removeProviderCredential(provider.id)); }}><Trash2 aria-hidden size={14} strokeWidth={1.7} /> Disconnect</Button>
@@ -954,12 +959,12 @@ function ProviderMenu({
             {setup.kind === "oauth" || setup.signIn ? (
               <Button
                 variant="ghost"
-                disabled={!apiAvailable || platform !== "darwin"}
-                title={platform === "darwin" ? undefined : "Open the provider CLI in your own terminal on Windows or Linux."}
+                disabled={!apiAvailable || setup.action === "blocked" || (entry.id !== "antigravity-oauth" && platform !== "darwin")}
+                title={entry.id === "antigravity-oauth" || platform === "darwin" ? undefined : "Open the provider CLI in your own terminal on Windows or Linux."}
                 onClick={onSignIn}
               >
                 <LogIn aria-hidden size={14} strokeWidth={1.7} />
-                {setup.configured ? "Sign in again" : "Open sign-in"}
+                {setup.action === "probe" ? "Run live test" : setup.configured ? "Sign in again" : "Open sign-in"}
               </Button>
             ) : null}
             {setup.kind === "api" && entry.id !== "local" ? (
@@ -967,7 +972,7 @@ function ProviderMenu({
                 <KeyRound aria-hidden size={14} strokeWidth={1.7} /> {setup.configured ? "Replace key" : "Add key"}
               </Button>
             ) : null}
-            {setup.kind === "api" && setup.configured && entry.id !== "local" ? (
+            {((setup.kind === "api" && setup.configured) || setup.disconnectable) && entry.id !== "local" ? (
               <Button variant="ghost" disabled={!apiAvailable} onClick={onRemove}>
                 <Trash2 aria-hidden size={14} strokeWidth={1.7} /> Disconnect
               </Button>
@@ -1638,7 +1643,7 @@ function providerConnected(entry: ProviderDirectoryEntry, enabledProviders: Set<
   // the bulk "connected" request. Its explicit provider selection is the
   // connection boundary instead.
   if (entry.setup?.kind === "anonymous") return enabledProviders.has(entry.id);
-  if (entry.setup) return entry.setup.configured;
+  if (entry.setup) return entry.setup.configured || entry.setup.signedIn === true;
   return entry.models.some((model) => model.native) || enabledProviders.has(entry.id);
 }
 
@@ -1650,6 +1655,8 @@ function connectionMethod(entry: ProviderDirectoryEntry): string {
   if (entry.id === "openai") return "ChatGPT session";
   if (entry.id === "local") return "Local runtime";
   if (!entry.setup) return "Managed catalog";
+  if (entry.setup.action === "probe") return "Live test required";
+  if (entry.setup.action === "blocked") return "Disconnect required";
   if (entry.setup.kind === "oauth") return "Sign-in";
   if (entry.setup.kind === "anonymous") return "No key needed";
   if (entry.setup.signIn) return "Key or sign-in";
@@ -1660,6 +1667,8 @@ function connectionDetail(entry: ProviderDirectoryEntry, accountStatus?: string,
   if (entry.id === "openai") return "Uses the signed-in ChatGPT session available to this Codex installation.";
   if (!entry.setup) return "This provider catalog is managed by the router and has no separate credential action here.";
   if (entry.setup.kind === "anonymous") return "No API key is required. Make it available before routed prompts or catalog loading can use its endpoint.";
+  if (entry.setup.action === "probe") return entry.setup.probeNote || "Run the explicit live compatibility test; it sends a small prompt and uses provider quota.";
+  if (entry.setup.action === "blocked") return entry.setup.blockedNote || "Disconnect the incompatible router record before signing in again.";
   if (accountStatus === "unavailable") return accountMessage || "Account usage is unavailable. Sign in again if the session expired.";
   if (entry.setup.configured) return "Credential ready. You can take it away from your clients without disconnecting the account.";
   if (entry.setup.kind === "oauth") {

@@ -47,7 +47,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($file in @("install.ps1", "codex-router.ps1", "model-router.ps1", "deploy-codex-router.ps1", "restart-codex-router.ps1", "scripts/build-electron-companion.ps1")) {
+          foreach ($file in @("install.ps1", "codex-router.ps1", "model-router.ps1", "deploy-codex-router.ps1", "restart-codex-router.ps1", "src/windows-process-tree.ps1", "scripts/build-electron-companion.ps1")) {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
               (Resolve-Path $file),

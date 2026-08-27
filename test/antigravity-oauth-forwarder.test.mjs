@@ -40,10 +40,14 @@ async function startMockUpstream(handler) {
   return { server, url: `http://127.0.0.1:${port}` };
 }
 
-function writeTestToken(directory) {
+function writeTestToken(directory, { verified = true, overrides = {} } = {}) {
   const tokenPath = path.join(directory, "antigravity-oauth.json");
   writeFileSync(tokenPath, JSON.stringify({
-    version: 1,
+    version: 3,
+    managed_by: "codex-router",
+    session_generation: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    client_id: "operator-owned.apps.googleusercontent.com",
+    client_secret: "test-client-secret",
     access_token: "test-access-token",
     refresh_token: "test-refresh-token",
     expires_at: Math.floor(Date.now() / 1_000) + 3_600,
@@ -52,6 +56,19 @@ function writeTestToken(directory) {
     project_source: "managed",
     project_checked_at: Date.now(),
     token_type: "Bearer",
+    ...(verified
+      ? {
+        probe_version: 1,
+        probe_verified_at: Date.now(),
+        probe_model: "gemini-3.1-pro",
+        probe_activation: {
+          version: 1,
+          state: "active",
+          generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+      }
+      : {}),
+    ...overrides,
   }), { mode: 0o600 });
   return tokenPath;
 }
@@ -67,7 +84,7 @@ function startForwarder(port, upstreamUrl, tokenPath, extraEnv = {}) {
         MODEL_ROUTER_TARGET: "codex",
         MODEL_ROUTER_INTERNAL_KEY: internalKey,
         MODEL_ROUTER_ANTIGRAVITY_OAUTH_PORT: String(port),
-        ANTIGRAVITY_TOKEN_PATH: tokenPath,
+        MODEL_ROUTER_STATE_DIR: path.dirname(tokenPath),
         ANTIGRAVITY_ENDPOINT: upstreamUrl,
         ANTIGRAVITY_PROD_ENDPOINT: upstreamUrl,
         MODEL_ROUTER_QUIET: "1",
@@ -163,6 +180,35 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function beginSlowChatRequest(base) {
+  let responseResolve;
+  let responseReject;
+  const responsePromise = new Promise((resolve, reject) => {
+    responseResolve = resolve;
+    responseReject = reject;
+  });
+  const target = new URL(`${base}/v1/chat/completions`);
+  const request = http.request({
+    hostname: target.hostname,
+    port: target.port,
+    path: target.pathname,
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${internalKey}`,
+      "Content-Type": "application/json",
+      "Transfer-Encoding": "chunked",
+    },
+  }, (response) => {
+    response.setEncoding("utf8");
+    let body = "";
+    response.on("data", (chunk) => { body += chunk; });
+    response.on("end", () => responseResolve({ status: response.statusCode, body }));
+  });
+  request.once("error", responseReject);
+  request.write('{"model":"gemini-3.1-pro","messages":[');
+  return { request, responsePromise };
+}
+
 test("delivers an upstream SSE chunk before the delayed stream completes", async () => {
   let streamController;
   const body = new ReadableStream({
@@ -233,6 +279,267 @@ test("bounds an upstream body that stops producing data", async () => {
     consumeAntigravitySseStream(body, async () => {}, { idleTimeoutMs: 15 }),
     (error) => error.status === 504 && error.code === "upstream_idle_timeout",
   );
+});
+
+test("terminal grace is one absolute window even while later SSE members trickle", async () => {
+  let interval;
+  let cancelled = false;
+  let sawTerminal = false;
+  let handled = 0;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"terminal":true}\n\n'));
+      controller.enqueue(encoder.encode('data: {"trailer":true}\n\n'));
+      interval = setInterval(() => {
+        controller.enqueue(encoder.encode('data: {"trailer":true}\n\n'));
+      }, 5);
+    },
+    cancel() {
+      cancelled = true;
+      clearInterval(interval);
+    },
+  });
+  const controller = new AbortController();
+  const safetyTimer = setTimeout(() => {
+    controller.abort(new Error("terminal grace was reset by trailer traffic"));
+  }, 250);
+  try {
+    await consumeAntigravitySseStream(body, async (payload) => {
+      handled += 1;
+      if (payload.terminal) sawTerminal = true;
+    }, {
+      idleTimeoutMs: 100,
+      terminalGraceMs: 30,
+      isTerminal: () => sawTerminal,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(safetyTimer);
+  }
+  assert.equal(cancelled, true);
+  assert.ok(handled > 1, "the grace window should inspect trailers that have already arrived");
+});
+
+test("the local boundary refuses unverified sessions without upstream traffic", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-unverified-"));
+  let upstreamCalls = 0;
+  const upstream = await startMockUpstream((_request, response) => {
+    upstreamCalls += 1;
+    response.writeHead(500).end();
+  });
+  const port = await openPort();
+  const child = startForwarder(
+    port,
+    upstream.url,
+    writeTestToken(directory, { verified: false }),
+  );
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gemini-3.1-pro",
+        messages: [{ role: "user", content: "must remain local" }],
+      }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error.code, "antigravity_probe_required");
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await stopChild(child);
+    await closeServer(upstream.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a slow request body cannot cross a session replacement", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-slow-session-"));
+  let upstreamCalls = 0;
+  const upstream = await startMockUpstream((_request, response) => {
+    upstreamCalls += 1;
+    response.writeHead(500).end();
+  });
+  const port = await openPort();
+  const tokenPath = writeTestToken(directory);
+  const child = startForwarder(port, upstream.url, tokenPath);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const slow = beginSlowChatRequest(base);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    writeTestToken(directory, {
+      overrides: {
+        session_generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        access_token: "replacement-access",
+        refresh_token: "replacement-refresh",
+      },
+    });
+    slow.request.end('{"role":"user","content":"must stay local"}]}');
+    const result = await slow.responsePromise;
+    assert.equal(result.status, 409);
+    assert.equal(JSON.parse(result.body).error.code, "oauth_session_changed");
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await stopChild(child);
+    await closeServer(upstream.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a slow request body cannot outlive proof invalidation", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-slow-proof-"));
+  let upstreamCalls = 0;
+  const upstream = await startMockUpstream((_request, response) => {
+    upstreamCalls += 1;
+    response.writeHead(500).end();
+  });
+  const port = await openPort();
+  const tokenPath = writeTestToken(directory);
+  const child = startForwarder(port, upstream.url, tokenPath);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const slow = beginSlowChatRequest(base);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    writeTestToken(directory, { verified: false });
+    slow.request.end('{"role":"user","content":"must stay local"}]}');
+    const result = await slow.responsePromise;
+    assert.equal(result.status, 403);
+    assert.equal(JSON.parse(result.body).error.code, "antigravity_probe_required");
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await stopChild(child);
+    await closeServer(upstream.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a 401 retry cannot cross a disconnect-reconnect session generation", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-401-generation-"));
+  let upstreamCalls = 0;
+  const tokenPath = writeTestToken(directory);
+  const upstream = await startMockUpstream((_request, response) => {
+    upstreamCalls += 1;
+    writeTestToken(directory, {
+      overrides: {
+        session_generation: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        access_token: "replacement-access",
+        refresh_token: "replacement-refresh",
+      },
+    });
+    response.writeHead(401, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "expired" } }));
+  });
+  const port = await openPort();
+  const child = startForwarder(port, upstream.url, tokenPath);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gemini-3.1-pro",
+        messages: [{ role: "user", content: "do not cross accounts" }],
+      }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, "oauth_session_changed");
+    assert.equal(upstreamCalls, 1);
+  } finally {
+    await stopChild(child);
+    await closeServer(upstream.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a 401 retry cannot outlive proof invalidation in the same session", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-401-proof-"));
+  let upstreamCalls = 0;
+  const tokenPath = writeTestToken(directory);
+  const upstream = await startMockUpstream((_request, response) => {
+    upstreamCalls += 1;
+    writeTestToken(directory, { verified: false });
+    response.writeHead(401, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "expired" } }));
+  });
+  const port = await openPort();
+  const child = startForwarder(port, upstream.url, tokenPath);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gemini-3.1-pro",
+        messages: [{ role: "user", content: "do not retry stale proof" }],
+      }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error.code, "antigravity_probe_required");
+    assert.equal(upstreamCalls, 1);
+  } finally {
+    await stopChild(child);
+    await closeServer(upstream.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("endpoint fallback reasserts the exact active proof before another attempt", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-fallback-proof-"));
+  let dailyCalls = 0;
+  let productionCalls = 0;
+  const tokenPath = writeTestToken(directory);
+  const daily = await startMockUpstream((_request, response) => {
+    dailyCalls += 1;
+    writeTestToken(directory, { verified: false });
+    response.writeHead(503, { "Content-Type": "application/json" });
+    response.end("{}");
+  });
+  const production = await startMockUpstream((_request, response) => {
+    productionCalls += 1;
+    response.writeHead(500).end();
+  });
+  const port = await openPort();
+  const child = startForwarder(port, daily.url, tokenPath, {
+    ANTIGRAVITY_PROD_ENDPOINT: production.url,
+  });
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gemini-3.1-pro",
+        messages: [{ role: "user", content: "do not fall back after revocation" }],
+      }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error.code, "antigravity_probe_required");
+    assert.equal(dailyCalls, 1);
+    assert.equal(productionCalls, 0);
+  } finally {
+    await stopChild(child);
+    await closeServer(daily.server);
+    await closeServer(production.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("falls back only after an explicit retryable response and reuses the body", async () => {

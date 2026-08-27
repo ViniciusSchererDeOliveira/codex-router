@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -125,6 +127,40 @@ test("a failed health result object is a failure, never a resolution", async () 
 test("the service delegates its full readiness budget to the guarded wait", () => {
   const source = readFileSync(path.join(root, "src", "service.mjs"), "utf8");
   assert.match(source, /waitForServiceReadiness/);
+  assert.match(source, /platformBudgetMs = remainingOperationMs\(\)/);
+  assert.match(source, /PLATFORM_COMMAND_RESERVE_MS \+ READINESS_TIMEOUT_MS/);
+  assert.match(source, /readinessBudgetMs = remainingOperationMs\(\)/);
+  assert.match(source, /readinessBudgetMs < READINESS_TIMEOUT_MS/);
   assert.match(source, /timeoutMs: READINESS_TIMEOUT_MS/);
+  assert.doesNotMatch(source, /remainingOperationMs\(READINESS_TIMEOUT_MS\)/);
+  assert.match(source, /CODEX_ROUTER_OPERATION_DEADLINE_MS/);
+  assert.doesNotMatch(source, /spawnSync\([\s\S]{0,500}timeout:/);
   assert.doesNotMatch(source, /waitForRouterHealth/);
+});
+
+test("an impossible service deadline is refused before the platform renderer mutates", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "router-service-budget-"));
+  const config = path.join(directory, "config");
+  try {
+    const result = spawnSync(process.execPath, [path.join(root, "src", "service.mjs"), "restart"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_ROUTER_SERVICE_PLATFORM: "linux",
+        CODEX_ROUTER_OPERATION_DEADLINE_MS: String(Date.now() + 300_000),
+        XDG_CONFIG_HOME: config,
+        MODEL_ROUTER_STATE_DIR: path.join(directory, "state"),
+        CODEX_HOME: path.join(directory, "codex"),
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /cannot preserve its platform and 300-second readiness allowances/);
+    assert.equal(
+      existsSync(path.join(config, "systemd", "user", "codex-router.service")),
+      false,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

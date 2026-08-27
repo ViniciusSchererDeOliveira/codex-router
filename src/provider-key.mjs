@@ -250,7 +250,7 @@ if (command === "status") {
       catalog.forget(providerCatalogFamilyCacheIds(provider.id));
     });
     enableProvider(provider.id);
-    refreshed = refreshTargetPickerIfInstalled();
+    refreshed = await refreshTargetPickerIfInstalled();
   });
   process.stdout.write(
     `${provider.displayName} ${credentialNoun} saved to protected local storage at ${target}. The provider is enabled.${
@@ -276,7 +276,7 @@ if (command === "status") {
       if (result.removedFiles) catalog.forget(providerCatalogFamilyCacheIds(provider.id));
       return result;
     });
-    refreshed = removal.removedFiles ? refreshTargetPickerIfInstalled() : false;
+    refreshed = removal.removedFiles ? await refreshTargetPickerIfInstalled() : false;
   });
   process.stdout.write(
     removal.removedFiles

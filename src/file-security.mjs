@@ -2,12 +2,14 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 // Windows private-file hardening is one PowerShell spawn per call.
@@ -80,6 +82,7 @@ function protectPrivateFilesWin32(paths) {
       {
         env: { ...process.env, CODEX_ROUTER_PRIVATE_FILES: JSON.stringify(list) },
         stdio: ["ignore", "ignore", "pipe"],
+        timeout: 15_000,
       },
     );
   } catch (error) {
@@ -102,11 +105,16 @@ export function protectPrivateFile(target) {
 // Keeping it here prevents one state writer from drifting away from the rest.
 export function writePrivateFile(target, contents, { directoryMode } = {}) {
   const directory = path.dirname(target);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  if (directoryMode !== undefined) chmodSync(directory, directoryMode);
-  const temporary = `${target}.tmp.${process.pid}`;
+  const createdDirectory = mkdirSync(directory, { recursive: true, mode: 0o700 });
+  // A caller may inject a credential path for an isolated test, but it never
+  // owns an already-existing parent such as /tmp or a project checkout. Only
+  // apply the requested directory mode to a directory this write created.
+  if (createdDirectory !== undefined && directoryMode !== undefined) {
+    chmodSync(directory, directoryMode);
+  }
+  const temporary = `${target}.tmp.${process.pid}.${randomUUID()}`;
   try {
-    writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600 });
+    writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600, flag: "wx" });
     if (process.platform === "win32") {
       // One spawn hardens the temporary; the renameSync below then moves this
       // exact file over the target, and MoveFile carries the source's DACL
@@ -121,7 +129,12 @@ export function writePrivateFile(target, contents, { directoryMode } = {}) {
       protectPrivateFile(target);
     }
   } catch (error) {
-    if (existsSync(temporary)) unlinkSync(temporary);
+    try {
+      const metadata = lstatSync(temporary);
+      if (metadata.isFile() && !metadata.isSymbolicLink()) unlinkSync(temporary);
+    } catch {
+      // The exclusive temporary was never created or was already moved.
+    }
     throw error;
   }
   return target;
@@ -157,6 +170,7 @@ export function privateFileIsProtected(target) {
         encoding: "utf8",
         env: { ...process.env, CODEX_ROUTER_PRIVATE_FILE: target },
         stdio: ["ignore", "pipe", "ignore"],
+        timeout: 15_000,
       },
     ).trim().toLowerCase() === "true";
   } catch {

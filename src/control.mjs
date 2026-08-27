@@ -26,10 +26,18 @@ import { presenceSnapshot } from "./presence-state.mjs";
 import { harnessSnapshotWithWeb } from "./dsh-install.mjs";
 import { USER_MODELS_PATH } from "./user-models.mjs";
 import { refreshTargetPickerIfInstalled } from "./target-integration.mjs";
+import { activateAntigravityProbe } from "./antigravity-probe-activation.mjs";
 import {
   chatGptSessionStatus,
   setChatGptSessionSharingFromControl,
 } from "./chatgpt-session-control.mjs";
+import {
+  boundedOperationChild,
+  detachedOperationEnvironment,
+  operationDeadlineFromEnvironment,
+  remainingOperationMs,
+  runOperationProcessTree,
+} from "./process-tree.mjs";
 
 // Cross-target control plane for a tray/UI (e.g. the planned pane fork). It
 // reads which registry models are enabled per target and toggles them. Toggling
@@ -51,6 +59,53 @@ const TARGETS = [
   ...(existsSync(GEMINI_PUBLISHED) ? ["gemini"] : []),
 ];
 const args = process.argv.slice(2);
+const boundedAntigravityOperation =
+  (args[0] === "login" && args[1] === "antigravity-oauth") ||
+  (args[0] === "probe-provider" && args[1] === "antigravity-oauth");
+const restartBearingOverlayOperation = new Set([
+  "set-apply",
+  "credential",
+  "auth-mode",
+  "subagents",
+  "picker",
+  "vision-bridge",
+  "local-models",
+  "signed-routing",
+]).has(args[0]);
+const selfReplacingControl =
+  args[0] === "maintenance" ||
+  (args[0] === "tray" && ["refresh", "rebuild"].includes(args[1]));
+// Restart-bearing overlay transactions may use two complete 640-second
+// forward/rollback epochs. The control owner retains another ten seconds to
+// retire the inner process tree before a desktop watchdog may intervene.
+const maximumControlOperationMs = boundedAntigravityOperation
+  ? 610_000
+  : restartBearingOverlayOperation
+    ? 1_310_000
+    : 850_000;
+if (!selfReplacingControl && !boundedOperationChild(process.env, {
+  maximumMs: maximumControlOperationMs,
+})) {
+  // Every ordinary control invocation enters one separately terminable tree.
+  // Its owner gets ten seconds beyond the cooperative child budget so it can
+  // escalate a full process-group termination. Catalog desktop watchdogs keep
+  // another ten seconds outside this boundary; shorter ordinary operations
+  // retain the larger margin chosen by their UI runner.
+  const deadline = operationDeadlineFromEnvironment(process.env, {
+    timeoutMs: maximumControlOperationMs,
+    maximumMs: maximumControlOperationMs,
+  });
+  const result = await runOperationProcessTree(process.execPath, [SELF, ...args], {
+    cwd: REPO_ROOT,
+    env: process.env,
+    childEnvironment: {
+      CODEX_ROUTER_OPERATION_CHILD: "1",
+    },
+    deadline,
+    stdio: "inherit",
+  });
+  process.exit(result.status ?? 1);
+}
 
 function targetIsActive(target) {
   // One service serves every client, so "is this target active" cannot be the
@@ -673,7 +728,88 @@ async function installProviderCli(providerId) {
 
 async function loginProvider(providerId) {
   const { loginOauthProvider, providerOnboardingSnapshot } = await import("./provider-onboarding.mjs");
-  await loginOauthProvider(providerId);
+  const deadline = operationDeadlineFromEnvironment(process.env, {
+    timeoutMs: 10 * 60_000,
+    maximumMs: 10 * 60_000,
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    const error = new Error("Provider sign-in exceeded its absolute deadline.");
+    error.code = "router_operation_timeout";
+    controller.abort(error);
+  }, remainingOperationMs(deadline));
+  timer.unref?.();
+  try {
+    await loginOauthProvider(providerId, { signal: controller.signal, deadline });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (providerId === "antigravity-oauth") {
+    // A re-login intentionally clears the previous live proof. Republish now
+    // so installed clients cannot keep advertising the route while it is in
+    // that fail-closed state; the provider selection itself is preserved.
+    await withModelOverlayLock(() => refreshTargetPickerIfInstalled());
+  }
+  process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
+}
+
+async function probeProvider(providerId, flags) {
+  if (providerId !== "antigravity-oauth") {
+    throw new Error("Only antigravity-oauth has a router-managed live compatibility probe.");
+  }
+  const allowed = new Set(["--live", "--yes", "--provision-project"]);
+  const unknown = flags.find((flag) => !allowed.has(flag));
+  if (unknown) {
+    throw new Error(
+      `Unknown Antigravity probe option: ${unknown}. ` +
+        "Usage: control probe-provider antigravity-oauth --live --yes [--provision-project]",
+    );
+  }
+  const { probeAntigravity } = await import("./antigravity-oauth-probe.mjs");
+  const { forgetProviderCatalogFamilyCache } = await import("./provider-catalogs.mjs");
+  const deadline = operationDeadlineFromEnvironment(process.env, {
+    timeoutMs: 10 * 60_000,
+    maximumMs: 10 * 60_000,
+  });
+  const operationTimeoutMs = remainingOperationMs(deadline);
+  const controller = new AbortController();
+  const deadlineTimer = setTimeout(() => {
+    const error = new Error(
+      "Antigravity probe activation timed out before the live request, service readiness, and publication completed.",
+    );
+    error.code = "antigravity_activation_timeout";
+    controller.abort(error);
+  }, operationTimeoutMs);
+  deadlineTimer.unref?.();
+  const remainingLockWaitMs = (operationDeadline) =>
+    Math.max(0, Math.min(120_000, operationDeadline - Date.now()));
+  const refreshInstalledClients = ({
+    signal = controller.signal,
+    deadline: operationDeadline = deadline,
+  } = {}) => withModelOverlayLock(async () => {
+    signal?.throwIfAborted();
+    await forgetProviderCatalogFamilyCache(providerId);
+    signal?.throwIfAborted();
+    return refreshTargetPickerIfInstalled({ signal, deadline: operationDeadline });
+  }, { waitMs: remainingLockWaitMs(operationDeadline) });
+  try {
+    await activateAntigravityProbe({
+      probe: probeAntigravity,
+      probeOptions: {
+        live: flags.includes("--live"),
+        confirmed: flags.includes("--yes"),
+        allowOnboard: flags.includes("--provision-project"),
+      },
+      withdraw: refreshInstalledClients,
+      restart: restartRouterForLocalRoutes,
+      publish: refreshInstalledClients,
+      signal: controller.signal,
+      deadline,
+    });
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+  const { providerOnboardingSnapshot } = await import("./provider-onboarding.mjs");
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
 }
 
@@ -717,7 +853,7 @@ async function saveProviderCredential(providerId) {
     const { enableProvider } = await import("./provider-selection.mjs");
     enableProvider(providerId);
     const { refreshTargetPickerIfInstalled } = await import("./target-integration.mjs");
-    refreshTargetPickerIfInstalled();
+    await refreshTargetPickerIfInstalled();
   });
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
 }
@@ -736,9 +872,9 @@ async function deleteProviderCredential(providerId) {
       if (result.removedFiles) catalog.forget(providerCatalogFamilyCacheIds(providerId));
       return result;
     });
-    if (removal.removedFiles) {
+    if (removal.removedFiles || providerId === "antigravity-oauth") {
       const { refreshTargetPickerIfInstalled } = await import("./target-integration.mjs");
-      refreshTargetPickerIfInstalled();
+      await refreshTargetPickerIfInstalled();
     }
   });
   process.stdout.write(
@@ -1018,7 +1154,7 @@ function runDoctor(args) {
   process.stdout.write(`${JSON.stringify({ ok: true })}\n`);
 }
 
-function refreshModelSettingsCatalog() {
+async function refreshModelSettingsCatalog() {
   // The router owns the model policy.  Rebuilding only merged-models.json
   // leaves a published DSH route with the previous picker state (and makes
   // Gemini look different again at its next process start).  The target
@@ -1035,14 +1171,16 @@ function refreshModelSettingsCatalog() {
   }
 }
 
-async function restartRouterForLocalRoutes() {
+async function restartRouterForLocalRoutes({ signal, deadline } = {}) {
   // User-model routes live in files the running router only reads at startup,
   // so a local model toggle needs the same service reload curated-model apply
   // performs. Foreground/dev routers have no service and are skipped.
   const { restartRouterServiceIfInstalled } = await import("./router-restart.mjs");
-  const restarted = restartRouterServiceIfInstalled();
+  signal?.throwIfAborted();
+  const restarted = await restartRouterServiceIfInstalled({ signal, deadline });
+  signal?.throwIfAborted();
   if (restarted) {
-    process.stderr.write("Router service restarted so local routes are live.\n");
+    process.stderr.write("Router service restarted so routes with fresh process state are live.\n");
   }
   return restarted;
 }
@@ -1205,7 +1343,7 @@ async function handleSubagents(action, value, flag, rest = []) {
         spawnDetachedVerification(slugs);
       }
     }
-    refreshModelSettingsCatalog();
+    await refreshModelSettingsCatalog();
     process.stdout.write(`${JSON.stringify(policyState)}\n`);
     return;
   }
@@ -1243,7 +1381,7 @@ async function handleSubagents(action, value, flag, rest = []) {
       ? targets
       : subagentSettingsSnapshot().enabled;
     const verified = await verifySubagentCandidates(sweep, { force: targets.length > 0 });
-    refreshModelSettingsCatalog();
+    await refreshModelSettingsCatalog();
     process.stdout.write(`${JSON.stringify({ verified })}\n`);
     return;
   } else if (action === "certify") {
@@ -1362,7 +1500,7 @@ async function handleSubagents(action, value, flag, rest = []) {
     // One republish for the whole fan-out, and only when something was
     // promoted: publication rewrites the merged catalog and the agents
     // directory, which is far too much work to repeat per failed route.
-    if (promoted) refreshModelSettingsCatalog();
+    if (promoted) await refreshModelSettingsCatalog();
     process.stdout.write(`${JSON.stringify({ results })}\n`);
     return;
   } else if (action === "set") {
@@ -1439,7 +1577,7 @@ async function handleSubagents(action, value, flag, rest = []) {
         "policy status|provider <provider-id> <on|off>|model <model-slug> <on|off>|family <name> <on|off>",
     );
   }
-  refreshModelSettingsCatalog();
+  await refreshModelSettingsCatalog();
   process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
 }
 
@@ -1782,7 +1920,12 @@ async function handleVisionBridge(action, value, extra) {
         // windowsHide matters more here than anywhere else: a detached child
         // gets its own console on Windows, and this one lives for the length of
         // a multi-gigabyte pull. The local-model worker below already hides.
-        { detached: true, stdio: "ignore", windowsHide: true },
+        {
+          detached: true,
+          env: detachedOperationEnvironment(),
+          stdio: "ignore",
+          windowsHide: true,
+        },
       );
       child.unref();
       const workerState = readVisionDownload({ persist: false });
@@ -2197,6 +2340,7 @@ async function handleLocalModels(action, value, ...rest) {
       writePhase("Starting model download");
       const child = spawn(process.execPath, [path.join(REPO_ROOT, "src", "local-download.mjs"), tag], {
         detached: true,
+        env: detachedOperationEnvironment(),
         stdio: "ignore",
         windowsHide: true,
       });
@@ -2341,7 +2485,12 @@ async function handleLocalModels(action, value, ...rest) {
         const child = spawn(
           process.execPath,
           [path.join(REPO_ROOT, "src", "local-uninstall.mjs"), tag],
-          { detached: true, stdio: "ignore", windowsHide: true },
+          {
+            detached: true,
+            env: detachedOperationEnvironment(),
+            stdio: "ignore",
+            windowsHide: true,
+          },
         );
         child.unref();
         writeLocalDownload({
@@ -2531,7 +2680,7 @@ async function handlePicker(action, value, flag) {
     // The write above is the router's durable source of truth. Publish it to
     // Codex, DSH, and Gemini while the same model-overlay lock is held so a
     // second command cannot race a client snapshot between the two steps.
-    refreshModelSettingsCatalog();
+    await refreshModelSettingsCatalog();
   });
   process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);
 }
@@ -2799,6 +2948,11 @@ if (args.includes("--probe")) {
 } else if (args[0] === "login") {
   if (!args[1]) throw new Error("Usage: control login <oauth-provider>");
   await loginProvider(args[1]);
+} else if (args[0] === "probe-provider") {
+  if (!args[1]) {
+    throw new Error("Usage: control probe-provider antigravity-oauth --live --yes [--provision-project]");
+  }
+  await probeProvider(args[1], args.slice(2));
 } else if (args[0] === "catalog-cache") {
   if (args[1] !== "invalidate" || !args[2]) {
     throw new Error("Usage: control catalog-cache invalidate <provider>");

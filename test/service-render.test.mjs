@@ -111,7 +111,7 @@ test("background service definitions render for macOS, Linux, and Windows", () =
   }
 });
 
-test("background services preserve the Antigravity client secret", () => {
+test("background services never copy the Antigravity client secret", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-antigravity-service-"));
   const secret = "test-antigravity-client-secret";
   try {
@@ -119,19 +119,19 @@ test("background services preserve the Antigravity client secret", () => {
       "service-macos.mjs", "darwin", testRoot, "render", "codex", root,
       { ANTIGRAVITY_CLIENT_SECRET: secret },
     );
-    assert.match(launchd, new RegExp(`<key>ANTIGRAVITY_CLIENT_SECRET</key>\\s*<string>${secret}</string>`));
+    assert.doesNotMatch(launchd, /ANTIGRAVITY_CLIENT_SECRET|test-antigravity-client-secret/);
 
     const systemd = serviceCommand(
       "service-linux.mjs", "linux", testRoot, "render", "codex", root,
       { ANTIGRAVITY_CLIENT_SECRET: secret },
     );
-    assert.match(systemd, new RegExp(`Environment="ANTIGRAVITY_CLIENT_SECRET=${secret}"`));
+    assert.doesNotMatch(systemd, /ANTIGRAVITY_CLIENT_SECRET|test-antigravity-client-secret/);
 
     const windows = serviceCommand(
       "service-windows.mjs", "win32", testRoot, "render", "codex", root,
       { ANTIGRAVITY_CLIENT_SECRET: secret },
     );
-    assert.match(windows, new RegExp(`set "ANTIGRAVITY_CLIENT_SECRET=${secret}"`));
+    assert.doesNotMatch(windows, /ANTIGRAVITY_CLIENT_SECRET|test-antigravity-client-secret/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

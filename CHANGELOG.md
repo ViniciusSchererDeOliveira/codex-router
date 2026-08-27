@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **Antigravity OAuth now uses an operator-owned, fail-closed sign-in.** The
+  router requires one matching Google Desktop-app client ID/secret pair,
+  collects it through an ephemeral IPv4 loopback listener, and stores the pair
+  privately with the refresh session on macOS, Linux, and Windows. It no longer
+  borrows the official `agy`/IDE credential or identity, copies a secret into
+  service definitions, or provisions a project during sign-in. The route stays
+  disabled until a separately confirmed, quota-consuming live probe succeeds
+  with the truthful `codex-router` identity; incompatible legacy records are
+  preserved until the operator explicitly disconnects them. Its forwarder is
+  not spawned or health-gated before proof. A passing probe is persisted as a
+  generation-bound pending activation that remains unpublishable until the
+  restarted local stack is fully healthy; failed startup, process death,
+  credential replacement, and disconnect cannot promote it. Thus an unused
+  provider port cannot take down the router or leave an unready route exposed.
+  Pre-activation v2 proof records are deliberately unverified and require a
+  fresh explicit probe rather than being grandfathered past this readiness gate.
+  An authorization-code `invalid_client` rejection also tombstones only the
+  exact credential-and-proof snapshot submitted with that same client pair;
+  concurrent replacements and unrelated attempted clients remain untouched.
+  The Control Center gives the live request, restart readiness, exact-generation
+  confirmation, and client publication one shared ten-minute deadline, with a
+  separate one-minute command-runner cleanup margin, so a wedged command tree
+  can be terminated without shortening the cooperative activation budget. On
+  Windows, bounded children start suspended in a kill-on-close Job Object, get
+  only dedicated standard handles through an explicit inheritance allowlist,
+  and remain attached to the console for interactive operations; restricted
+  PowerShell hosts fail before launching the mutation.
+
+- **Support bundles now always omit historical logs.** A log may contain a
+  credential that was later rotated or deleted, so current-secret discovery
+  cannot prove any historical tail safe. Bundles retain redacted generated
+  diagnostics and log-file metadata without copying arbitrary log contents;
+  the former `--include-logs` switch remains accepted as a deprecated no-op.
 - **OpenCode Go Kimi K2.7 Code now accepts current Codex tool schemas.** Its
   Moonshot-backed validator receives the same bounded decorated-`$defs` repair
   as the first-party Kimi routes. The compatibility gate names only this

@@ -21,6 +21,7 @@ test("translates a plain user turn into Gemini contents", () => {
   );
   assert.equal(request.model, "gemini-3-pro-high");
   assert.equal(request.project, "my-project");
+  assert.equal(request.userAgent, "codex-router");
   assert.equal(request.request.systemInstruction.parts[0].text, "You are a coding assistant.");
   assert.deepEqual(request.request.contents, [
     { role: "user", parts: [{ text: "hello" }] },

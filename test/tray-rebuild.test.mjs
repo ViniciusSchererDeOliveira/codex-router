@@ -1030,6 +1030,8 @@ test("the native macOS tray owns one embedded Control Center", () => {
   assert.match(detached, /task\.standardInput = FileHandle\.nullDevice/);
   assert.match(detached, /task\.standardOutput = FileHandle\.nullDevice/);
   assert.match(detached, /task\.standardError = FileHandle\.nullDevice/);
+  assert.match(detached, /removeValue\(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS"\)/);
+  assert.match(detached, /removeValue\(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BARRIER_DIR"\)/);
   assert.match(detached, /try task\.run\(\)/);
   assert.doesNotMatch(detached, /waitUntilExit/);
 });

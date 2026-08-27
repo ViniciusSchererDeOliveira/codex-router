@@ -148,6 +148,9 @@ Requirements:
 - Node.js 22.19 or newer; Node.js 24 LTS is recommended.
 - `uv`, or Python 3.10+ with `venv`.
 - Git for the managed one-command checkout and rollback.
+- On Windows, Windows PowerShell must run in `FullLanguage` mode and local
+  application-control policy must permit `Add-Type`. The router checks this
+  before starting a mutation child; it does not weaken or bypass that policy.
 
 Linux installations support the Codex CLI.
 
@@ -257,28 +260,64 @@ Pro/Ultra entitlement on the signed-in account. It needs neither a Gemini API
 key nor a separate Antigravity CLI. Signing in and enabling are separate so a
 re-authentication never replaces the rest of the provider selection:
 
-Antigravity OAuth requires an integration client secret. Set
-`ANTIGRAVITY_CLIENT_SECRET` in the environment used for installation and
-sign-in; the generated background-service definition preserves it for token
-refreshes. The command fails before opening Google consent when it is absent.
+Create a Google OAuth **Desktop app** client in a Google Cloud project you own:
+
+1. In Google Cloud Console, open **APIs & Services > OAuth consent screen** and
+   configure the app for your account with a truthful name such as **Codex
+   Router**—not Antigravity (add the account as a test user when the consent
+   screen is in testing mode).
+2. Open **APIs & Services > Credentials**, choose **Create credentials > OAuth
+   client ID**, and select **Desktop app**. Keep the resulting client ID and
+   matching secret in that private browser tab.
+3. Run the login command below and enter that one pair only in the local setup
+   page it opens.
+
+Do not copy the official Antigravity/`agy` client or credential store. The
+login command binds `127.0.0.1` on an OS-assigned ephemeral port before it
+constructs the redirect. It opens only a loopback URL through the operating
+system; the local listener redirects the browser to Google, so neither client
+value is put in process arguments or terminal output. The pair and tokens are
+persisted together in the router's owner-only state and are never copied to a
+background-service environment.
+
+If an older incompatible router credential is already present, the new flow
+preserves it and asks you to run `providers disconnect antigravity-oauth`
+before sign-in; it never silently upgrades, reuses, or overwrites that record.
 
 ```sh
-export ANTIGRAVITY_CLIENT_SECRET='your-integration-client-secret'
 ./bin/model-router codex providers login antigravity-oauth
+./bin/model-router codex providers probe antigravity-oauth --live --yes
 ./bin/model-router codex providers enable antigravity-oauth
 ```
 
 On Windows PowerShell, use the matching wrapper:
 
 ```powershell
-$env:ANTIGRAVITY_CLIENT_SECRET = 'your-integration-client-secret'
 .\model-router.ps1 codex providers login antigravity-oauth
+.\model-router.ps1 codex providers probe antigravity-oauth --live --yes
 .\model-router.ps1 codex providers enable antigravity-oauth
 ```
 
-The credential stays in the router's owner-only state directory. This is an
-unofficial compatibility route over Google's internal Antigravity service,
-not a public Gemini API contract, so availability and wire behavior can change.
+The probe sends a small real prompt and consumes provider quota. It uses the
+truthful `codex-router` identity and must succeed before the route can be
+enabled. If the account has no companion project, rerun the probe with
+`--provision-project` only after authorizing that side effect. Provisioning still
+requires a successful, schema-valid bootstrap response that explicitly
+advertises the tier it will use; auth errors, server errors, malformed
+responses, and missing tiers all fail closed. This remains an unofficial
+compatibility route over Google's internal Antigravity service,
+not a public Gemini API contract; if Google serves only the impersonated vendor
+client, the router deliberately leaves this provider disabled.
+
+After proof, the command records a nonpublishable pending generation and
+restarts an installed router service. Startup health-checks that exact proof
+and promotes it only after the complete local stack is ready; restart failure
+or process death leaves it disabled. Proof records from the earlier v2 writer
+that have no activation metadata are unverified and require the explicit live
+probe again. Before proof the Antigravity forwarder
+does not bind a port, so an unused provider cannot make the rest of the router
+fail to start. If you run the router in the foreground for development,
+restart that foreground process before enabling the provider.
 
 MiMo (Xiaomi API) uses Xiaomi's official OpenAI-compatible endpoint at
 `https://api.xiaomimimo.com/v1`. Unlike MiMo reseller routes, the direct API

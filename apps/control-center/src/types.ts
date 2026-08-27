@@ -311,6 +311,10 @@ export interface ProviderSetup {
   cliRunnable?: boolean;
   signIn?: boolean;
   signedIn?: boolean;
+  verified?: boolean;
+  disconnectable?: boolean;
+  probeNote?: string;
+  blockedNote?: string;
   signInAction?: string;
 }
 

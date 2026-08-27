@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,9 +15,9 @@ function isolatedEnvironment(testRoot, extra = {}) {
     HOME: testRoot,
     CODEX_HOME: path.join(testRoot, "codex"),
     MODEL_ROUTER_STATE_DIR: stateDir,
-    ANTIGRAVITY_TOKEN_PATH: path.join(stateDir, "antigravity-oauth.json"),
     KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
     GROK_AUTH_PATH: path.join(testRoot, "grok", "auth.json"),
+    CODEX_ROUTER_NO_DISCOVERY: "0",
     ...extra,
   };
 }
@@ -36,6 +35,12 @@ function expectedLoginCommand() {
   return process.platform === "win32"
     ? ".\\codex-router.ps1 providers login antigravity-oauth"
     : "./bin/providers login antigravity-oauth";
+}
+
+function expectedProbeCommand() {
+  return process.platform === "win32"
+    ? ".\\codex-router.ps1 providers probe antigravity-oauth --live --yes"
+    : "./bin/providers probe antigravity-oauth --live --yes";
 }
 
 test("unconfigured Antigravity commands name the router-managed browser login", () => {
@@ -65,71 +70,141 @@ test("unconfigured Antigravity commands name the router-managed browser login", 
   }
 });
 
-test("providers login enters browser OAuth without changing provider selection", async () => {
-  const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-login-"));
+test("a signed-in but unverified session remains disabled and names the live probe", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-probe-"));
   const stateDir = path.join(testRoot, "state");
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const selectionPath = path.join(stateDir, "enabled-providers.json");
-  writeFileSync(
-    selectionPath,
-    `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
-    { mode: 0o600 },
-  );
-
-  const occupied = net.createServer();
-  await new Promise((resolve, reject) => {
-    occupied.once("error", reject);
-    occupied.listen(0, "127.0.0.1", resolve);
+  writeFileSync(selectionPath, `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`, {
+    mode: 0o600,
   });
-  const port = occupied.address().port;
+  writeFileSync(path.join(stateDir, "antigravity-oauth.json"), JSON.stringify({
+    version: 3,
+    managed_by: "codex-router",
+    session_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    client_id: "operator-owned.apps.googleusercontent.com",
+    client_secret: "test-client-secret",
+    access_token: "access",
+    refresh_token: "refresh",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    expires_in: 3600,
+  }), { mode: 0o600 });
   try {
-    // Occupying the callback port makes the child stop before opening a
-    // browser or contacting Google, while still proving the CLI reached the
-    // router-managed authorization-code flow.
-    const result = runNode(
-      ["src/providers.mjs", "login", "antigravity-oauth"],
-      isolatedEnvironment(testRoot, {
-        ANTIGRAVITY_REDIRECT_URI: `http://127.0.0.1:${port}/oauth-callback`,
-        ANTIGRAVITY_CLIENT_SECRET: "test-client-secret",
-      }),
-    );
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stdout, /Open this URL to sign in to Antigravity/);
-    assert.match(result.stdout, /may provision a Google Cloud project/i);
-    assert.match(result.stderr, /EADDRINUSE|address already in use/i);
+    const env = isolatedEnvironment(testRoot);
+    const enable = runNode(["src/providers.mjs", "enable", "antigravity-oauth"], env);
+    assert.equal(enable.status, 1, enable.stderr);
+    assert.match(enable.stderr, /explicit live compatibility test/i);
+    assert.match(enable.stderr, new RegExp(expectedProbeCommand().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.deepEqual(JSON.parse(readFileSync(selectionPath, "utf8")).providers, ["deepseek"]);
   } finally {
-    await new Promise((resolve) => occupied.close(resolve));
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
-test("providers login reports a missing client secret before opening consent", () => {
-  const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-secret-"));
+test("the Antigravity probe cannot make a network request without explicit live consent", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-consent-"));
   try {
     const result = runNode(
-      ["src/providers.mjs", "login", "antigravity-oauth"],
-      isolatedEnvironment(testRoot, { ANTIGRAVITY_CLIENT_SECRET: "" }),
+      ["src/providers.mjs", "probe", "antigravity-oauth"],
+      isolatedEnvironment(testRoot),
     );
     assert.equal(result.status, 1);
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /ANTIGRAVITY_CLIENT_SECRET/);
+    assert.match(result.stderr, /both --live and --yes/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
-test("installation docs publish working POSIX and PowerShell login commands", () => {
-  for (const file of ["README.md", path.join("docs", "INSTALL.md")]) {
-    const contents = readFileSync(path.join(root, file), "utf8");
-    assert.match(contents, /\.\/bin\/model-router codex providers login antigravity-oauth/);
-    assert.match(contents, /\.\\model-router\.ps1 codex providers login antigravity-oauth/);
+test("the Antigravity probe refuses misspelled consent and provisioning flags", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-flags-"));
+  try {
+    const result = runNode(
+      [
+        "src/providers.mjs",
+        "probe",
+        "antigravity-oauth",
+        "--live",
+        "--yes",
+        "--provison-project",
+      ],
+      isolatedEnvironment(testRoot),
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Unknown Antigravity probe option: --provison-project/);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
-test("the installation agent contract includes Antigravity onboarding", () => {
+test("installation docs publish the operator-client login and explicit probe", () => {
+  for (const file of ["README.md", path.join("docs", "INSTALL.md")]) {
+    const contents = readFileSync(path.join(root, file), "utf8");
+    assert.match(contents, /Google OAuth \*\*Desktop app\*\*/);
+    assert.match(contents, /\.\/bin\/model-router codex providers login antigravity-oauth/);
+    assert.match(contents, /\.\\model-router\.ps1 codex providers login antigravity-oauth/);
+    assert.match(contents, /providers probe antigravity-oauth --live --yes/);
+    assert.doesNotMatch(contents, /ANTIGRAVITY_CLIENT_SECRET\s*=/);
+  }
+});
+
+test("the installation agent contract forbids vendor credential reuse and impersonation", () => {
   const contents = readFileSync(path.join(root, "AGENTS.md"), "utf8");
-  assert.match(contents, /`antigravity-oauth`/);
-  assert.match(contents, /ANTIGRAVITY_CLIENT_SECRET/);
-  assert.match(contents, /may provision a Google Cloud project/i);
+  assert.match(contents, /operator-owned Google OAuth client/i);
+  assert.match(contents, /never read or reuse the official `agy`\/IDE credential\s+store/i);
+  assert.match(contents, /OS-assigned port/i);
+  assert.match(contents, /truthfully\s+as Codex Router/i);
+  assert.match(contents, /probe antigravity-oauth --live --yes/);
+});
+
+test("desktop onboarding keeps the Antigravity probe explicit on every platform", () => {
+  const ipc = readFileSync(path.join(root, "apps", "control-center", "electron", "ipc.mjs"), "utf8");
+  const page = readFileSync(
+    path.join(root, "apps", "control-center", "src", "pages", "ModelsPage.tsx"),
+    "utf8",
+  );
+  const tray = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  const startup = readFileSync(path.join(root, "src", "start.mjs"), "utf8");
+  assert.match(ipc, /provider\.action === "probe"/);
+  assert.match(ipc, /\["probe-provider", id, "--live", "--yes"\]/);
+  assert.match(ipc, /return updateProviderSelection\(id, true\)/);
+  assert.match(ipc, /ROUTER_BROWSER_OAUTH_TIMEOUT_MS/);
+  assert.match(page, /setup\.action === "probe" \? "Run live test"/);
+  assert.match(page, /setup\.disconnectable/);
+  assert.match(tray, /case "probe": return routerLocalized\("Test & Enable"\)/);
+  assert.match(tray, /setup\?\.disconnectable == true/);
+  assert.match(startup, /const antigravityStartup = antigravityOAuthStartupState\(\)/);
+  assert.match(startup, /attemptAntigravityProbePromotionAfterReadiness/);
+  assert.match(startup, /\.\.\.\(antigravityForwarder/);
+  const providers = readFileSync(path.join(root, "src", "providers.mjs"), "utf8");
+  const control = readFileSync(path.join(root, "src", "control.mjs"), "utf8");
+  const activation = readFileSync(
+    path.join(root, "src", "antigravity-probe-activation.mjs"),
+    "utf8",
+  );
+  const onboarding = readFileSync(
+    path.join(root, "src", "antigravity-oauth-onboarding.mjs"),
+    "utf8",
+  );
+  const providerOnboarding = readFileSync(
+    path.join(root, "src", "provider-onboarding.mjs"),
+    "utf8",
+  );
+  assert.match(providers, /restartRouterServiceIfInstalled\(operation\)/);
+  assert.match(providers, /activateAntigravityProbe/);
+  assert.match(control, /activateAntigravityProbe/);
+  assert.match(activation, /Installed clients remain withdrawn/);
+  assert.ok(activation.indexOf("await restart(") < activation.indexOf("await publish("));
+  assert.ok(
+    activation.indexOf("const activated = await waitForExactActivation") <
+      activation.indexOf("await publish("),
+  );
+  assert.match(activation, /throwIfAborted\(signal, deadline\)/);
+  assert.match(onboarding, /oauth_browser_launch_failed/);
+  assert.ok(
+    providerOnboarding.indexOf("await ensureNodeDependencies({ signal, deadline });") <
+      providerOnboarding.indexOf('import("./antigravity-oauth-onboarding.mjs")'),
+  );
 });

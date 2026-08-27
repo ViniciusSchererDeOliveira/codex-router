@@ -8,7 +8,11 @@ const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-targets-"));
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
 
-const { installedTargets } = await import("../src/target-integration.mjs");
+const {
+  installedTargets,
+  refreshTargetPickerIfInstalled,
+  runTargetPublicationProcess,
+} = await import("../src/target-integration.mjs");
 const { CONFIG_PATH, DSH_CATALOG_PATH, NATIVE_CATALOG_PATH } = await import("../src/paths.mjs");
 
 function stageFile(filePath, contents) {
@@ -81,6 +85,62 @@ test("the harness catalog snapshot still marks the dsh integration", () => {
   } finally {
     clearStagedFiles();
   }
+});
+
+test("publication refuses an aborted shared activation before touching a client", async () => {
+  const controller = new AbortController();
+  const aborted = new Error("planned publication abort");
+  controller.abort(aborted);
+  await assert.rejects(
+    refreshTargetPickerIfInstalled({
+      signal: controller.signal,
+      deadline: Date.now() + 10_000,
+    }),
+    (error) => error === aborted,
+  );
+});
+
+test("each target publisher owns a finite tree and contracts its child deadline", async () => {
+  let invocation;
+  const deadline = Date.now() + 60_000;
+  await runTargetPublicationProcess("catalog.mjs", [], {
+    sourceRoot: "/stable/router",
+    executable: "/runtime/node",
+    environment: { SENTINEL: "present" },
+    deadline,
+    run: async (command, args, options) => {
+      invocation = { command, args, options };
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(invocation.command, "/runtime/node");
+  assert.deepEqual(invocation.args, ["/stable/router/src/catalog.mjs"]);
+  assert.equal(invocation.options.deadline, deadline);
+  assert.equal(invocation.options.env.SENTINEL, "present");
+  assert.equal(
+    invocation.options.env.CODEX_ROUTER_OPERATION_DEADLINE_MS,
+    String(deadline - 10_000),
+  );
+});
+
+test("target publication honors and caps an injected operation environment", async () => {
+  let invocation;
+  const now = Date.now();
+  await runTargetPublicationProcess("catalog.mjs", [], {
+    sourceRoot: "/stable/router",
+    executable: "/runtime/node",
+    environment: { CODEX_ROUTER_OPERATION_TIMEOUT_MS: "600000" },
+    run: async (_command, _args, options) => {
+      invocation = options;
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  assert.ok(invocation.deadline >= now);
+  assert.ok(invocation.deadline <= Date.now() + 300_000);
+  assert.equal(
+    Number(invocation.env.CODEX_ROUTER_OPERATION_DEADLINE_MS),
+    invocation.deadline - 10_000,
+  );
 });
 
 test.after(() => {
