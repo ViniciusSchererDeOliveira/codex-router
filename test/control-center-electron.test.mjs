@@ -1754,7 +1754,9 @@ for (const mode of ["timeout", "overflow"]) {
       process.env.CODEX_ROUTER_SOURCE_ROOT = root;
       const command = runControl(
         [pidFile, mode],
-        mode === "timeout" ? { timeoutMs: 250 } : { timeoutMs: 5_000, maxOutputBytes: 32 },
+        mode === "timeout"
+          ? { timeoutMs: process.platform === "win32" ? 2_000 : 250 }
+          : { timeoutMs: 5_000, maxOutputBytes: 32 },
       );
       await assert.rejects(command, mode === "timeout" ? /timed out/ : /output exceeded/);
       descendantPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
