@@ -8,12 +8,6 @@ adopt_native_catalog=false
 force_deps=false
 target=${MODEL_ROUTER_TARGET:-codex}
 
-# Installing is the sanctioned way for a checkout to take over a state
-# directory: generated files are rebuilt here and the new owner is recorded at
-# the end, so the ownership guard must not block this run.
-MODEL_ROUTER_ALLOW_FOREIGN_STATE=1
-export MODEL_ROUTER_ALLOW_FOREIGN_STATE
-
 case "$target" in
   codex|dsh|gemini) ;;
   *) echo "MODEL_ROUTER_TARGET must be codex, dsh, or gemini." >&2; exit 2 ;;
@@ -40,6 +34,15 @@ fi
 if [ "$migrate_known" = true ] && [ "$adopt_native_catalog" = true ]; then
   echo "--adopt-native-catalog cannot be combined with --migrate-known." >&2
   exit 2
+fi
+# Installing is the sanctioned way for a checkout to take over a state
+# directory: generated files are rebuilt here and the new owner is recorded
+# before the replacement service starts, so the ownership guard must not block
+# this run. Preparation-only is not an ownership transfer and deliberately
+# keeps the guard: it must not rewrite state attributed to another checkout.
+if [ "$prepare_only" != true ]; then
+  MODEL_ROUTER_ALLOW_FOREIGN_STATE=1
+  export MODEL_ROUTER_ALLOW_FOREIGN_STATE
 fi
 # The native catalog is the ChatGPT-plan model list Codex ships and adopts.
 # The harness has no equivalent and no ChatGPT session, so there is nothing for

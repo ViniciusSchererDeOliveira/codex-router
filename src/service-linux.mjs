@@ -158,8 +158,8 @@ function writeUnit() {
   renameSync(temporary, unitPath);
 }
 
-if (!new Set(["install", "uninstall", "start", "stop", "restart", "status", "render", "restart-count"]).has(command)) {
-  console.error("Usage: service-linux.mjs install|uninstall|start|stop|restart|status|render|restart-count");
+if (!new Set(["install", "uninstall", "start", "stop", "restart", "status", "render"]).has(command)) {
+  console.error("Usage: service-linux.mjs install|uninstall|start|stop|restart|status|render");
   process.exit(2);
 }
 
@@ -200,23 +200,6 @@ if (command === "render") {
   process.stdout.write(
     `${JSON.stringify({ installed: existsSync(unitPath), loaded: state === "active", state })}\n`,
   );
-} else if (command === "restart-count") {
-  // The automatic-restart counter systemd tracks for the unit. It is what
-  // moves during a crash loop -- with Restart=always the unit state cycles
-  // back to "active" after every crash -- and it is compared against the
-  // value at wait start, so residue from before this install only ever
-  // understates the loop. A unit systemd does not know reports no count.
-  let restarts = null;
-  try {
-    const parsed = Number.parseInt(
-      systemctl(["show", unitName, "--property=NRestarts", "--value"]).trim(),
-      10,
-    );
-    if (Number.isSafeInteger(parsed) && parsed >= 0) restarts = parsed;
-  } catch {
-    // No user systemd session, or the unit is not loaded.
-  }
-  process.stdout.write(`${JSON.stringify({ restarts })}\n`);
 } else {
   const verb = { start: "start", stop: "stop", restart: "restart" }[command];
   systemctl([verb, unitName], { quiet: true });

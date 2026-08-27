@@ -51,30 +51,7 @@ async function runServiceCommand() {
   if (shutdownCommands.has(command)) await stopManagedOllama();
   if (!readinessCommands.has(command)) return 0;
 
-  const health = await waitForServiceReadiness({
-    timeoutMs: READINESS_TIMEOUT_MS,
-    // Only the Linux service manager exposes an automatic-restart counter
-    // this guard can read; Windows readiness carries its own task-state
-    // guard, and launchd has no equivalent counter.
-    ...(script === "service-linux.mjs"
-      ? {
-          getServiceRestarts: () => {
-            const counter = spawnSync(
-              process.execPath,
-              [path.join(SOURCE_ROOT, "src", script), "restart-count"],
-              { encoding: "utf8", env: childEnvironment },
-            );
-            if (counter.error || counter.status !== 0) return undefined;
-            try {
-              const parsed = JSON.parse(counter.stdout);
-              return typeof parsed.restarts === "number" ? parsed.restarts : undefined;
-            } catch {
-              return undefined;
-            }
-          },
-        }
-      : {}),
-  });
+  const health = await waitForServiceReadiness({ timeoutMs: READINESS_TIMEOUT_MS });
   if (health.ok) return 0;
   console.error(
     `Router did not become healthy within ${READINESS_TIMEOUT_MS / 1_000} seconds: ${health.error}`,

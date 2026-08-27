@@ -11,9 +11,9 @@
   back, and repeated on every retry, and deleting the whole state directory
   -- every stored provider key with it -- was the only escape. The record now
   precedes the service step it describes, so the service boots against its
-  own ownership. Linux readiness also fails fast once the service manager's
-  restart counter shows a crash loop, instead of waiting out the whole
-  budget, and names the journal and the router log in the error.
+  own ownership. Windows now applies the same explicit ownership-transfer
+  override as the POSIX installer, while preparation-only runs remain
+  read-only with respect to state owned by another checkout.
 
 - **OpenCode Go Kimi K2.7 Code now accepts current Codex tool schemas.** Its
   Moonshot-backed validator receives the same bounded decorated-`$defs` repair

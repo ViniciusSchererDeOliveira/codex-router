@@ -263,6 +263,13 @@ function Get-InstallerStateField {
 }
 
 try {
+  # Match bin/install's explicit ownership-transfer boundary. Every Windows
+  # setup/update/repair converges on -CheckoutInstall before guarded generated
+  # state is written. A real install may take ownership; -PrepareOnly may not.
+  $PreviousForeignStateOverride = $env:MODEL_ROUTER_ALLOW_FOREIGN_STATE
+  if (-not $PrepareOnly) {
+    $env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"
+  }
   # Each manager reports enablement under its own name: the Codex manager
   # publishes a routing mode, DSH reports whether its route reached the
   # settings document, Gemini whether its catalog is published.
@@ -545,5 +552,12 @@ try {
   }
   throw
 } finally {
+  if (-not $PrepareOnly) {
+    if ($null -eq $PreviousForeignStateOverride) {
+      Remove-Item Env:MODEL_ROUTER_ALLOW_FOREIGN_STATE -ErrorAction SilentlyContinue
+    } else {
+      $env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = $PreviousForeignStateOverride
+    }
+  }
   Pop-Location
 }

@@ -765,3 +765,25 @@ test("both installers record the manifest before waiting on health", () => {
     "Windows must record the manifest before installing the service",
   );
 });
+
+test("only a real install may override foreign state ownership", () => {
+  const posix = readFileSync(path.join(root, "bin", "install"), "utf8");
+  const windows = readFileSync(path.join(root, "install.ps1"), "utf8");
+  assert.match(
+    posix,
+    /if \[ "\$prepare_only" != true \]; then\s+MODEL_ROUTER_ALLOW_FOREIGN_STATE=1\s+export MODEL_ROUTER_ALLOW_FOREIGN_STATE\s+fi/,
+  );
+  assert.match(
+    windows,
+    /if \(-not \$PrepareOnly\) \{\s+\$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"\s+\}/,
+  );
+  const checkoutBoundary = windows.indexOf('if (-not (Test-RouterCheckout $ScriptDirectory))');
+  const override = windows.indexOf('$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"');
+  const generatedState = windows.indexOf("& node src/catalog.mjs", override);
+  assert.ok(checkoutBoundary !== -1 && checkoutBoundary < override);
+  assert.ok(override < generatedState, "Windows must transfer ownership before generated writes");
+  assert.match(
+    windows,
+    /finally \{[\s\S]*Remove-Item Env:MODEL_ROUTER_ALLOW_FOREIGN_STATE[\s\S]*\$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = \$PreviousForeignStateOverride[\s\S]*Pop-Location/,
+  );
+});

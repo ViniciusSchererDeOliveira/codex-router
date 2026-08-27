@@ -1,14 +1,8 @@
 import { waitForRouterHealth } from "./router-health.mjs";
-import { STATE_DIR } from "./paths.mjs";
 import { windowsScheduledTaskState } from "./windows-task-state.mjs";
 
 const TASK_LAUNCH_GRACE_MS = 15_000;
 const TASK_STATE_POLL_MS = 1_000;
-// A systemd unit with Restart=always re-enters "active" after every crash, so
-// the unit state never reads "failed" during a crash loop and health alone
-// cannot distinguish one from a slow start. The restart counter is what
-// moves; this many restarts since the wait began is a crash loop.
-const CRASH_LOOP_RESTARTS = 3;
 
 function sleep(milliseconds) {
   return milliseconds <= 0
@@ -28,17 +22,6 @@ async function settleHealth(waitForHealth, timeoutMs) {
   }
 }
 
-// A restart-count query failure is inconclusive, exactly like a failed Task
-// Scheduler query on Windows, and never fails the wait by itself.
-async function settleRestarts(getServiceRestarts) {
-  try {
-    const restarts = await getServiceRestarts();
-    return Number.isSafeInteger(restarts) && restarts >= 0 ? restarts : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Wait for router health while honoring Windows' authoritative task state.
  *
@@ -49,12 +32,6 @@ async function settleRestarts(getServiceRestarts) {
  * launch for longer than the launch grace, readiness fails with the task's
  * own result instead of polling health for the full budget. A query failure
  * is inconclusive and never fails the wait by itself.
- *
- * On the POSIX service managers the analogous early verdict is the restart
- * counter: a unit that accumulates restarts while health never answers is
- * crash-looping, and polling health for the full budget only delays the
- * operator's look at the service log. When no counter is available the wait
- * stays health-only, which is the shape macOS launchd has.
  */
 export async function waitForServiceReadiness({
   platform = process.platform,
@@ -62,7 +39,6 @@ export async function waitForServiceReadiness({
   launchGraceMs = TASK_LAUNCH_GRACE_MS,
   pollMs = TASK_STATE_POLL_MS,
   getWindowsTaskState = windowsScheduledTaskState,
-  getServiceRestarts,
   waitForHealth = waitForRouterHealth,
 } = {}) {
   const deadline = Date.now() + Math.max(0, timeoutMs);
@@ -77,39 +53,6 @@ export async function waitForServiceReadiness({
     new Error(outcome.health?.error || "service did not become healthy");
 
   if (platform !== "win32") {
-    if (typeof getServiceRestarts !== "function") {
-      const winner = await healthWinner;
-      if (winner.outcome.healthy) return winner.outcome.health;
-      throw failureOf(winner.outcome);
-    }
-    // Restart counts are compared against the value at wait start, not
-    // absolute: a unit can carry restarts from before this install touched
-    // it, and only restarts this wait observes are evidence of a loop.
-    let baseline = await settleRestarts(getServiceRestarts);
-    let restartsSince = 0;
-    while (Date.now() < deadline) {
-      const winner = await Promise.race([
-        healthWinner,
-        sleep(Math.min(pollMs, deadline - Date.now())).then(() => null),
-      ]);
-      if (winner) {
-        if (winner.outcome.healthy) return winner.outcome.health;
-        throw failureOf(winner.outcome);
-      }
-      const restarts = await settleRestarts(getServiceRestarts);
-      if (restarts !== undefined) {
-        baseline ??= restarts;
-        restartsSince = Math.max(restartsSince, restarts - baseline);
-        if (restartsSince >= CRASH_LOOP_RESTARTS) {
-          throw new Error(
-            `The background service restarted ${restartsSince} times while ` +
-              "waiting for it to become healthy; it is crash-looping. " +
-              "Inspect `journalctl --user -u codex-router.service` and the " +
-              `router log in ${STATE_DIR}.`,
-          );
-        }
-      }
-    }
     const winner = await healthWinner;
     if (winner.outcome.healthy) return winner.outcome.health;
     throw failureOf(winner.outcome);
