@@ -14,6 +14,10 @@ import {
   updateAntigravityToken,
   validateAntigravityToken,
 } from "../src/antigravity-oauth-session.mjs";
+import {
+  antigravityOAuthHealth,
+  antigravityOAuthStatus,
+} from "../src/antigravity-oauth-status.mjs";
 
 // The client secret is env-only and read at call time; supply a fixture so the
 // refresh path can run without a real credential.
@@ -92,6 +96,86 @@ test("rejects non-positive live-token expiry lifetimes", () => {
       expires_in: 0,
     }),
     /invalid expiry metadata/,
+  );
+});
+
+test("explicit agy mode never falls back to a valid router-managed session", async () => {
+  await withToken(
+    {
+      access_token: "valid-managed-account",
+      refresh_token: "valid-managed-refresh",
+      expires_at: 2_000_000_000,
+      expires_in: 3600,
+      project_id: "wrong-managed-project",
+    },
+    async (_write, tokenPath) => {
+      const expiredAgy = {
+        access_token: "expired-agy-account",
+        refresh_token: "expired-agy-refresh",
+        expires_at: 1_000_000_000,
+        expires_in: -60,
+        project_id: "selected-agy-project",
+        session_source: "agy-keychain",
+      };
+      const agyDependencies = {
+        agySessionSourceEnabledImpl: () => true,
+        readAgySessionImpl: ({ includeExpired = false } = {}) =>
+          includeExpired ? expiredAgy : undefined,
+      };
+
+      assert.throws(
+        () => readAntigravityToken(agyDependencies),
+        (error) => error?.code === "oauth_unauthorized" && /agy session is expired/i.test(error.message),
+      );
+      assert.deepEqual(antigravityOAuthStatus(agyDependencies), {
+        configured: false,
+        credentialPresent: true,
+        tokenPath: "keychain://gemini",
+        source: "agy keychain session",
+        setup: "Launch agy once to refresh its session",
+      });
+      assert.deepEqual(antigravityOAuthHealth(agyDependencies), {
+        status: "expired",
+        detail: "agy keychain session is expired",
+        fix: "Launch agy once to refresh its session",
+        projectId: "selected-agy-project",
+      });
+      assert.equal(JSON.parse(readFileSync(tokenPath, "utf8")).access_token, "valid-managed-account");
+    },
+  );
+});
+
+test("explicit agy mode fails closed when its keychain session is unreadable", async () => {
+  await withToken(
+    {
+      access_token: "valid-managed-account",
+      refresh_token: "valid-managed-refresh",
+      expires_at: 2_000_000_000,
+      expires_in: 3600,
+    },
+    async () => {
+      const agyDependencies = {
+        agySessionSourceEnabledImpl: () => true,
+        readAgySessionImpl: () => undefined,
+      };
+
+      assert.throws(
+        () => readAntigravityToken(agyDependencies),
+        (error) => error?.code === "oauth_unauthorized" && /agy session is unavailable/i.test(error.message),
+      );
+      assert.deepEqual(antigravityOAuthStatus(agyDependencies), {
+        configured: false,
+        credentialPresent: false,
+        tokenPath: "keychain://gemini",
+        source: "agy keychain session",
+        setup: "Run agy once to restore its session",
+      });
+      assert.deepEqual(antigravityOAuthHealth(agyDependencies), {
+        status: "invalid",
+        detail: "agy keychain session is unavailable or unreadable",
+        fix: "Run agy once to restore its session",
+      });
+    },
   );
 });
 

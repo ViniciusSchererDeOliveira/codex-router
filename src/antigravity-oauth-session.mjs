@@ -7,7 +7,10 @@ import {
   ANTIGRAVITY_TOKEN_URL,
   requireAntigravityClientSecret,
 } from "./antigravity-oauth-constants.mjs";
-import { readAgySession } from "./antigravity-agy-session.mjs";
+import {
+  agySessionSourceEnabled,
+  readAgySession,
+} from "./antigravity-agy-session.mjs";
 import { protectPrivateFile, writePrivateJson } from "./file-security.mjs";
 import { STATE_DIR } from "./paths.mjs";
 
@@ -77,9 +80,27 @@ export function validateAntigravityToken(value) {
   };
 }
 
-export function readAntigravityToken() {
-  const agy = readAgySession();
-  if (agy) return validateAntigravityToken(agy);
+export function readAntigravityToken({
+  agySessionSourceEnabledImpl = agySessionSourceEnabled,
+  readAgySessionImpl = readAgySession,
+} = {}) {
+  // Session-source selection is an account choice, not a preference order.
+  // Once agy is selected, a router-managed token may belong to another Google
+  // account and must never become an implicit fallback.
+  if (agySessionSourceEnabledImpl()) {
+    const agy = readAgySessionImpl({ includeExpired: true });
+    if (!agy) {
+      throw unauthorizedError(
+        "The selected agy session is unavailable; run agy once to restore it, then retry.",
+      );
+    }
+    if (Number(agy.expires_in) <= 0) {
+      throw unauthorizedError(
+        "The selected agy session is expired; launch agy once to refresh it, then retry.",
+      );
+    }
+    return validateAntigravityToken(agy);
+  }
   const tokenPath = antigravityTokenPath();
   if (!existsSync(tokenPath)) {
     throw unauthorizedError("Antigravity OAuth credentials were not found; run sign-in first.");

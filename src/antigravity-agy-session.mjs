@@ -54,7 +54,7 @@ const AGY_METADATA_PATH = path.join(
   "auth.json",
 );
 
-function enabled() {
+export function agySessionSourceEnabled() {
   if (process.env.ANTIGRAVITY_TOKEN_PATH) return false;
   if (process.platform !== "darwin") return false;
   if (process.env.ANTIGRAVITY_SESSION_SOURCE === "agy") return true;
@@ -134,7 +134,7 @@ function metadata() {
 }
 
 export function readAgySession({ now = Date.now, includeExpired = false } = {}) {
-  if (!enabled()) return undefined;
+  if (!agySessionSourceEnabled()) return undefined;
   let raw;
   try {
     raw = readAgyKeychainPassword();
@@ -175,7 +175,7 @@ export function readAgySession({ now = Date.now, includeExpired = false } = {}) 
 }
 
 export function refreshAgySession({ timeoutMs = AGY_REFRESH_TIMEOUT_MS } = {}) {
-  if (!enabled()) {
+  if (!agySessionSourceEnabled()) {
     throw new Error("The agy session source is not enabled for this router.");
   }
   const executable = agyExecutablePath();

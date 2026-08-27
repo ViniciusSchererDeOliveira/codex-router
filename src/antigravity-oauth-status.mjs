@@ -6,22 +6,56 @@ import {
   protectAntigravityToken,
   validateAntigravityToken,
 } from "./antigravity-oauth-session.mjs";
-import { readAgySession } from "./antigravity-agy-session.mjs";
+import {
+  agySessionSourceEnabled,
+  readAgySession,
+} from "./antigravity-agy-session.mjs";
 
-// The Antigravity credential is written by this router's own sign-in flow, not
-// lifted from another CLI's session file, so it is not gated on
-// --no-discovery. It is this router's credential in the same sense an API key
-// file is.
+// Explicit agy selection is authoritative even while its Keychain credential
+// is expired or unreadable. Reporting a router-managed token in that state
+// would advertise one Google account while the keeper is refreshing another.
 
-export function antigravityOAuthStatus() {
-  const agy = readAgySession();
-  if (agy) {
+function selectedAgySession({
+  agySessionSourceEnabledImpl = agySessionSourceEnabled,
+  readAgySessionImpl = readAgySession,
+} = {}) {
+  if (!agySessionSourceEnabledImpl()) return undefined;
+  let session;
+  try {
+    session = readAgySessionImpl({ includeExpired: true });
+  } catch {
+    // Selection remains authoritative even when Keychain access itself fails.
+  }
+  if (!session) return { state: "invalid" };
+  if (Number(session.expires_in) <= 0) return { state: "expired", session };
+  try {
+    return { state: "ready", session: validateAntigravityToken(session) };
+  } catch {
+    return { state: "invalid" };
+  }
+}
+
+export function antigravityOAuthStatus(options = {}) {
+  const agy = selectedAgySession(options);
+  if (agy?.state === "ready") {
     return {
       configured: true,
       credentialPresent: true,
       tokenPath: "keychain://gemini",
       source: "agy keychain session",
-      projectId: agy.project_id || undefined,
+      projectId: agy.session.project_id || undefined,
+    };
+  }
+  if (agy) {
+    const expired = agy.state === "expired";
+    return {
+      configured: false,
+      credentialPresent: expired,
+      tokenPath: "keychain://gemini",
+      source: "agy keychain session",
+      setup: expired
+        ? "Launch agy once to refresh its session"
+        : "Run agy once to restore its session",
     };
   }
   const tokenPath = antigravityTokenPath();
@@ -52,13 +86,28 @@ export function antigravityOAuthStatus() {
   }
 }
 
-export function antigravityOAuthHealth() {
-  const agy = readAgySession();
-  if (agy) {
+export function antigravityOAuthHealth(options = {}) {
+  const agy = selectedAgySession(options);
+  if (agy?.state === "ready") {
     return {
       status: "ok",
       detail: "agy keychain session available",
-      projectId: agy.project_id || undefined,
+      projectId: agy.session.project_id || undefined,
+    };
+  }
+  if (agy?.state === "expired") {
+    return {
+      status: "expired",
+      detail: "agy keychain session is expired",
+      fix: "Launch agy once to refresh its session",
+      projectId: agy.session.project_id || undefined,
+    };
+  }
+  if (agy) {
+    return {
+      status: "invalid",
+      detail: "agy keychain session is unavailable or unreadable",
+      fix: "Run agy once to restore its session",
     };
   }
   const tokenPath = antigravityTokenPath();
