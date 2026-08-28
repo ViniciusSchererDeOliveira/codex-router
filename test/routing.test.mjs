@@ -3728,6 +3728,37 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
       assert.equal(request.body.think, undefined);
     }
 
+    // The router can send both spellings; nested is authoritative and the flat
+    // field must be synchronized to the same clamped rung.
+    for (const [nestedEffort, flatEffort, expectedEffort] of [
+      ["medium", "max", "low"],
+      ["minimal", "high", "low"],
+      ["xhigh", "low", "max"],
+    ]) {
+      const response = await fetch(
+        `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${INTERNAL_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "ollama-cloud-glm-5-3-flash",
+            reasoning: { effort: nestedEffort },
+            reasoning_effort: flatEffort,
+            messages: [{ role: "user", content: "test" }],
+          }),
+        },
+      );
+      assert.equal(response.status, 200);
+      const request = upstreamRequests.at(-1);
+      assert.equal(request.body.model, "glm-5.3-flash:cloud");
+      assert.equal(request.body.reasoning?.effort, expectedEffort);
+      assert.equal(request.body.reasoning_effort, expectedEffort);
+      assert.equal(request.body.think, undefined);
+    }
+
     // An absent effort stays absent so Ollama applies the model's own default.
     await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
       method: "POST",
