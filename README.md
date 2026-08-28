@@ -769,16 +769,17 @@ Coding, and the Z.ai API route is shipped with the same direct-proven ladder.
 | GLM-5.3-Flash (OpenRouter) | `openrouter/glm-5.3-flash` | OpenRouter | Available |
 | GLM-5.3-Flash (Z.ai API) | `zai-api/glm-5.3-flash` | Z.ai API | Available |
 | GLM-5.3-Flash (Z.ai Coding) | `zai-coding/glm-5.3-flash` | Z.ai Coding | Available |
-| GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud | Proposed, not direct-proven |
+| GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud | Available |
 | ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
 | ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
 
 The exact-route certification run sent basic, streaming, forced-tool,
-stateless tool-result, and compact requests without failover. Command Code's
-`stealth/ox-alpha` rejected every surface as unavailable. The available Venice
-account stopped at its API billing gate before `stealth-ox-alpha` could be
-wire-certified. Publishing either preset would therefore claim more than the
-evidence supports.
+stateless tool-result, and compact requests without failover for the named
+OpenCode Go, OpenRouter, Z.ai API, Z.ai Coding, and Ollama Cloud routes.
+Command Code's `stealth/ox-alpha` rejected every surface as unavailable. The
+available Venice account stopped at its API billing gate before
+`stealth-ox-alpha` could be wire-certified. Publishing either preset would
+therefore claim more than the evidence supports.
 
 Reasoning effort is **low · high · max** on the certified named Flash routes,
 defaulting to `max`. Only three rungs exist because

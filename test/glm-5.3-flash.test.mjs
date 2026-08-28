@@ -66,7 +66,7 @@ test("uncertified Ox Alpha routes stay absent while direct-proven Flash routes r
   assert.equal(MODEL_BY_SLUG.has("opencode-go/glm-5.3-flash"), true);
 });
 
-test("proposed Ollama Cloud Flash route is present but not direct-proven", () => {
+test("Ollama Cloud Flash route is present and direct-proven", () => {
   assert.equal(MODEL_BY_SLUG.has("ollama-cloud/glm-5.3-flash"), true);
   const model = MODEL_BY_SLUG.get("ollama-cloud/glm-5.3-flash");
   assert.equal(model?.upstreamModel, "glm-5.3-flash:cloud");

@@ -1223,10 +1223,9 @@ Coding uses its own `glm-thinking` profile. These named routes advertise a
 1,000,000-token window, compact at the directly proved conservative 400,000
 threshold, and preserve forced `tool_choice: "required"`.
 
-The proposed `ollama-cloud/glm-5.3-flash` route is checked in as registry
-metadata and has a model-scoped request profile that clamps both flat and
-nested reasoning effort onto the same `low`/`high`/`max` ladder. It is not
-direct-proven until the repository-required exact-route certificate is recorded
+`ollama-cloud/glm-5.3-flash` is checked in as registry metadata with a
+model-scoped request profile that clamps both flat and nested reasoning effort
+onto the same `low`/`high`/`max` ladder. Its exact-route certificate is recorded
 for basic, streaming, forced-tool, stateless tool-result, and compact requests
 with failover disabled.
 
