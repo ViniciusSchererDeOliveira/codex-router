@@ -31,7 +31,7 @@
         "text",
         "image"
       ],
-      "requestProfile": "ollama-cloud",
+      "requestProfile": "ollama-cloud-glm-5-3-flash",
       "compHash": "ollama-cloud-glm-5-3-flash-v1"
     }
   ]

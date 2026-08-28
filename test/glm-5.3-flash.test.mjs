@@ -19,7 +19,7 @@ const { MODEL_BY_SLUG } = await import("../src/model-registry.mjs");
 // get past its plan balance check.
 const ROUTES = [
   ["opencode-go/glm-5.3-flash", "glm-5.3-flash", "ox-alpha"],
-  ["ollama-cloud/glm-5.3-flash", "glm-5.3-flash:cloud", "ollama-cloud"],
+  ["ollama-cloud/glm-5.3-flash", "glm-5.3-flash:cloud", "ollama-cloud-glm-5-3-flash"],
   ["openrouter/glm-5.3-flash", "z-ai/glm-5.3-flash", "ox-alpha"],
   ["zai-coding/glm-5.3-flash", "glm-5.3-flash", "glm-thinking"],
 ];
