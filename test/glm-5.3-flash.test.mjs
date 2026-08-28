@@ -21,6 +21,7 @@ const ROUTES = [
   ["opencode-go/glm-5.3-flash", "glm-5.3-flash", "ox-alpha"],
   ["ollama-cloud/glm-5.3-flash", "glm-5.3-flash:cloud", "ollama-cloud-glm-5-3-flash"],
   ["openrouter/glm-5.3-flash", "z-ai/glm-5.3-flash", "ox-alpha"],
+  ["zai-api/glm-5.3-flash", "glm-5.3-flash", "glm-thinking"],
   ["zai-coding/glm-5.3-flash", "glm-5.3-flash", "glm-thinking"],
 ];
 
@@ -60,7 +61,14 @@ test("uncertified Ox Alpha routes stay absent while direct-proven Flash routes r
     assert.equal(MODEL_BY_SLUG.has(slug), false, `${slug} is not route-certified`);
   }
   assert.equal(MODEL_BY_SLUG.has("openrouter/glm-5.3-flash"), true);
+  assert.equal(MODEL_BY_SLUG.has("zai-api/glm-5.3-flash"), true);
   assert.equal(MODEL_BY_SLUG.has("zai-coding/glm-5.3-flash"), true);
   assert.equal(MODEL_BY_SLUG.has("opencode-go/glm-5.3-flash"), true);
+});
+
+test("proposed Ollama Cloud Flash route is present but not direct-proven", () => {
   assert.equal(MODEL_BY_SLUG.has("ollama-cloud/glm-5.3-flash"), true);
+  const model = MODEL_BY_SLUG.get("ollama-cloud/glm-5.3-flash");
+  assert.equal(model?.upstreamModel, "glm-5.3-flash:cloud");
+  assert.equal(model?.requestProfile, "ollama-cloud-glm-5-3-flash");
 });

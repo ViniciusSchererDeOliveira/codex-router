@@ -224,6 +224,7 @@ Linux installations support the Codex CLI.
 | GLM-5.3 (Coding Plan) | `zai-coding/glm-5.3` | Z.ai GLM Coding Plan API key |
 | GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
 | GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
+| GLM-5.3-Flash (Z.ai API) | `zai-api/glm-5.3-flash` | Separately billed Z.ai platform API key |
 | GLM-5.3 (Z.ai API) | `zai-api/glm-5.3` | Separately billed Z.ai platform API key |
 | GLM-5.2 (Z.ai API) | `zai-api/glm-5.2` | Separately billed Z.ai platform API key |
 | GLM-4.7 (Z.ai API) | `zai-api/glm-4.7` | Separately billed Z.ai platform API key |
@@ -757,7 +758,7 @@ a 1,048,576-token context window, 131,072 tokens of output, text and image
 input, and tool calling. No checked-in Ox Alpha route remains. OpenCode Go
 graduated the preview to the named, metered `glm-5.3-flash` model; direct
 exact-route probes also certified that named model on OpenRouter and Z.ai
-Coding.
+Coding, and the Z.ai API route is shipped with the same direct-proven ladder.
 
 | Picker label | Model ID | Needs a key | Status |
 | --- | --- | --- | --- |
@@ -766,7 +767,9 @@ Coding.
 | ~~Ox Alpha (OpenCode Free)~~ | `opencode-free/ox-alpha` | ~~no~~ | Withdrawn |
 | GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` | opencode | Named replacement |
 | GLM-5.3-Flash (OpenRouter) | `openrouter/glm-5.3-flash` | OpenRouter | Available |
+| GLM-5.3-Flash (Z.ai API) | `zai-api/glm-5.3-flash` | Z.ai API | Available |
 | GLM-5.3-Flash (Z.ai Coding) | `zai-coding/glm-5.3-flash` | Z.ai Coding | Available |
+| GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud | Proposed, not direct-proven |
 | ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
 | ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
 
