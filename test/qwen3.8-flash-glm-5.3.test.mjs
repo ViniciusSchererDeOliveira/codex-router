@@ -20,11 +20,14 @@ const QWEN_FLASH_ROUTES = [
   ["nousresearch/qwen3.8-flash", "qwen/qwen3.8-flash", 1_000_000, 900_000],
 ];
 
-// GLM-5.3 full routes confirmed 2026-08-27.
+// GLM-5.3 full routes confirmed 2026-08-27; the Ollama Cloud route ships
+// against its own low/high/max profile and matches the directly probed
+// registry contract for the other named routes.
 const GLM_FULL_ROUTES = [
   ["openrouter/glm-5.3", "z-ai/glm-5.3", 1_048_576, 943_000],
   ["commandcode/glm-5.3", "zai-org/GLM-5.3", 1_000_000, 900_000],
   ["venice/glm-5.3", "z-ai-glm-5-3", 1_000_000, 900_000],
+  ["ollama-cloud/glm-5.3", "glm-5.3:cloud", 1_000_000, 880_000],
 ];
 
 // GLM-5.3-Flash zai-api route confirmed 2026-08-27.

@@ -789,8 +789,10 @@ function normalizeBody(buffer, contentType, route) {
       if (effort) payload.reasoning_effort = effort;
       else delete payload.reasoning_effort;
     }
-  } else if (model.requestProfile === "ollama-cloud-glm-5-3-flash") {
-    // GLM-5.3-Flash always thinks and rejects every rung outside low/high/max.
+  } else if (
+    ["ollama-cloud-glm-5-3", "ollama-cloud-glm-5-3-flash"].includes(model.requestProfile)
+  ) {
+    // GLM-5.3 and GLM-5.3-Flash always think and reject every rung outside low/high/max.
     // Clamp Codex-only rungs onto the ladder this entry declares instead of
     // letting the generic Ollama map send none/medium and get a 400. The
     // router can send both the flat chat-completions field and the nested

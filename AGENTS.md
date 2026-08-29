@@ -1229,6 +1229,12 @@ onto the same `low`/`high`/`max` ladder. Its exact-route certificate is recorded
 for basic, streaming, forced-tool, stateless tool-result, and compact requests
 with failover disabled.
 
+`ollama-cloud/glm-5.3` ships beside it on the same low/high/max ladder and the
+sibling `ollama-cloud-glm-5-3` clamp profile, advertising 1,000,000 context and
+the provider-measured 880,000 compact threshold. It is text-only: GLM-5.3's
+multimodal variant is GLM-5.3-Flash, so the full-size route declares `text`
+modality instead of inheriting Flash's image path.
+
 ## A provider whose models each name their own endpoint
 
 `custom` is a **container, not a destination**. It declares no `baseUrl`, no

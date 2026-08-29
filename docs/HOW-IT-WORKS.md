@@ -95,6 +95,7 @@ map, which restores native GPT routing.
 | Grok 4.5 | `grok-api/grok-4.5` | `grok-api-grok-4-5` | `grok-4.5` |
 | Claude Opus 4.8 | `anthropic-api/claude-opus-4.8` | `anthropic-api-claude-opus-4-8` | `claude-opus-4-8` |
 | GLM-5.2 Ollama Cloud | `ollama-cloud/glm-5.2` | `ollama-cloud-glm-5-2` | `glm-5.2` |
+| GLM-5.3 Ollama Cloud | `ollama-cloud/glm-5.3` | `ollama-cloud-glm-5-3` | `glm-5.3:cloud` |
 | GLM-5.3-Flash Ollama Cloud | `ollama-cloud/glm-5.3-flash` | `ollama-cloud-glm-5-3-flash` | `glm-5.3-flash:cloud` |
 | Kimi K2.7 Code Ollama Cloud | `ollama-cloud/kimi-k2.7-code` | `ollama-cloud-kimi-k2-7-code` | `kimi-k2.7-code` |
 | MiniMax M3 Ollama Cloud | `ollama-cloud/minimax-m3` | `ollama-cloud-minimax-m3` | `minimax-m3` |
