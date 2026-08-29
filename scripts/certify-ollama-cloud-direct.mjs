@@ -1,69 +1,127 @@
 #!/usr/bin/env node
-// Direct exact-route certification against https://ollama.com/v1/chat/completions.
-// Bypasses the local router so this can run while the system router is on an
-// older checkout; the "exact-route" property is preserved by construction
-// because there is no failover layer between this script and the upstream.
-// Surfaces covered: basic, streaming, forced-tool, stateless tool-result,
-// compact. All run sequentially against the requested upstream model id.
+// Direct exact-route certification against the configured Ollama-compatible
+// endpoint. This intentionally bypasses the local router so it can certify a
+// candidate model while an older installed checkout is still running.
+//
+// The provider registry and credential resolver remain the authority for the
+// endpoint, model identity, and credential sources. Nothing from those sources
+// is included in the report.
 
-import { readFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const BASE_URL = "https://ollama.com/v1";
+import { EXACT_ROUTE_PROBE_HEADER } from "../src/exact-route-probe.mjs";
+import {
+  CHECKED_IN_MODELS,
+  PROVIDERS,
+  resolveProviderBaseUrl,
+} from "../src/model-registry.mjs";
+import { resolveProviderCredential } from "../src/provider-credentials.mjs";
+
+const PROVIDER_ID = "ollama-cloud";
 const MARKER = "CODEX_ROUTER_EXACT_OK";
+const REQUEST_TIMEOUT_MS = 180_000;
 
-// Resolves the Ollama Cloud credential the same way the installed router does:
-// an explicit env override first, then the operator's protected key file under
-// the per-user Codex state directory, then macOS Keychain via the provider's
-// documented lookup. Never commits an absolute path or a key material to the
-// repository.
-function loadKey() {
-  for (const env of ["OLLAMA_API_KEY", "OLLAMA_CLOUD_API_KEY"]) {
-    const value = process.env[env];
-    if (value && value.trim()) return value.trim();
-  }
-  const keyFile = process.env.OLLAMA_CLOUD_API_KEY_FILE
-    || path.join(os.homedir(), ".codex", "codex-router", "ollama-cloud-api-key.secret");
-  const raw = readFileSync(keyFile, "utf8").trim();
-  if (!raw) throw new Error(`Ollama Cloud key file is empty: ${keyFile}`);
-  return raw;
+function provider() {
+  const value = PROVIDERS.get(PROVIDER_ID);
+  if (!value?.baseUrl) throw new Error("Ollama Cloud provider configuration unavailable.");
+  return value;
 }
 
-async function callChat(key, body, { timeoutMs = 180_000 } = {}) {
-  const response = await fetch(`${BASE_URL}/chat/completions`, {
+// Resolve a checked-in route from either its public slug or its provider model
+// id. Accepting both keeps this probe convenient for existing certification
+// notes while ensuring arbitrary input is never echoed into the report.
+export function resolveTargetModel(value) {
+  const requested = String(value || "").trim();
+  const target = CHECKED_IN_MODELS.find(
+    (model) => model.provider === PROVIDER_ID && model.slug === requested,
+  ) || CHECKED_IN_MODELS.find(
+    (model) => model.provider === PROVIDER_ID && model.upstreamModel === requested,
+  );
+  if (target) {
+    return { slug: target.slug, upstreamModel: target.upstreamModel };
+  }
+  throw new Error("Pass a registered Ollama Cloud model slug or upstream model id.");
+}
+
+export function loadCredential() {
+  let credential;
+  try {
+    credential = resolveProviderCredential(PROVIDER_ID);
+  } catch {
+    throw new Error("Ollama Cloud credential unavailable.");
+  }
+  if (typeof credential?.value !== "string" || !credential.value.trim()) {
+    throw new Error("Ollama Cloud credential unavailable.");
+  }
+  return credential.value.trim();
+}
+
+function baseUrl() {
+  try {
+    return resolveProviderBaseUrl(provider()).baseUrl.replace(/\/+$/, "");
+  } catch {
+    throw new Error("Ollama Cloud provider configuration unavailable.");
+  }
+}
+
+async function callChat(key, url, body) {
+  const response = await fetch(`${url}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      "X-Codex-Router-Exact-Route": "1",
+      // This is harmless to the upstream and keeps direct and routed probes
+      // visibly tied to the repository's exact-route convention.
+      [EXACT_ROUTE_PROBE_HEADER]: "1",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
   return { response, text };
 }
 
-async function basic(key, model) {
-  const { response, text } = await callChat(key, {
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+function httpDetail(status) {
+  return Number.isInteger(status) && status > 0 ? `HTTP ${status}` : "request failed";
+}
+
+async function runCheck(name, operation) {
+  try {
+    return { name, ...(await operation()) };
+  } catch {
+    // Do not print exception text: filesystem errors can contain local paths,
+    // and transport errors can contain implementation-specific data.
+    return { name, ok: false, status: undefined, detail: "request failed" };
+  }
+}
+
+async function basic(key, url, model) {
+  const { response, text } = await callChat(key, url, {
     model,
     messages: [{ role: "user", content: `Reply with exactly ${MARKER} and nothing else.` }],
     stream: false,
   });
-  let parsed = {};
-  try { parsed = JSON.parse(text); } catch {}
-  const content = parsed?.choices?.[0]?.message?.content || "";
+  const payload = parseJson(text);
+  const content = payload?.choices?.[0]?.message?.content;
+  const markerReceived = typeof content === "string" && content.includes(MARKER);
   return {
-    name: "basic response",
-    ok: response.ok && content.includes(MARKER),
+    ok: response.ok && markerReceived,
     status: response.status,
-    detail: response.ok ? (content.includes(MARKER) ? "exact marker verified" : `unexpected body: ${content.slice(0, 120)}`) : `HTTP ${response.status}: ${text.slice(0, 200)}`,
+    detail: response.ok ? (markerReceived ? "exact marker verified" : "marker missing") : httpDetail(response.status),
   };
 }
 
-async function streaming(key, model) {
-  const { response, text } = await callChat(key, {
+async function streaming(key, url, model) {
+  const { response, text } = await callChat(key, url, {
     model,
     messages: [{ role: "user", content: `Reply with exactly ${MARKER} and nothing else.` }],
     stream: true,
@@ -74,109 +132,91 @@ async function streaming(key, model) {
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trim())
     .filter((line) => line && line !== "[DONE]")
-    .map((line) => {
-      try {
-        const event = JSON.parse(line);
-        return event?.choices?.[0]?.delta?.content || "";
-      } catch { return ""; }
-    })
+    .map((line) => parseJson(line)?.choices?.[0]?.delta?.content || "")
     .join("");
+  const markerReceived = streamedText.includes(MARKER);
   return {
-    name: "streaming",
-    ok: response.ok && sawDone && streamedText.includes(MARKER),
+    ok: response.ok && sawDone && markerReceived,
     status: response.status,
-    detail: response.ok ? (sawDone ? "stream text and [DONE] completion verified" : "stream ended without [DONE]") : `HTTP ${response.status}: ${text.slice(0, 200)}`,
+    detail: response.ok
+      ? (sawDone && markerReceived ? "stream text and [DONE] completion verified" : "stream completion incomplete")
+      : httpDetail(response.status),
   };
 }
 
-async function forcedTool(key, model) {
-  const { response, text } = await callChat(key, {
+const TOOL = {
+  type: "function",
+  function: {
+    name: "codex_router_probe",
+    description: "Compatibility probe",
+    parameters: {
+      type: "object",
+      properties: { value: { type: "string" } },
+      required: ["value"],
+      additionalProperties: false,
+    },
+  },
+};
+
+async function forcedTool(key, url, model) {
+  const { response, text } = await callChat(key, url, {
     model,
     messages: [{
       role: "user",
-      content: "Call the codex_router_probe tool exactly once with value=\"ok\". Do not answer normally.",
+      content: "Call the codex_router_probe tool exactly once with value=ok. Do not answer normally.",
     }],
-    tools: [{
-      type: "function",
-      function: {
-        name: "codex_router_probe",
-        description: "Compatibility probe",
-        parameters: {
-          type: "object",
-          properties: { value: { type: "string" } },
-          required: ["value"],
-          additionalProperties: false,
-        },
-      },
-    }],
+    tools: [TOOL],
     tool_choice: "required",
     stream: false,
   });
-  let parsed = {};
-  try { parsed = JSON.parse(text); } catch {}
-  const toolCall = parsed?.choices?.[0]?.message?.tool_calls?.[0];
-  let argsValid = false;
+  const toolCall = parseJson(text)?.choices?.[0]?.message?.tool_calls?.[0];
+  let argumentsValid = false;
   try {
-    argsValid = JSON.parse(toolCall?.function?.arguments || "{}").value === "ok";
-  } catch {}
+    argumentsValid = JSON.parse(toolCall?.function?.arguments || "{}").value === "ok";
+  } catch {
+    // Invalid tool arguments are a compatibility failure.
+  }
+  const valid = toolCall?.function?.name === TOOL.function.name && argumentsValid;
   return {
-    name: "forced tool",
-    ok: response.ok && toolCall?.function?.name === "codex_router_probe" && argsValid,
+    ok: response.ok && valid,
     status: response.status,
-    detail: response.ok
-      ? (toolCall ? `tool call ${toolCall.function?.name} with arguments verified` : "tool_calls missing")
-      : `HTTP ${response.status}: ${text.slice(0, 200)}`,
+    detail: response.ok ? (valid ? "tool call and arguments verified" : "tool call missing or invalid") : httpDetail(response.status),
   };
 }
 
-async function statelessToolResult(key, model) {
-  const { response, text } = await callChat(key, {
+async function statelessToolResult(key, url, model) {
+  const { response, text } = await callChat(key, url, {
     model,
     messages: [
-      { role: "user", content: "What is the value? Call codex_router_probe with value=\"42\"." },
+      { role: "user", content: "What is the value? Call codex_router_probe with value=42." },
       {
         role: "assistant",
         content: null,
         tool_calls: [{
           id: "call_cert",
           type: "function",
-          function: { name: "codex_router_probe", arguments: "{\"value\":\"42\"}" },
+          function: { name: TOOL.function.name, arguments: "{\"value\":\"42\"}" },
         }],
       },
       { role: "tool", tool_call_id: "call_cert", content: "acknowledged" },
     ],
-    tools: [{
-      type: "function",
-      function: {
-        name: "codex_router_probe",
-        description: "Compatibility probe",
-        parameters: {
-          type: "object",
-          properties: { value: { type: "string" } },
-          required: ["value"],
-          additionalProperties: false,
-        },
-      },
-    }],
+    tools: [TOOL],
     stream: false,
   });
-  let parsed = {};
-  try { parsed = JSON.parse(text); } catch {}
-  const body = parsed?.choices?.[0]?.message?.content || "";
+  const body = parseJson(text)?.choices?.[0]?.message?.content;
+  const hasResponse = typeof body === "string" && body.length > 0;
   return {
-    name: "stateless tool result",
-    ok: response.ok && Boolean(body),
+    ok: response.ok && hasResponse,
     status: response.status,
-    detail: response.ok ? `tool-result-backed response: ${String(body).slice(0, 100)}` : `HTTP ${response.status}: ${text.slice(0, 200)}`,
+    detail: response.ok ? (hasResponse ? "tool-result-backed response verified" : "response content missing") : httpDetail(response.status),
   };
 }
 
-async function compact(key, model) {
-  // Codex compaction calls the same /chat/completions surface with a long
-  // transcript-summary prompt; there is no separate upstream endpoint. The
-  // exact-route certification only needs a non-empty response from the route
-  // when asked to compact.
-  const { response, text } = await callChat(key, {
+async function compact(key, url, model) {
+  // Ollama Cloud exposes no separate compaction endpoint. This checks the
+  // summary prompt used by the router; routed `/responses/compact` remains the
+  // authority for the router's compaction transformation itself.
+  const { response, text } = await callChat(key, url, {
     model,
     messages: [{
       role: "user",
@@ -184,40 +224,82 @@ async function compact(key, model) {
     }],
     stream: false,
   });
-  let parsed = {};
-  try { parsed = JSON.parse(text); } catch {}
-  const body = parsed?.choices?.[0]?.message?.content || "";
+  const body = parseJson(text)?.choices?.[0]?.message?.content;
+  const hasResponse = typeof body === "string" && body.length > 0;
   return {
-    name: "compact",
-    ok: response.ok && Boolean(body),
+    ok: response.ok && hasResponse,
     status: response.status,
-    detail: response.ok ? "non-empty compaction response verified" : `HTTP ${response.status}: ${text.slice(0, 200)}`,
+    detail: response.ok ? (hasResponse ? "summary prompt response verified" : "response content missing") : httpDetail(response.status),
   };
 }
 
-async function certifyModel(key, model) {
+export async function certifyModel(key, url, target) {
+  const checks = [
+    ["basic response", () => basic(key, url, target.upstreamModel)],
+    ["streaming", () => streaming(key, url, target.upstreamModel)],
+    ["forced tool", () => forcedTool(key, url, target.upstreamModel)],
+    ["stateless tool result", () => statelessToolResult(key, url, target.upstreamModel)],
+    ["compact", () => compact(key, url, target.upstreamModel)],
+  ];
   const results = [];
-  results.push(await basic(key, model));
-  results.push(await streaming(key, model));
-  results.push(await forcedTool(key, model));
-  results.push(await statelessToolResult(key, model));
-  results.push(await compact(key, model));
-  return { model, ok: results.every((r) => r.ok), results };
+  for (const [name, operation] of checks) results.push(await runCheck(name, operation));
+  return {
+    model: target.slug,
+    ok: results.every((result) => result.ok),
+    results,
+  };
 }
 
-async function main() {
-  const key = loadKey();
-  const models = process.argv.slice(2);
-  if (!models.length) {
-    console.error("Usage: certify-ollama-cloud-direct.mjs MODEL [MODEL...]");
-    process.exit(2);
-  }
-  const out = [];
-  for (const model of models) {
-    out.push(await certifyModel(key, model));
-  }
-  console.log(JSON.stringify({ generatedAt: new Date().toISOString(), results: out }, null, 2));
-  if (out.some((entry) => !entry.ok)) process.exitCode = 1;
+function usage() {
+  return "Usage: node scripts/certify-ollama-cloud-direct.mjs MODEL [MODEL...] --live --yes";
 }
 
-await main();
+export async function main(argv = process.argv.slice(2)) {
+  if (argv.includes("--help")) {
+    process.stdout.write(`${usage()}\n\nRuns billed direct checks against the configured Ollama Cloud endpoint.\n`);
+    return 0;
+  }
+  if (!argv.includes("--live") || !argv.includes("--yes")) {
+    console.error("Live certification may use provider quota; pass --live --yes to confirm.");
+    return 2;
+  }
+  const requested = argv.filter((value) => !value.startsWith("--"));
+  if (requested.length === 0) {
+    console.error(usage());
+    return 2;
+  }
+
+  let key;
+  let url;
+  try {
+    key = loadCredential();
+    url = baseUrl();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Certification configuration unavailable.");
+    return 1;
+  }
+
+  const results = [];
+  for (const value of requested) {
+    let target;
+    try {
+      target = resolveTargetModel(value);
+    } catch {
+      console.error("Unknown Ollama Cloud model; pass a registered slug or upstream model id.");
+      return 2;
+    }
+    results.push(await certifyModel(key, url, target));
+  }
+  process.stdout.write(`${JSON.stringify({ results }, null, 2)}\n`);
+  return results.every((result) => result.ok) ? 0 : 1;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then((code) => {
+    if (code) process.exitCode = code;
+  }).catch(() => {
+    // Keep unexpected filesystem and transport details out of terminal output.
+    console.error("Certification failed.");
+    process.exitCode = 1;
+  });
+}
