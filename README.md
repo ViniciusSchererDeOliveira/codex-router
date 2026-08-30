@@ -770,13 +770,14 @@ Coding, and the Z.ai API route is shipped with the same direct-proven ladder.
 | GLM-5.3-Flash (OpenRouter) | `openrouter/glm-5.3-flash` | OpenRouter | Available |
 | GLM-5.3-Flash (Z.ai API) | `zai-api/glm-5.3-flash` | Z.ai API | Available |
 | GLM-5.3-Flash (Z.ai Coding) | `zai-coding/glm-5.3-flash` | Z.ai Coding | Available |
-| GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud | Available |
+| GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud | Candidate — exact-route proof required |
 | ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
 | ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
 
 The exact-route certification run sent basic, streaming, forced-tool,
 stateless tool-result, and compact requests without failover for the named
-OpenCode Go, OpenRouter, Z.ai API, Z.ai Coding, and Ollama Cloud routes.
+OpenCode Go, OpenRouter, Z.ai API, and Z.ai Coding routes. The Ollama Cloud
+candidate must pass that same router-level suite before it is called certified.
 Command Code's `stealth/ox-alpha` rejected every surface as unavailable. The
 available Venice account stopped at its API billing gate before
 `stealth-ox-alpha` could be wire-certified. Publishing either preset would

@@ -1223,15 +1223,17 @@ Coding uses its own `glm-thinking` profile. These named routes advertise a
 1,000,000-token window, compact at the directly proved conservative 400,000
 threshold, and preserve forced `tool_choice: "required"`.
 
-`ollama-cloud/glm-5.3-flash` is checked in as registry metadata with a
+`ollama-cloud/glm-5.3-flash` is checked in as candidate registry metadata with a
 model-scoped request profile that clamps both flat and nested reasoning effort
-onto the same `low`/`high`/`max` ladder. Its exact-route certificate is recorded
-for basic, streaming, forced-tool, stateless tool-result, and compact requests
-with failover disabled.
+onto the same `low`/`high`/`max` ladder. It must not be called certified until
+the public slug passes the router-level exact-route suite for basic, streaming,
+forced-tool, stateless tool-result, and compact requests with failover disabled.
 
 `ollama-cloud/glm-5.3` ships beside it on the same low/high/max ladder and the
 sibling `ollama-cloud-glm-5-3` clamp profile, advertising 1,000,000 context and
-the provider-measured 880,000 compact threshold. It is text-only: GLM-5.3's
+an 880,000 conservative compact threshold matching the existing Ollama Cloud
+GLM-5.2 policy. That threshold is not a provider-measured boundary. It is
+text-only: GLM-5.3's
 multimodal variant is GLM-5.3-Flash, so the full-size route declares `text`
 modality instead of inheriting Flash's image path.
 
