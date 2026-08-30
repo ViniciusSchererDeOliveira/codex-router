@@ -94,6 +94,18 @@ test("ChatGPT browser login reports a terminal retry after child close without a
   }
 });
 
+test("a usable OAuth profile closes the pending attempt after core finalization", () => {
+  const accountId = "acct_example_123456";
+  const attempts = new Map([[accountId, {
+    status: "pending",
+    deadlineAt: Date.now() + 60_000,
+  }]]);
+  const pool = { accounts: { [accountId]: { subscription: { usable: true } } } };
+  const finished = projectChatGPTSubscriptionLoginAttempts(pool, attempts);
+  assert.equal("loginAttempts" in finished, false);
+  assert.equal(attempts.has(accountId), false);
+});
+
 test("browser opener settlement survives the Codex child exiting first", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-exit-race-"));
   const script = path.join(directory, "codex-login-fixture.mjs");
@@ -1638,10 +1650,33 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(chatgptLogin, /\["chatgpt-account-pool", "status"\]/);
   assert.match(chatgptLogin, /\["chatgpt-account-pool", "status"\][\s\S]{0,120}CATALOG_MUTATION_TIMEOUT_MS/);
   assert.match(chatgptLogin, /account\.subscription\?\.usable === true/);
+  assert.match(chatgptLogin, /subscriptionLoginAttempts\.get\(id\)\?\.status !== "failed"/);
   assert.match(chatgptLogin, /profileHome === primaryHome/);
   assert.match(chatgptLogin, /subscriptionLoginInFlight/);
   assert.match(chatgptLogin, /createChatGPTLoginLease/);
+  assert.match(chatgptLogin, /attachChatGPTLoginLease/);
   assert.match(chatgptLogin, /clearChatGPTLoginLease/);
+  assert.ok(
+    chatgptLogin.indexOf("createChatGPTLoginLease") < chatgptLogin.indexOf("openBrowserCommand"),
+    "durable login ownership must be reserved before the credential writer starts",
+  );
+  assert.match(chatgptLogin, /"login-finalize", id, completionLease/);
+  assert.match(chatgptLogin, /enqueueMutation\(\(\) => runJson\([\s\S]*?"login-finalize", id, completionLease/);
+  assert.ok(
+    chatgptLogin.indexOf("const opened = await openBrowserCommand")
+      < chatgptLogin.indexOf("void loginExited.then(processLoginExit)"),
+    "login finalization must wait for a successful browser handoff",
+  );
+  assert.ok(
+    chatgptLogin.indexOf("deadlineAt: Date.now() + CATALOG_MUTATION_TIMEOUT_MS + 30_000")
+      < chatgptLogin.indexOf('"login-finalize", id, completionLease'),
+    "finalization must receive a fresh bounded polling deadline",
+  );
+  assert.match(
+    chatgptLogin,
+    /await enqueueMutation\([\s\S]*?"login-finalize", id, completionLease[\s\S]*?finally \{[\s\S]*?releaseSubscriptionLogin\(id\)/,
+    "the durable/in-memory login owner must survive through exact-lease finalization",
+  );
   const chatgptRemoval = source.match(/handleAction\("removeChatGptSubscriptionAccount"[\s\S]*?\n  \}\);/)?.[0];
   assert.ok(chatgptRemoval, "ChatGPT subscription removal handler should be readable");
   assert.match(chatgptRemoval, /subscriptionLoginInFlight\.has\(id\)/);
@@ -1665,6 +1700,9 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   const settings = await readFile(new URL("../apps/control-center/src/pages/SettingsPage.tsx", import.meta.url), "utf8");
   assert.match(settings, /filter\(\(account\) => account\.state !== "revoked"\)/);
   assert.match(settings, /account\.subscription\?\.usable === true/);
+  assert.match(settings, /subscription\?\.usable === true && !loginAttempt/);
+  assert.match(settings, /accountLoginAttempt\?\.status !== "failed"/);
+  assert.match(settings, /loginPendingId === loginRetryingId/);
   assert.match(settings, /account\.state === "revoked" \|\| loginPendingId === account\.id/);
   assert.match(settings, /const poll = async \(\) => \{[\s\S]*?await refreshRef\.current\(\)[\s\S]*?setTimeout\(\(\) => void poll\(\), 1_500\)/);
   assert.doesNotMatch(settings, /setInterval\(\(\) => refreshRef\.current\(\), 1_500\)/);

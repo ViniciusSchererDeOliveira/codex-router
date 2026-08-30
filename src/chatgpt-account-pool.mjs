@@ -5,12 +5,18 @@ import path from "node:path";
 
 import lockfile from "proper-lockfile";
 
-import { writePrivateJson } from "./file-security.mjs";
+import { privateFileIsProtected, protectPrivateFile, writePrivateJson } from "./file-security.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { CHATGPT_ACCOUNT_HOMES_DIR, CHATGPT_ACCOUNT_POOL_PATH } from "./paths.mjs";
 import { findCodexBinary } from "./codex-binary.mjs";
 import { spawnableCommand } from "./spawnable-command.mjs";
-import { assertChatGPTLoginLeaseInactive } from "./chatgpt-login-lease.mjs";
+import {
+  attachChatGPTLoginLease,
+  assertChatGPTLoginLeaseInactive,
+  chatGPTLoginLeaseStatus,
+  clearChatGPTLoginLease,
+  createChatGPTLoginLease,
+} from "./chatgpt-login-lease.mjs";
 import { ensureNoSymlinkParents } from "./path-security.mjs";
 
 export const CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION = 1;
@@ -372,7 +378,7 @@ function readSubscriptionSession(accountValue, { homesDir = CHATGPT_ACCOUNT_HOME
   try {
     const file = lstatSync(authPath);
     if (file.isSymbolicLink() || !file.isFile()) return undefined;
-    if (process.platform !== "win32" && (file.mode & 0o077) !== 0) return undefined;
+    if (!privateFileIsProtected(authPath)) return undefined;
     const parsed = JSON.parse(readFileSync(authPath, "utf8"));
     const tokens = parsed?.tokens;
     const accessToken = typeof tokens?.access_token === "string" ? tokens.access_token : "";
@@ -383,6 +389,32 @@ function readSubscriptionSession(accountValue, { homesDir = CHATGPT_ACCOUNT_HOME
     const email = tokenEmail(tokens?.id_token);
     return { accessToken, accountId: accountIdValue, expiresAtMs, expired, ...(email ? { email } : {}) };
   } catch { return undefined; }
+}
+
+export function hardenChatGPTSubscriptionAccountAuth(accountValue, {
+  homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
+  protect = protectPrivateFile,
+  isProtected = privateFileIsProtected,
+} = {}) {
+  const id = accountId(accountValue);
+  const home = chatGPTSubscriptionAccountHome(id, { homesDir });
+  const authPath = chatGPTSubscriptionAccountAuthPath(id, { homesDir });
+  ensurePrivateAccountDirectory(home, homesDir);
+  ensureNoSymlinkParents(home, { label: "ChatGPT account profile" });
+  const before = lstatSync(authPath);
+  if (before.isSymbolicLink() || !before.isFile()) {
+    throw new Error("The ChatGPT account login profile is not a regular file.");
+  }
+  if (!isProtected(authPath)) protect(authPath);
+  ensureNoSymlinkParents(home, { label: "ChatGPT account profile" });
+  const after = lstatSync(authPath);
+  if (after.isSymbolicLink() || !after.isFile() || !isProtected(authPath)) {
+    throw new Error("The ChatGPT account login profile is not owner-only.");
+  }
+  if (!readSubscriptionSession(id, { homesDir })) {
+    throw new Error("The ChatGPT account login profile is invalid after hardening.");
+  }
+  return authPath;
 }
 export function chatGPTSubscriptionAccountStatus(accountValue, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR, now = Date.now() } = {}) {
   assertAccountDiscoveryEnabled();
@@ -411,7 +443,18 @@ export async function claimChatGPTSubscriptionRefresh(accountValue, {
   }, { filePath });
 }
 
-export async function refreshChatGPTSubscriptionAccount(accountValue, { filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR, force = false, now = Date.now(), binary, execFileImpl = execFile } = {}) {
+export async function refreshChatGPTSubscriptionAccount(accountValue, {
+  filePath = CHATGPT_ACCOUNT_POOL_PATH,
+  homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
+  force = false,
+  now = Date.now(),
+  binary,
+  execFileImpl = execFile,
+  createLoginLease = createChatGPTLoginLease,
+  attachLoginLease = attachChatGPTLoginLease,
+  clearLoginLease = clearChatGPTLoginLease,
+  finalizeLogin,
+} = {}) {
   assertAccountDiscoveryEnabled();
   const id = accountId(accountValue);
   const status = chatGPTSubscriptionAccountStatus(id, { homesDir, now });
@@ -421,7 +464,63 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, { filePath
   if (!resolvedBinary) return false;
   if (!await claimChatGPTSubscriptionRefresh(id, { filePath, force, now })) return false;
   const target = spawnableCommand(resolvedBinary, ["login", "status"]);
-  return new Promise((resolve) => execFileImpl(target.command, target.args, { ...target.options, env: { ...process.env, CODEX_HOME: chatGPTSubscriptionAccountHome(id, { homesDir }) }, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }, (error) => resolve(!error)));
+  return new Promise((resolve) => {
+    let lease;
+    let child;
+    let childFinished = false;
+    let childError;
+    let leaseReady = false;
+    const finish = async () => {
+      if (!leaseReady || !childFinished) return;
+      if (childError) {
+        try { clearLoginLease(id, lease, { homesDir }); } catch {}
+        resolve(false);
+        return;
+      }
+      try {
+        const finalize = finalizeLogin
+          || (await import("./chatgpt-profile-switch.mjs")).finalizeChatGPTProfileLogin;
+        await finalize(id, {
+          filePath,
+          homesDir,
+          expectedLoginLease: lease,
+          clearLoginLease,
+        });
+        resolve(true);
+      } catch {
+        resolve(false);
+      }
+    };
+    try {
+      lease = createLoginLease(id, process.pid, { homesDir, phase: "reserved" });
+      child = execFileImpl(
+        target.command,
+        target.args,
+        {
+          ...target.options,
+          env: { ...process.env, CODEX_HOME: chatGPTSubscriptionAccountHome(id, { homesDir }) },
+          encoding: "utf8",
+          timeout: 30_000,
+          maxBuffer: 256 * 1024,
+          windowsHide: true,
+        },
+        (error) => {
+          childError = error;
+          childFinished = true;
+          void finish();
+        },
+      );
+      lease = attachLoginLease(id, lease, child?.pid, { homesDir });
+      leaseReady = true;
+      void finish();
+    } catch {
+      try { child?.kill?.(); } catch {}
+      if (lease) {
+        try { clearLoginLease(id, lease, { homesDir }); } catch {}
+      }
+      resolve(false);
+    }
+  });
 }
 export async function refreshBoundedChatGPTSubscriptionAccounts(pool, {
   refresh = refreshChatGPTSubscriptionAccount,
@@ -444,11 +543,35 @@ export async function refreshBoundedChatGPTSubscriptionAccounts(pool, {
   }));
   return pool;
 }
-export function chatGPTSubscriptionAccountPoolSnapshot({ filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR, now = Date.now() } = {}) {
+export function chatGPTSubscriptionAccountPoolSnapshot({
+  filePath = CHATGPT_ACCOUNT_POOL_PATH,
+  homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
+  now = Date.now(),
+  loginLeaseIdentity,
+  loginLeaseMaxAgeMs,
+} = {}) {
   assertAccountDiscoveryEnabled();
   const state = readChatGPTAccountPoolState(filePath);
   const sanitized = sanitizeChatGPTAccountPool(state);
   for (const [id, account] of Object.entries(sanitized.accounts)) {
+    const loginLease = chatGPTLoginLeaseStatus(id, {
+      homesDir,
+      ...(loginLeaseIdentity ? { identity: loginLeaseIdentity } : {}),
+      ...(loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: loginLeaseMaxAgeMs }),
+      now,
+    });
+    if (loginLease.active) {
+      account.subscription = {
+        ...(account.subscription || {}),
+        status: "pending",
+        authenticated: false,
+        usable: false,
+        expired: false,
+        hasAccountId: false,
+        loginInProgress: true,
+      };
+      continue;
+    }
     const status = chatGPTSubscriptionAccountStatus(id, { homesDir, now });
     account.subscription = { ...(account.subscription || {}), status: status.usable ? "usable" : status.expired ? "expired" : status.authenticated ? "invalid" : "pending", ...status };
   }

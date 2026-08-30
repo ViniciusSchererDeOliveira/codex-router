@@ -6,9 +6,11 @@ import {
   constants as fsConstants,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   lstatSync,
@@ -16,8 +18,15 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-import { protectPrivateFile, writePrivateJson } from "./file-security.mjs";
-import { assertChatGPTLoginLeaseInactive } from "./chatgpt-login-lease.mjs";
+import { privateFileIsProtected, protectPrivateFile, writePrivateJson } from "./file-security.mjs";
+import {
+  assertChatGPTLoginLeaseInactive,
+  chatGPTLoginAuthChanged,
+  chatGPTLoginLeaseCompletionCandidate,
+  chatGPTLoginLeaseMatches,
+  chatGPTLoginLeaseStatus,
+  clearChatGPTLoginLease,
+} from "./chatgpt-login-lease.mjs";
 import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import {
@@ -37,6 +46,7 @@ import {
   chatGPTSubscriptionAccountHome,
   chatGPTSubscriptionAccountAuthPath,
   chatGPTSubscriptionAccountStatus,
+  hardenChatGPTSubscriptionAccountAuth,
   isChatGPTAccountId,
   readChatGPTAccountPoolState,
   removeChatGPTSubscriptionAccount,
@@ -83,12 +93,59 @@ function transactionDirectory(switchPath = CHATGPT_PROFILE_SWITCH_PATH) {
   return path.join(path.dirname(switchPath), "chatgpt-profile", "switch-transaction");
 }
 
+function transactionStagingDirectory(switchPath = CHATGPT_PROFILE_SWITCH_PATH) {
+  return `${transactionDirectory(switchPath)}.staging`;
+}
+
 function transactionManifestPath(switchPath) {
   return path.join(transactionDirectory(switchPath), "manifest.json");
 }
 
 function transactionAuthPath(switchPath) {
   return path.join(transactionDirectory(switchPath), "primary-auth.json");
+}
+
+function validateTransactionDirectory(directory, { allowManifest = true } = {}) {
+  ensureNoSymlinkParents(directory);
+  const stat = lstatSync(directory);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error("The ChatGPT profile switch transaction is not a private directory.");
+  }
+  const allowed = new Set(["primary-auth.json", ...(allowManifest ? ["manifest.json"] : [])]);
+  for (const name of readdirSync(directory)) {
+    if (!allowed.has(name)) {
+      throw new Error("The ChatGPT profile switch transaction contains an unexpected artifact.");
+    }
+    const entry = lstatSync(path.join(directory, name));
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      throw new Error("The ChatGPT profile switch transaction artifact is invalid.");
+    }
+    if (!privateFileIsProtected(path.join(directory, name))) {
+      throw new Error("The ChatGPT profile switch transaction artifact is not private.");
+    }
+  }
+}
+
+function removeStagedSwitchTransaction(switchPath) {
+  const staging = transactionStagingDirectory(switchPath);
+  if (!existsSync(staging)) return;
+  removeValidatedTransactionDirectory(staging);
+}
+
+function removeValidatedTransactionDirectory(directory) {
+  validateTransactionDirectory(directory);
+  for (const name of ["manifest.json", "primary-auth.json"]) {
+    const target = path.join(directory, name);
+    if (!existsSync(target)) continue;
+    const entry = lstatSync(target);
+    if (entry.isSymbolicLink() || !entry.isFile() || !privateFileIsProtected(target)) {
+      throw new Error("The ChatGPT profile switch transaction artifact changed during cleanup.");
+    }
+    rmSync(target);
+  }
+  // Non-recursive removal is deliberate. An artifact inserted after the
+  // validation above makes cleanup fail closed instead of being erased.
+  rmdirSync(directory);
 }
 
 function catalogPaths(options = {}) {
@@ -243,23 +300,48 @@ function writeSwitchTransaction({
   primary,
   catalogsEnabled,
   globalCatalogSnapshot,
+  previousState,
+  afterEvidenceStaged,
+  afterManifestStaged,
 }) {
   const directory = transactionDirectory(switchPath);
-  ensureNoSymlinkParents(directory);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  ensureNoSymlinkParents(directory);
+  const staging = transactionStagingDirectory(switchPath);
+  ensureNoSymlinkParents(path.dirname(directory));
+  mkdirSync(path.dirname(directory), { recursive: true, mode: 0o700 });
+  ensureNoSymlinkParents(path.dirname(directory));
+  if (existsSync(directory)) {
+    throw new Error("A ChatGPT profile switch transaction is already pending recovery.");
+  }
+  removeStagedSwitchTransaction(switchPath);
   const identity = authIdentity(primary);
   if (!identity) throw new Error("The active ChatGPT login profile has no verified identity.");
-  atomicPrivateCopy(primary, transactionAuthPath(switchPath));
-  writePrivateJson(transactionManifestPath(switchPath), {
-    version: TRANSACTION_VERSION,
-    active,
-    target,
-    activeAccountId: identity.accountId,
-    targetAccountId: targetIdentity.accountId,
-    catalogsEnabled: catalogsEnabled === true,
-    ...(catalogsEnabled ? { globalCatalogSnapshot } : {}),
-  }, { directoryMode: 0o700 });
+  mkdirSync(staging, { mode: 0o700 });
+  try {
+    atomicPrivateCopy(primary, path.join(staging, "primary-auth.json"));
+    afterEvidenceStaged?.();
+    writePrivateJson(path.join(staging, "manifest.json"), {
+      version: TRANSACTION_VERSION,
+      active,
+      target,
+      activeAccountId: identity.accountId,
+      targetAccountId: targetIdentity.accountId,
+      catalogsEnabled: catalogsEnabled === true,
+      previousState,
+      ...(catalogsEnabled ? { globalCatalogSnapshot } : {}),
+    }, { directoryMode: 0o700 });
+    afterManifestStaged?.();
+    validateTransactionDirectory(staging);
+    ensureNoSymlinkParents(path.dirname(directory));
+    if (existsSync(directory)) {
+      throw new Error("A ChatGPT profile switch transaction is already pending recovery.");
+    }
+    renameSync(staging, directory);
+    validateTransactionDirectory(directory);
+  } finally {
+    if (existsSync(staging)) {
+      removeValidatedTransactionDirectory(staging);
+    }
+  }
   return {
     active,
     target,
@@ -267,6 +349,33 @@ function writeSwitchTransaction({
     targetAccountId: targetIdentity.accountId,
     catalogsEnabled: catalogsEnabled === true,
     globalCatalogSnapshot,
+    previousState,
+  };
+}
+
+function validateTransactionPreviousState(value) {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || value.version !== VERSION
+    || typeof value.pending !== "boolean"
+    || value.phase !== "idle"
+  ) {
+    throw new Error("The ChatGPT profile switch transaction manifest is invalid.");
+  }
+  if (value.desired !== undefined && value.desired !== AUTO && value.desired !== LEGACY_PRIMARY && !isChatGPTAccountId(value.desired)) {
+    throw new Error("The ChatGPT profile switch transaction manifest is invalid.");
+  }
+  if (value.active !== undefined && value.active !== LEGACY_PRIMARY && !isChatGPTAccountId(value.active)) {
+    throw new Error("The ChatGPT profile switch transaction manifest is invalid.");
+  }
+  return {
+    version: VERSION,
+    ...(value.desired ? { desired: value.desired } : {}),
+    ...(value.active ? { active: value.active } : {}),
+    pending: value.pending,
+    phase: "idle",
   };
 }
 
@@ -292,6 +401,7 @@ function validatePersistedGlobalCatalogSnapshot(snapshot) {
 function readSwitchTransaction(switchPath) {
   const directory = transactionDirectory(switchPath);
   if (!existsSync(directory)) return undefined;
+  validateTransactionDirectory(directory);
   ensureNoSymlinkParents(directory);
   const directoryStat = lstatSync(directory);
   if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
@@ -322,6 +432,9 @@ function readSwitchTransaction(switchPath) {
   const globalCatalogSnapshot = parsed.catalogsEnabled
     ? validatePersistedGlobalCatalogSnapshot(parsed.globalCatalogSnapshot)
     : undefined;
+  const previousState = parsed.previousState === undefined
+    ? undefined
+    : validateTransactionPreviousState(parsed.previousState);
   ensureAuthFile(authPath, "The saved");
   if (authIdentity(authPath)?.accountId !== parsed.activeAccountId) {
     throw new Error("The ChatGPT profile switch transaction identity does not match its manifest.");
@@ -333,18 +446,62 @@ function readSwitchTransaction(switchPath) {
     targetAccountId: parsed.targetAccountId,
     catalogsEnabled: parsed.catalogsEnabled === true,
     globalCatalogSnapshot,
+    previousState,
   };
 }
 
 function removeSwitchTransaction(switchPath) {
   const directory = transactionDirectory(switchPath);
   if (!existsSync(directory)) return;
+  validateTransactionDirectory(directory);
   ensureNoSymlinkParents(directory);
   const stat = lstatSync(directory);
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error("The ChatGPT profile switch transaction is not a private directory.");
   }
-  rmSync(directory, { recursive: true, force: true });
+  removeValidatedTransactionDirectory(directory);
+}
+
+function discardIncompleteUnpublishedTransaction(switchPath, state, options = {}) {
+  const directory = transactionDirectory(switchPath);
+  if (!existsSync(directory)) return false;
+  validateTransactionDirectory(directory);
+  const names = new Set(readdirSync(directory));
+  if (names.has("manifest.json")) return false;
+  if (state.phase !== "idle") {
+    throw new Error(`The ChatGPT profile switch transaction is incomplete for phase ${state.phase}.`);
+  }
+  if (names.has("primary-auth.json")) {
+    if (!authFilesEqual(
+      path.join(directory, "primary-auth.json"),
+      primaryAuthPath(options.primaryHome),
+    )) throw new Error("The incomplete ChatGPT profile switch transaction does not match the active login.");
+  }
+  removeValidatedTransactionDirectory(directory);
+  return true;
+}
+
+function switchStatesEqual(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.version === right.version
+    && left.desired === right.desired
+    && left.active === right.active
+    && left.pending === right.pending
+    && left.phase === right.phase,
+  );
+}
+
+function authFilesEqual(left, right) {
+  ensureAuthFile(left, "The active");
+  ensureAuthFile(right, "The saved");
+  return readFileSync(left).equals(readFileSync(right));
+}
+
+function transactionArtifactsExist(switchPath) {
+  return existsSync(transactionDirectory(switchPath))
+    || existsSync(transactionStagingDirectory(switchPath));
 }
 
 function restoreSwitchTransaction(transaction, switchPath, options) {
@@ -500,7 +657,7 @@ function authIdentity(filePath) {
   try {
     ensureNoSymlinkParents(path.dirname(filePath));
     const file = lstatSync(filePath);
-    if (file.isSymbolicLink() || !file.isFile() || (process.platform !== "win32" && (file.mode & 0o077) !== 0)) return undefined;
+    if (file.isSymbolicLink() || !file.isFile() || !privateFileIsProtected(filePath)) return undefined;
     const parsed = JSON.parse(readFileSync(filePath, "utf8"));
     const tokens = parsed?.tokens;
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : "";
@@ -518,7 +675,10 @@ function authIdentity(filePath) {
   }
 }
 
-function accountForAuth(state, authPath, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR } = {}) {
+function accountForAuth(state, authPath, {
+  homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
+  leasedAccountIds = new Set(),
+} = {}) {
   const identity = authIdentity(authPath);
   if (!identity) return undefined;
   const matches = [];
@@ -528,6 +688,7 @@ function accountForAuth(state, authPath, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR 
       matches.push(id);
       continue;
     }
+    if (leasedAccountIds.has(id)) continue;
     const candidate = authIdentity(chatGPTSubscriptionAccountAuthPath(id, { homesDir }));
     if (candidate?.accountId === identity.accountId) matches.push(id);
   }
@@ -535,13 +696,22 @@ function accountForAuth(state, authPath, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR 
   return matches[0];
 }
 
-function ensureProfileAccountLocked({
-  filePath = CHATGPT_ACCOUNT_POOL_PATH,
-  homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
-  primaryHome = CODEX_HOME,
-  switchPath = CHATGPT_PROFILE_SWITCH_PATH,
-} = {}) {
+function ensureProfileAccountLocked(options = {}) {
+  const {
+    filePath = CHATGPT_ACCOUNT_POOL_PATH,
+    homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
+    primaryHome = CODEX_HOME,
+    switchPath = CHATGPT_PROFILE_SWITCH_PATH,
+  } = options;
   let state = readChatGPTAccountPoolState(filePath);
+  const leasedAccountIds = new Set(Object.keys(state.accounts).filter((id) => (
+    chatGPTLoginLeaseStatus(id, {
+      homesDir,
+      ...(options.loginLeaseIdentity ? { identity: options.loginLeaseIdentity } : {}),
+      ...(options.loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: options.loginLeaseMaxAgeMs }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    }).active
+  )));
   const sources = [
     primaryAuthPath(primaryHome),
     backupAuthPath(switchPath),
@@ -550,7 +720,7 @@ function ensureProfileAccountLocked({
   for (const source of sources) {
     const identity = authIdentity(source);
     if (!identity) continue;
-    let id = accountForAuth(state, source, { homesDir });
+    let id = accountForAuth(state, source, { homesDir, leasedAccountIds });
     if (!id) {
       const created = createChatGPTSubscriptionAccount({ filePath, homesDir, label: "" });
       id = created.id;
@@ -580,6 +750,7 @@ function ensureProfileAccountLocked({
   let identitiesChanged = false;
   const seenIdentities = new Map();
   for (const [id, account] of Object.entries(state.accounts)) {
+    if (leasedAccountIds.has(id)) continue;
     const identity = authIdentity(chatGPTSubscriptionAccountAuthPath(id, { homesDir }));
     if (!identity) continue;
     const bound = account?.identity?.accountId;
@@ -622,6 +793,102 @@ export async function ensureChatGPTProfileAccounts(options = {}) {
   );
 }
 
+export async function finalizeChatGPTProfileLogin(accountId, options = {}) {
+  assertProfileDiscoveryEnabled();
+  if (!isChatGPTAccountId(accountId)) throw new Error("Account id is invalid.");
+  return withChatGPTAccountPoolLock(() => withProfileCatalogLock(async () => {
+    recoverInterruptedSwitchLocked(options);
+    const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
+    const homesDir = options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR;
+    const state = readChatGPTAccountPoolState(filePath);
+    const account = state.accounts[accountId];
+    if (!account || account.state !== "active" || account.paused) {
+      throw new Error("The subscription account is not active.");
+    }
+    const expectedLoginLease = options.expectedLoginLease;
+    if (!expectedLoginLease) throw new Error("The ChatGPT login completion lease is required.");
+    const loginLeaseMatches = options.loginLeaseMatches || chatGPTLoginLeaseMatches;
+    if (!loginLeaseMatches(accountId, expectedLoginLease, { homesDir })) {
+      throw new Error("The ChatGPT login completion lease changed before finalization.");
+    }
+    const loginAuthChanged = options.loginAuthChanged || chatGPTLoginAuthChanged;
+    if (!loginAuthChanged(accountId, expectedLoginLease, { homesDir })) {
+      const clearLoginLease = options.clearLoginLease || clearChatGPTLoginLease;
+      if (!clearLoginLease(accountId, expectedLoginLease, { homesDir })) {
+        throw new Error("The ChatGPT login completion lease changed before cancellation cleanup.");
+      }
+      throw new Error("Codex login closed before this account's credentials changed.");
+    }
+    const hardenAuth = options.hardenAuth || hardenChatGPTSubscriptionAccountAuth;
+    hardenAuth(accountId, { homesDir });
+    const identity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
+    if (!identity) throw new Error("The ChatGPT account login profile is invalid after hardening.");
+    if (account.identity?.accountId && account.identity.accountId !== identity.accountId) {
+      throw new Error("The selected ChatGPT login profile identity does not match its saved account.");
+    }
+    const duplicate = Object.entries(state.accounts).find(([candidateId, candidate]) => {
+      if (candidateId === accountId) return false;
+      if (candidate?.identity?.accountId === identity.accountId) return true;
+      return authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
+        === identity.accountId;
+    });
+    if (duplicate) throw new Error("The ChatGPT account identity is registered more than once.");
+    if (!loginLeaseMatches(accountId, expectedLoginLease, { homesDir })) {
+      throw new Error("The ChatGPT login completion lease changed before finalization.");
+    }
+    const finalizedIdentity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
+    if (!finalizedIdentity || finalizedIdentity.accountId !== identity.accountId) {
+      throw new Error("The ChatGPT login profile changed during finalization.");
+    }
+    if (!account.identity?.accountId) {
+      account.identity = {
+        accountId: finalizedIdentity.accountId,
+        ...(finalizedIdentity.email ? { email: finalizedIdentity.email } : {}),
+      };
+      writeChatGPTAccountPoolState(state, filePath);
+    }
+    const profile = readChatGPTProfileSwitchState(options.switchPath || CHATGPT_PROFILE_SWITCH_PATH);
+    if (profile.active === accountId && codexDesktopRunning(options)) {
+      return { ...profile, loginFinalizationPending: true };
+    }
+    const finalized = profile.active !== accountId
+      ? profile
+      : await applyLocked(accountId, {
+        ...options,
+        loginLeaseAccountId: accountId,
+        expectedLoginLease,
+      });
+    const clearLoginLease = options.clearLoginLease || clearChatGPTLoginLease;
+    if (!clearLoginLease(accountId, expectedLoginLease, { homesDir })) {
+      throw new Error("The ChatGPT login completion lease changed after finalization.");
+    }
+    return finalized;
+  }, options), accountPoolLockOptions(options));
+}
+
+export async function recoverCompletedChatGPTProfileLogins(options = {}) {
+  assertProfileDiscoveryEnabled();
+  const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
+  const homesDir = options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR;
+  const state = readChatGPTAccountPoolState(filePath);
+  const recovered = [];
+  for (const accountId of Object.keys(state.accounts)) {
+    const candidate = chatGPTLoginLeaseCompletionCandidate(accountId, {
+      homesDir,
+      ...(options.loginLeaseIdentity ? { identity: options.loginLeaseIdentity } : {}),
+      ...(options.loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: options.loginLeaseMaxAgeMs }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    if (!candidate) continue;
+    const result = await finalizeChatGPTProfileLogin(accountId, {
+      ...options,
+      expectedLoginLease: candidate,
+    });
+    if (result.loginFinalizationPending !== true) recovered.push(accountId);
+  }
+  return recovered;
+}
+
 export function codexDesktopRunning({ platform = process.platform, processList, processListReader } = {}) {
   if (!["darwin", "win32", "linux", "freebsd"].includes(platform)) return true;
   let listing = processList;
@@ -656,15 +923,11 @@ function validateSelection(selection, { filePath = CHATGPT_ACCOUNT_POOL_PATH, cu
   return normalized;
 }
 
-function restorePreviousProfile(active, { homesDir, primaryHome }) {
-  const primary = primaryAuthPath(primaryHome);
-  const current = profileAuthPath(active, { homesDir });
-  if (existsSync(current)) atomicPrivateCopy(current, primary);
-}
-
 function recoverInterruptedSwitchLocked(options) {
   const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
   const state = readChatGPTProfileSwitchState(switchPath);
+  removeStagedSwitchTransaction(switchPath);
+  if (discardIncompleteUnpublishedTransaction(switchPath, state, options)) return state;
   const transaction = readSwitchTransaction(switchPath);
   if (!transaction) {
     if (state.phase !== "idle") {
@@ -679,7 +942,12 @@ function recoverInterruptedSwitchLocked(options) {
     const rolledBack = state.pending
       && state.active === transaction.active
       && state.desired === transaction.target;
-    if (!completed && !rolledBack) {
+    const notStarted = switchStatesEqual(state, transaction.previousState)
+      && authFilesEqual(
+        primaryAuthPath(options.primaryHome),
+        transactionAuthPath(switchPath),
+      );
+    if (!completed && !rolledBack && !notStarted) {
       throw new Error("The idle ChatGPT profile state does not match its durable transaction.");
     }
     removeSwitchTransaction(switchPath);
@@ -729,6 +997,23 @@ function recoverInterruptedSwitchLocked(options) {
   return recovered;
 }
 
+function assertProfileLoginLeaseInactive(accountId, options = {}) {
+  const loginLeaseMatches = options.loginLeaseMatches || chatGPTLoginLeaseMatches;
+  if (
+    accountId === options.loginLeaseAccountId
+    && loginLeaseMatches(accountId, options.expectedLoginLease, {
+      homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
+    })
+  ) return;
+  assertChatGPTLoginLeaseInactive(accountId, {
+    homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
+    ...(options.loginLeaseIdentity ? { identity: options.loginLeaseIdentity } : {}),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: options.loginLeaseMaxAgeMs }),
+    message: "Cannot change a ChatGPT profile while its browser sign-in is in progress.",
+  });
+}
+
 async function applyLocked(selection, options) {
   const {
     filePath = CHATGPT_ACCOUNT_POOL_PATH,
@@ -741,17 +1026,38 @@ async function applyLocked(selection, options) {
   const active = current.active || migration.currentAccountId;
   const targetSelection = selection === LEGACY_PRIMARY ? migration.currentAccountId : selection;
   if (!active && targetSelection !== AUTO) throw new Error("No logged-in ChatGPT account is available.");
-  if (codexDesktopRunning(options)) {
-    const target = targetSelection === AUTO ? active : targetSelection;
-    return writeState({ ...current, desired: target, active, pending: Boolean(target && target !== active), phase: "idle" }, switchPath);
-  }
   const target = targetSelection === AUTO ? active : targetSelection;
-  if (target === active) {
-    return writeState({ ...current, desired: target, active, pending: false, phase: "idle" }, switchPath);
-  }
   const primary = primaryAuthPath(primaryHome);
   const activeProfile = profileAuthPath(active, { homesDir });
   const targetProfile = profileAuthPath(target, { homesDir });
+  for (const accountId of new Set([active, target].filter(Boolean))) {
+    assertProfileLoginLeaseInactive(accountId, options);
+  }
+  let sameAccountRefreshPending = false;
+  if (target === active && target) {
+    ensureAuthFile(primary, "The active");
+    ensureAuthFile(targetProfile, "The selected");
+    const poolState = readChatGPTAccountPoolState(filePath);
+    const targetIdentity = authIdentity(targetProfile);
+    const boundIdentity = poolState.accounts[target]?.identity?.accountId;
+    if (!targetIdentity) throw new Error("The selected ChatGPT login profile has no verified identity.");
+    if (boundIdentity && boundIdentity !== targetIdentity.accountId) {
+      throw new Error("The selected ChatGPT login profile identity does not match its saved account.");
+    }
+    sameAccountRefreshPending = !authFilesEqual(primary, targetProfile);
+  }
+  if (codexDesktopRunning(options)) {
+    return writeState({
+      ...current,
+      desired: target,
+      active,
+      pending: Boolean(target && (target !== active || sameAccountRefreshPending)),
+      phase: "idle",
+    }, switchPath);
+  }
+  if (target === active && !sameAccountRefreshPending) {
+    return writeState({ ...current, desired: target, active, pending: false, phase: "idle" }, switchPath);
+  }
   ensureAuthFile(activeProfile, "The active");
   ensureAuthFile(targetProfile, "The selected");
   const poolState = readChatGPTAccountPoolState(filePath);
@@ -774,27 +1080,37 @@ async function applyLocked(selection, options) {
       primary,
       catalogsEnabled,
       globalCatalogSnapshot,
+      previousState: current,
+      afterEvidenceStaged: options.afterSwitchTransactionEvidenceStaged,
+      afterManifestStaged: options.afterSwitchTransactionManifestStaged,
     });
+    options.afterSwitchTransactionPublished?.();
     writeState({ ...current, desired: target, active, pending: true, phase: "preparing" }, switchPath);
-    syncAuthProfile(primary, activeProfile);
+    options.afterSwitchPreparing?.();
+    if (target !== active) syncAuthProfile(primary, activeProfile);
     writeState({ ...current, desired: target, active, pending: true, phase: "backed-up" }, switchPath);
+    options.afterSwitchBackup?.();
     atomicPrivateCopy(targetProfile, primary);
+    options.afterSwitchInstall?.();
     if (catalogsEnabled) {
       restoreAccountCatalog(target, options);
       await refreshActiveCatalog(options);
       snapshotAccountCatalog(target, options);
     }
     writeState({ desired: target, active: target, pending: false, phase: "installed" }, switchPath);
+    options.afterSwitchInstalled?.();
     const completed = writeState({ desired: target, active: target, pending: false, phase: "idle" }, switchPath);
+    options.afterSwitchIdleBeforeTransactionRemoval?.();
     removeSwitchTransaction(switchPath);
     return completed;
   } catch (error) {
+    // Staging and journal construction do not mutate the primary auth or the
+    // global catalog. If construction did not return a complete transaction,
+    // leave both and the prior policy byte-for-byte unchanged; recovery will
+    // inspect any atomically published journal rather than guessing.
+    if (!transaction) throw error;
     try {
-      if (transaction) restoreSwitchTransaction(transaction, switchPath, options);
-      else {
-        restorePreviousProfile(active, { homesDir, primaryHome });
-        if (catalogsEnabled) restoreGlobalCatalog(globalCatalogSnapshot, options);
-      }
+      restoreSwitchTransaction(transaction, switchPath, options);
       writeState({ ...current, desired: target, active, pending: true, phase: "idle" }, switchPath);
       removeSwitchTransaction(switchPath);
     } catch {
@@ -879,7 +1195,7 @@ export async function selectChatGPTProfileAccount(selection, options = {}) {
         throw new Error("The selected subscription account changed while the profile was switching.");
       }
       const selectedProfile = profile.desired || profile.active;
-      if (selectedProfile !== normalized || (profile.pending && profile.active === normalized)) {
+      if (selectedProfile !== normalized) {
         throw new Error("The native profile selection did not reach a consistent state.");
       }
       current.policy.enabled = true;
@@ -989,12 +1305,13 @@ export async function reconcileChatGPTProfileSwitch(options = {}) {
 
 export async function reconcileChatGPTProfileSwitchIfReady(options = {}) {
   assertProfileDiscoveryEnabled();
+  const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
   const state = chatGPTProfileSwitchSnapshot(options);
   // This is the safe polling/startup hook: it performs no mutation for settled
   // idle state, and never mutates while Codex is running. Once Codex releases
   // auth, it completes either an earlier explicit pending selection or durable
   // crash recovery from a non-idle transaction phase under both locks.
-  if (state.running || (!state.pending && state.phase === "idle")) return state;
+  if (state.running || (!state.pending && state.phase === "idle" && !transactionArtifactsExist(switchPath))) return state;
   return reconcileChatGPTProfileSwitch(options);
 }
 

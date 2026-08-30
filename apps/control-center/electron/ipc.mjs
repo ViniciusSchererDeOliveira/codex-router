@@ -36,6 +36,7 @@ const loginLeaseUrl = import.meta.url.includes("/app.asar/")
   ? new URL("../../src/chatgpt-login-lease.mjs", import.meta.url)
   : new URL("../../../src/chatgpt-login-lease.mjs", import.meta.url);
 const {
+  attachChatGPTLoginLease,
   clearChatGPTLoginLease,
   createChatGPTLoginLease,
 } = await import(loginLeaseUrl);
@@ -436,12 +437,19 @@ export function projectChatGPTSubscriptionLoginAttempts(pool, attempts, now = Da
       continue;
     }
     const expired = Number.isFinite(attempt?.deadlineAt) && now >= attempt.deadlineAt;
-    if (attempt?.status === "pending" && !expired) {
+    if (
+      attempt?.status === "pending"
+      && (!expired || account.subscription?.loginInProgress === true)
+    ) {
       loginAttempts[accountId] = { status: "pending" };
       continue;
     }
     const detail = attempt?.error
-      || (attempt?.signal ? `Codex login ended with ${attempt.signal}.` : "Codex login closed before this account became usable.");
+      || (attempt?.signal
+        ? `Codex login ended with ${attempt.signal}.`
+        : Number.isInteger(attempt?.code) && attempt.code !== 0
+          ? `Codex login exited with status ${attempt.code}.`
+          : "Codex login closed before this account became usable.");
     loginAttempts[accountId] = {
       status: "failed",
       error: cleanText(detail, "Codex login did not complete. Try again."),
@@ -832,19 +840,26 @@ export function registerIpcHandlers({
   const subscriptionLoginInFlight = new Set();
   const subscriptionLoginAttempts = new Map();
   const idleWaiters = new Set();
+  const mutationsIdle = () => pendingMutations === 0 && subscriptionLoginInFlight.size === 0;
+  const settleIdleWaiters = () => {
+    if (!mutationsIdle()) return;
+    for (const resolve of idleWaiters) resolve();
+    idleWaiters.clear();
+  };
+  const releaseSubscriptionLogin = (id) => {
+    subscriptionLoginInFlight.delete(id);
+    settleIdleWaiters();
+  };
   const enqueueMutation = (task) => {
     pendingMutations += 1;
     const queued = mutationTail.then(task);
     mutationTail = queued.then(() => undefined, () => undefined);
     return queued.finally(() => {
       pendingMutations -= 1;
-      if (pendingMutations === 0) {
-        for (const resolve of idleWaiters) resolve();
-        idleWaiters.clear();
-      }
+      settleIdleWaiters();
     });
   };
-  const whenMutationsIdle = () => pendingMutations === 0
+  const whenMutationsIdle = () => mutationsIdle()
     ? Promise.resolve()
     : new Promise((resolve) => idleWaiters.add(resolve));
   const emit = (payload) => {
@@ -1237,15 +1252,6 @@ export function registerIpcHandlers({
     const account = pool?.accounts?.[id];
     if (!account) throw new Error("The subscription account is not registered.");
     if (account.state !== "active") throw new Error("The subscription account is not active.");
-    if (account.subscription?.usable === true) {
-      return {
-        accountId: id,
-        opened: false,
-        surface: "browser",
-        pending: false,
-        alreadyAuthenticated: true,
-      };
-    }
     if (subscriptionLoginInFlight.has(id)) {
       return {
         accountId: id,
@@ -1253,6 +1259,18 @@ export function registerIpcHandlers({
         surface: "browser",
         pending: true,
         inProgress: true,
+      };
+    }
+    if (
+      account.subscription?.usable === true
+      && subscriptionLoginAttempts.get(id)?.status !== "failed"
+    ) {
+      return {
+        accountId: id,
+        opened: false,
+        surface: "browser",
+        pending: false,
+        alreadyAuthenticated: true,
       };
     }
     const codex = executablePath("codex");
@@ -1272,43 +1290,88 @@ export function registerIpcHandlers({
       deadlineAt: Date.now() + CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS,
     });
     let loginLease;
+    let resolveLoginExit;
+    const loginExited = new Promise((resolve) => { resolveLoginExit = resolve; });
     try {
-      return {
-        ...await openBrowserCommand(codex, ["login"], discoverSourceRoot(), {
+      // Reserve ownership before spawning. A desktop crash can therefore
+      // never leave a credential writer with no durable pre-auth evidence.
+      loginLease = createChatGPTLoginLease(id, process.pid, {
+        accountHome: profileHome,
+        homesDir: path.dirname(profileHome),
+        phase: "reserved",
+      });
+      const processLoginExit = async (outcome = {}) => {
+        const current = subscriptionLoginAttempts.get(id);
+        if (!current) {
+          releaseSubscriptionLogin(id);
+          return;
+        }
+        if (!loginLease) {
+          releaseSubscriptionLogin(id);
+          subscriptionLoginAttempts.set(id, {
+            ...current,
+            status: "failed",
+            ...(outcome.error ? { error: outcome.error } : {}),
+            ...(outcome.signal ? { signal: outcome.signal } : {}),
+            ...(Number.isInteger(outcome.code) ? { code: outcome.code } : {}),
+          });
+          return;
+        }
+        // Exit status is not credential truth: Codex can persist a valid OAuth
+        // refresh before a later non-zero exit. The protected lease records
+        // the pre-login auth digest; core finalization compares that durable
+        // evidence and clears only an unchanged cancellation.
+        const completionLease = Buffer.from(JSON.stringify(loginLease), "utf8").toString("base64url");
+        subscriptionLoginAttempts.set(id, {
+          ...current,
+          status: "pending",
+          deadlineAt: Date.now() + CATALOG_MUTATION_TIMEOUT_MS + 30_000,
+        });
+        try {
+          const finalized = await enqueueMutation(() => runJson(
+            ["chatgpt-account-pool", "login-finalize", id, completionLease],
+            { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS },
+          ),
+          );
+          const latest = subscriptionLoginAttempts.get(id);
+          if (latest && finalized?.loginFinalizationPending !== true) {
+            subscriptionLoginAttempts.set(id, { ...latest, status: "finished" });
+          }
+        } catch (error) {
+          const latest = subscriptionLoginAttempts.get(id);
+          if (latest) subscriptionLoginAttempts.set(id, {
+            ...latest,
+            status: "failed",
+            error: error instanceof Error ? error.message : "ChatGPT login finalization failed.",
+          });
+        } finally {
+          releaseSubscriptionLogin(id);
+        }
+      };
+      const opened = await openBrowserCommand(codex, ["login"], discoverSourceRoot(), {
           environment: { CODEX_HOME: profileHome },
           openExternal: shell?.openExternal?.bind(shell),
           onSpawn: (child) => {
-            loginLease = createChatGPTLoginLease(id, child?.pid, {
+            loginLease = attachChatGPTLoginLease(id, loginLease, child?.pid, {
               accountHome: profileHome,
               homesDir: path.dirname(profileHome),
             });
           },
           onExit: (outcome = {}) => {
-            subscriptionLoginInFlight.delete(id);
-            try {
-              if (loginLease) clearChatGPTLoginLease(id, loginLease, {
-                accountHome: profileHome,
-                homesDir: path.dirname(profileHome),
-              });
-            } catch {
-              // A lease that cannot be verified remains fail-closed for core
-              // removal and expires through its bounded owner validation.
-            }
-            const current = subscriptionLoginAttempts.get(id);
-            if (!current) return;
-            subscriptionLoginAttempts.set(id, {
-              ...current,
-              status: "finished",
-              ...(outcome.error ? { error: outcome.error } : {}),
-              ...(outcome.signal ? { signal: outcome.signal } : {}),
-            });
+            resolveLoginExit(outcome);
           },
-        }),
+        });
+      // A child may exit before a delayed browser opener settles. Attach the
+      // finalizer only after the handoff succeeds so a rejected handoff can
+      // clear the lease without racing a credential commit.
+      void loginExited.then(processLoginExit);
+      return {
+        ...opened,
         accountId: id,
         pending: true,
       };
     } catch (error) {
-      subscriptionLoginInFlight.delete(id);
+      releaseSubscriptionLogin(id);
       try {
         if (loginLease) clearChatGPTLoginLease(id, loginLease, {
           accountHome: profileHome,
@@ -1416,7 +1479,7 @@ export function registerIpcHandlers({
   }, { requiresCompatibleRouter: false });
   return {
     operationNames: [...operations.values()],
-    hasActiveMutations: () => pendingMutations > 0,
+    hasActiveMutations: () => !mutationsIdle(),
     whenMutationsIdle,
   };
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,14 +19,22 @@ import {
   codexDesktopRunning,
   chatGPTProfileSwitchSnapshot,
   ensureChatGPTProfileAccounts,
+  finalizeChatGPTProfileLogin,
   readChatGPTProfileSwitchState,
   reconcileChatGPTProfileSwitch,
   reconcileChatGPTProfileSwitchIfReady,
+  recoverCompletedChatGPTProfileLogins,
   removeChatGPTProfileAccount,
   requestChatGPTProfileSwitch,
   selectChatGPTProfileAccount,
 } from "../src/chatgpt-profile-switch.mjs";
 import { withCatalogPublicationLock } from "../src/catalog-publication-lock.mjs";
+import { privateFileIsProtected } from "../src/file-security.mjs";
+import {
+  CHATGPT_LOGIN_LEASE_MAX_AGE_MS,
+  clearChatGPTLoginLease,
+  createChatGPTLoginLease,
+} from "../src/chatgpt-login-lease.mjs";
 
 function runModuleChild(source) {
   return new Promise((resolve, reject) => {
@@ -301,6 +309,615 @@ test("a saved account identity is bound before a later switch", async () => {
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
 });
 
+test("background discovery does not bind auth while its login owner is active", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-leased-discovery-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), JSON.stringify({
+    tokens: { access_token: "new-login", account_id: "leased-identity" },
+  }), { mode: 0o600 });
+  const identity = () => "test-process";
+  const lease = createChatGPTLoginLease(account.id, process.pid, { homesDir, identity });
+  try {
+    await ensureChatGPTProfileAccounts({
+      filePath,
+      homesDir,
+      primaryHome: path.join(root, "primary"),
+      switchPath: path.join(root, "switch.json"),
+      loginLeaseIdentity: identity,
+    });
+    assert.equal(readChatGPTAccountPoolState(filePath).accounts[account.id].identity, undefined);
+  } finally {
+    assert.equal(clearChatGPTLoginLease(account.id, lease, { homesDir }), true);
+  }
+});
+
+test("restart recovery finalizes changed active auth from its durable lease exactly once", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-restart-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const oldAuth = JSON.stringify({ tokens: { access_token: "old-token", account_id: "same-account" } });
+  const freshAuth = JSON.stringify({ tokens: { access_token: "fresh-token", account_id: "same-account" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), oldAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), oldAuth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[account.id].identity = { accountId: "same-account" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: account.id,
+    active: account.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  createChatGPTLoginLease(account.id, 4242, {
+    homesDir,
+    identity: () => "departed-owner",
+    now: 1_000,
+    phase: "running",
+  });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), freshAuth, { mode: 0o600 });
+
+  const options = {
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "",
+    refreshCatalog: false,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+  };
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), [account.id]);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), freshAuth);
+  assert.equal(existsSync(path.join(homesDir, account.id, "router-login-lease.json")), false);
+  assert.equal(readChatGPTProfileSwitchState(switchPath).pending, false);
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), []);
+});
+
+test("restart recovery is idempotent after profile commit but before exact lease clear", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-post-commit-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const oldAuth = JSON.stringify({ tokens: { access_token: "old", account_id: "same" } });
+  const freshAuth = JSON.stringify({ tokens: { access_token: "fresh", account_id: "same" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), oldAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), oldAuth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[account.id].identity = { accountId: "same" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  writeFileSync(switchPath, JSON.stringify({ version: 1, desired: account.id, active: account.id, pending: false, phase: "idle" }), { mode: 0o600 });
+  const lease = createChatGPTLoginLease(account.id, 4242, {
+    homesDir,
+    identity: () => "departed-owner",
+    now: 1_000,
+    phase: "running",
+  });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), freshAuth, { mode: 0o600 });
+  await assert.rejects(
+    finalizeChatGPTProfileLogin(account.id, {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      platform: "darwin",
+      processList: "",
+      refreshCatalog: false,
+      expectedLoginLease: lease,
+      clearLoginLease: () => false,
+    }),
+    /lease changed after finalization/,
+  );
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), freshAuth);
+  assert.equal(existsSync(path.join(homesDir, account.id, "router-login-lease.json")), true);
+
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins({
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "",
+    refreshCatalog: false,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 2_000,
+  }), [account.id]);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), freshAuth);
+  assert.equal(existsSync(path.join(homesDir, account.id, "router-login-lease.json")), false);
+});
+
+test("login finalization binds inactive identities and synchronizes an active refresh only when Codex closes", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-finalize-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-old", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[first.id].identity = { accountId: "first" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: first.id,
+    active: first.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  const base = {
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    refreshCatalog: false,
+    expectedLoginLease: { leaseId: "fixture" },
+    loginLeaseMatches: () => true,
+    loginAuthChanged: () => true,
+    hardenAuth: () => {},
+    clearLoginLease: () => true,
+  };
+
+  const inactive = await finalizeChatGPTProfileLogin(second.id, {
+    ...base,
+    platform: "darwin",
+    processList: "",
+  });
+  assert.equal(inactive.active, first.id);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+  assert.equal(readChatGPTAccountPoolState(filePath).accounts[second.id].identity.accountId, "second");
+
+  await requestChatGPTProfileSwitch(second.id, {
+    ...base,
+    platform: "darwin",
+    processList: "",
+  });
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
+  const refreshedAuth = JSON.stringify({ tokens: { access_token: "second-fresh", account_id: "second" } });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), refreshedAuth, { mode: 0o600 });
+  const calls = [];
+  const pending = await finalizeChatGPTProfileLogin(second.id, {
+    ...base,
+    platform: "darwin",
+    processList: "/Applications/Codex.app/Contents/MacOS/Codex",
+    hardenAuth: () => calls.push("harden"),
+    clearLoginLease: () => {
+      calls.push("clear");
+      return true;
+    },
+  });
+  assert.deepEqual(calls, ["harden"]);
+  assert.equal(pending.pending, false);
+  assert.equal(pending.loginFinalizationPending, true);
+  assert.equal(pending.active, second.id);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
+
+  const reconciled = await finalizeChatGPTProfileLogin(second.id, {
+    ...base,
+    platform: "darwin",
+    processList: "",
+    hardenAuth: () => calls.push("harden"),
+    clearLoginLease: () => {
+      calls.push("clear");
+      return true;
+    },
+  });
+  assert.deepEqual(calls, ["harden", "harden", "clear"]);
+  assert.equal(reconciled.pending, false);
+  assert.equal(reconciled.active, second.id);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), refreshedAuth);
+});
+
+test("login finalization leaves its durable lease when credential hardening fails", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-hardening-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const auth = JSON.stringify({ tokens: { access_token: "token", account_id: "account" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), auth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), auth, { mode: 0o600 });
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: account.id,
+    active: account.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  let cleared = false;
+  await assert.rejects(
+    finalizeChatGPTProfileLogin(account.id, {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      refreshCatalog: false,
+      expectedLoginLease: { leaseId: "fixture" },
+      loginLeaseMatches: () => true,
+      loginAuthChanged: () => true,
+      hardenAuth: () => { throw new Error("ACL hardening refused"); },
+      clearLoginLease: () => { cleared = true; return true; },
+    }),
+    /ACL hardening refused/,
+  );
+  assert.equal(cleared, false);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), auth);
+
+  let matchChecks = 0;
+  await assert.rejects(
+    finalizeChatGPTProfileLogin(account.id, {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      refreshCatalog: false,
+      expectedLoginLease: { leaseId: "wrong-generation" },
+      loginLeaseMatches: () => ++matchChecks === 1,
+      loginAuthChanged: () => true,
+      hardenAuth: () => {},
+      clearLoginLease: () => false,
+    }),
+    /lease changed before finalization/,
+  );
+  assert.equal(readChatGPTAccountPoolState(filePath).accounts[account.id].identity, undefined);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), auth);
+});
+
+test("login finalization rejects duplicate unbound credentials without clearing ownership", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-duplicate-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const auth = JSON.stringify({ tokens: { access_token: "token", account_id: "duplicate" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), auth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), auth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), auth, { mode: 0o600 });
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: first.id,
+    active: first.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  let cleared = false;
+  await assert.rejects(
+    finalizeChatGPTProfileLogin(second.id, {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      refreshCatalog: false,
+      expectedLoginLease: { leaseId: "fixture" },
+      loginLeaseMatches: () => true,
+      loginAuthChanged: () => true,
+      hardenAuth: () => {},
+      clearLoginLease: () => { cleared = true; return true; },
+    }),
+    /registered more than once/,
+  );
+  assert.equal(cleared, false);
+  assert.equal(readChatGPTAccountPoolState(filePath).accounts[second.id].identity, undefined);
+});
+
+test("Windows login finalization replaces a foreign inherited OAuth ACL", { skip: process.platform !== "win32" }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-windows-acl-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const authPath = chatGPTSubscriptionAccountAuthPath(account.id, { homesDir });
+  const oldAuth = JSON.stringify({ tokens: { access_token: "old", account_id: "windows-account" } });
+  const freshAuth = JSON.stringify({ tokens: { access_token: "fresh", account_id: "windows-account" } });
+  writeFileSync(authPath, oldAuth, { mode: 0o600 });
+  const lease = createChatGPTLoginLease(account.id, process.pid, { homesDir, identity: () => "owner" });
+  writeFileSync(authPath, freshAuth, { mode: 0o600 });
+  const dirtyAcl = [
+    "$acl = [System.IO.File]::GetAccessControl($env:CODEX_ROUTER_PRIVATE_FILE)",
+    "[void]$acl.SetAccessRuleProtection($false, $true)",
+    "$everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')",
+    "$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($everyone, [System.Security.AccessControl.FileSystemRights]::Read, [System.Security.AccessControl.InheritanceFlags]::None, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)",
+    "[void]$acl.AddAccessRule($rule)",
+    "[System.IO.File]::SetAccessControl($env:CODEX_ROUTER_PRIVATE_FILE, $acl)",
+  ].join("; ");
+  execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", dirtyAcl], {
+    env: { ...process.env, CODEX_ROUTER_PRIVATE_FILE: authPath },
+    stdio: "ignore",
+  });
+  assert.equal(privateFileIsProtected(authPath), false);
+
+  await finalizeChatGPTProfileLogin(account.id, {
+    filePath,
+    homesDir,
+    primaryHome: path.join(root, "primary"),
+    switchPath: path.join(root, "switch.json"),
+    refreshCatalog: false,
+    expectedLoginLease: lease,
+  });
+  assert.equal(privateFileIsProtected(authPath), true);
+  assert.equal(readChatGPTAccountPoolState(filePath).accounts[account.id].identity.accountId, "windows-account");
+});
+
+test("a same-account refresh does not mutate primary auth when journal staging fails", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-refresh-staging-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const oldAuth = JSON.stringify({ tokens: { access_token: "old", account_id: "same" } });
+  const freshAuth = JSON.stringify({ tokens: { access_token: "fresh", account_id: "same" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), oldAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), freshAuth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[account.id].identity = { accountId: "same" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  const before = {
+    version: 1,
+    desired: account.id,
+    active: account.id,
+    pending: true,
+    phase: "idle",
+  };
+  writeFileSync(switchPath, JSON.stringify(before), { mode: 0o600 });
+
+  await assert.rejects(
+    requestChatGPTProfileSwitch(account.id, {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      platform: "darwin",
+      processList: "",
+      refreshCatalog: false,
+      afterSwitchTransactionEvidenceStaged: () => { throw new Error("staging interrupted"); },
+    }),
+    /staging interrupted/,
+  );
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), oldAuth);
+  assert.deepEqual(readChatGPTProfileSwitchState(switchPath), before);
+  assert.equal(existsSync(path.join(root, "chatgpt-profile", "switch-transaction")), false);
+  assert.equal(existsSync(path.join(root, "chatgpt-profile", "switch-transaction.staging")), false);
+});
+
+test("a published pre-phase journal is abandoned without restoring stale catalog state", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-pre-phase-crash-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const transactionDir = path.join(root, "chatgpt-profile", "switch-transaction");
+  const catalog = {
+    modelsCachePath: path.join(root, "models_cache.json"),
+    nativeCatalogPath: path.join(root, "native-models.json"),
+    mergedCatalogPath: path.join(root, "merged-models.json"),
+    nativeAliasPath: path.join(root, "native-aliases.json"),
+    announcedModelsPath: path.join(root, "announced-models.json"),
+  };
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[first.id].identity = { accountId: "first" };
+  pool.accounts[second.id].identity = { accountId: "second" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  const priorState = {
+    version: 1,
+    desired: first.id,
+    active: first.id,
+    pending: false,
+    phase: "idle",
+  };
+  writeFileSync(switchPath, JSON.stringify(priorState), { mode: 0o600 });
+  const originalCatalog = Object.fromEntries(Object.entries(catalog).map(([key, target]) => {
+    const contents = JSON.stringify({ key, owner: "first", exact: true });
+    writeFileSync(target, contents, { mode: 0o600 });
+    return [key, contents];
+  }));
+  const targetCatalogDir = chatGPTSubscriptionAccountCatalogDir(second.id, { homesDir });
+  mkdirSync(targetCatalogDir, { recursive: true, mode: 0o700 });
+  const targetCatalog = Object.fromEntries([
+    ["models_cache.json", "modelsCachePath"],
+    ["native-models.json", "nativeCatalogPath"],
+    ["merged-models.json", "mergedCatalogPath"],
+    ["native-aliases.json", "nativeAliasPath"],
+    ["announced-models.json", "announcedModelsPath"],
+  ].map(([name, key]) => {
+    const contents = JSON.stringify({ key, owner: "second", exact: true });
+    writeFileSync(path.join(targetCatalogDir, name), contents, { mode: 0o600 });
+    return [key, contents];
+  }));
+
+  const moduleUrl = pathToFileURL(path.resolve("src/chatgpt-profile-switch.mjs")).href;
+  const childSource = `
+    import { requestChatGPTProfileSwitch } from ${JSON.stringify(moduleUrl)};
+    await requestChatGPTProfileSwitch(${JSON.stringify(second.id)}, {
+      filePath: ${JSON.stringify(filePath)}, homesDir: ${JSON.stringify(homesDir)},
+      primaryHome: ${JSON.stringify(primaryHome)}, switchPath: ${JSON.stringify(switchPath)},
+      platform: "darwin", processList: "", refreshCatalog: false,
+      ${Object.entries(catalog).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(",\n      ")},
+      afterSwitchTransactionPublished: () => process.exit(86),
+    });
+  `;
+  const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", childSource], {
+    cwd: path.resolve("."),
+    encoding: "utf8",
+  });
+  assert.equal(crashed.status, 86, crashed.stderr);
+  assert.equal(existsSync(transactionDir), true);
+  assert.deepEqual(readChatGPTProfileSwitchState(switchPath), priorState);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+  for (const [key, contents] of Object.entries(originalCatalog)) {
+    assert.equal(readFileSync(catalog[key], "utf8"), contents, `${key} changed before recovery`);
+  }
+
+  const options = {
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "",
+    refreshCatalog: false,
+    ...catalog,
+  };
+  const recovered = await reconcileChatGPTProfileSwitchIfReady(options);
+  assert.deepEqual({ ...recovered, running: undefined }, { ...priorState, running: undefined });
+  assert.equal(existsSync(transactionDir), false);
+  const idempotent = await reconcileChatGPTProfileSwitchIfReady(options);
+  assert.deepEqual({ ...idempotent, running: undefined }, { ...priorState, running: undefined });
+  for (const [key, contents] of Object.entries(originalCatalog)) {
+    assert.equal(readFileSync(catalog[key], "utf8"), contents, `${key} changed during recovery`);
+  }
+
+  const switched = await requestChatGPTProfileSwitch(second.id, options);
+  assert.equal(switched.active, second.id);
+  assert.equal(switched.pending, false);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
+  for (const [key, contents] of Object.entries(targetCatalog)) {
+    assert.equal(readFileSync(catalog[key], "utf8"), contents, `${key} did not follow the later switch`);
+  }
+});
+
+test("every durable switch crash boundary reconciles idempotently and permits a later switch", async () => {
+  const cases = [
+    ["evidence-staged", "afterSwitchTransactionEvidenceStaged", false],
+    ["manifest-staged", "afterSwitchTransactionManifestStaged", false],
+    ["preparing", "afterSwitchPreparing", true],
+    ["backed-up", "afterSwitchBackup", true],
+    ["primary-installed", "afterSwitchInstall", true],
+    ["installed", "afterSwitchInstalled", true],
+    ["idle-before-removal", "afterSwitchIdleBeforeTransactionRemoval", true],
+  ];
+  const moduleUrl = pathToFileURL(path.resolve("src/chatgpt-profile-switch.mjs")).href;
+  for (const [label, hook, targetCommitted] of cases) {
+    const root = mkdtempSync(path.join(os.tmpdir(), `codex-profile-crash-${label}-`));
+    const primaryHome = path.join(root, "primary");
+    const homesDir = path.join(root, "accounts");
+    const filePath = path.join(root, "pool.json");
+    const switchPath = path.join(root, "switch.json");
+    const transactionDir = path.join(root, "chatgpt-profile", "switch-transaction");
+    const stagingDir = `${transactionDir}.staging`;
+    const catalog = {
+      modelsCachePath: path.join(root, "models_cache.json"),
+      nativeCatalogPath: path.join(root, "native-models.json"),
+      mergedCatalogPath: path.join(root, "merged-models.json"),
+      nativeAliasPath: path.join(root, "native-aliases.json"),
+      announcedModelsPath: path.join(root, "announced-models.json"),
+    };
+    mkdirSync(primaryHome, { recursive: true });
+    const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+    const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+    const firstAuth = JSON.stringify({ tokens: { access_token: `${label}-first`, account_id: "first" } });
+    const secondAuth = JSON.stringify({ tokens: { access_token: `${label}-second`, account_id: "second" } });
+    writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+    writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+    writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+    const pool = readChatGPTAccountPoolState(filePath);
+    pool.accounts[first.id].identity = { accountId: "first" };
+    pool.accounts[second.id].identity = { accountId: "second" };
+    writeChatGPTAccountPoolState(pool, filePath);
+    const priorState = { version: 1, desired: first.id, active: first.id, pending: false, phase: "idle" };
+    writeFileSync(switchPath, JSON.stringify(priorState), { mode: 0o600 });
+    const firstCatalog = {};
+    for (const [key, target] of Object.entries(catalog)) {
+      firstCatalog[key] = JSON.stringify({ key, owner: "first", label });
+      writeFileSync(target, firstCatalog[key], { mode: 0o600 });
+    }
+    const targetCatalogDir = chatGPTSubscriptionAccountCatalogDir(second.id, { homesDir });
+    mkdirSync(targetCatalogDir, { recursive: true, mode: 0o700 });
+    const targetNames = {
+      modelsCachePath: "models_cache.json",
+      nativeCatalogPath: "native-models.json",
+      mergedCatalogPath: "merged-models.json",
+      nativeAliasPath: "native-aliases.json",
+      announcedModelsPath: "announced-models.json",
+    };
+    const secondCatalog = {};
+    for (const [key, name] of Object.entries(targetNames)) {
+      secondCatalog[key] = JSON.stringify({ key, owner: "second", label });
+      writeFileSync(path.join(targetCatalogDir, name), secondCatalog[key], { mode: 0o600 });
+    }
+    const childSource = `
+      import { requestChatGPTProfileSwitch } from ${JSON.stringify(moduleUrl)};
+      await requestChatGPTProfileSwitch(${JSON.stringify(second.id)}, {
+        filePath: ${JSON.stringify(filePath)}, homesDir: ${JSON.stringify(homesDir)},
+        primaryHome: ${JSON.stringify(primaryHome)}, switchPath: ${JSON.stringify(switchPath)},
+        platform: "darwin", processList: "", refreshCatalog: false,
+        ${Object.entries(catalog).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(",\n        ")},
+        ${hook}: () => process.exit(87),
+      });
+    `;
+    const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", childSource], {
+      cwd: path.resolve("."),
+      encoding: "utf8",
+    });
+    assert.equal(crashed.status, 87, `${label}: ${crashed.stderr}`);
+    assert.equal(existsSync(targetCommitted ? transactionDir : stagingDir), true, `${label}: missing crash evidence`);
+
+    const options = {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      platform: "darwin",
+      processList: "",
+      refreshCatalog: false,
+      ...catalog,
+    };
+    const recovered = await reconcileChatGPTProfileSwitchIfReady(options);
+    const repeated = await reconcileChatGPTProfileSwitchIfReady(options);
+    assert.equal(recovered.active, targetCommitted ? second.id : first.id, `${label}: wrong recovered account`);
+    assert.equal(recovered.pending, false, `${label}: recovery remained pending`);
+    assert.equal(repeated.active, recovered.active, `${label}: second recovery changed account`);
+    assert.equal(repeated.pending, false, `${label}: second recovery became pending`);
+    assert.equal(existsSync(transactionDir), false, `${label}: journal survived recovery`);
+    assert.equal(existsSync(stagingDir), false, `${label}: staging survived recovery`);
+    const expectedAuth = targetCommitted ? secondAuth : firstAuth;
+    const expectedCatalog = targetCommitted ? secondCatalog : firstCatalog;
+    assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), expectedAuth, `${label}: wrong auth after recovery`);
+    for (const [key, contents] of Object.entries(expectedCatalog)) {
+      assert.equal(readFileSync(catalog[key], "utf8"), contents, `${label}: wrong ${key} after recovery`);
+    }
+
+    const laterTarget = targetCommitted ? first.id : second.id;
+    const later = await requestChatGPTProfileSwitch(laterTarget, options);
+    assert.equal(later.active, laterTarget, `${label}: later switch failed`);
+    assert.equal(later.pending, false, `${label}: later switch remained pending`);
+    const laterAuth = targetCommitted ? firstAuth : secondAuth;
+    const laterCatalog = targetCommitted ? firstCatalog : secondCatalog;
+    assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), laterAuth, `${label}: later auth mismatch`);
+    for (const [key, contents] of Object.entries(laterCatalog)) {
+      assert.equal(readFileSync(catalog[key], "utf8"), contents, `${label}: later ${key} mismatch`);
+    }
+  }
+});
+
 test("malformed switch state retains durable rollback evidence and fails closed", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-corrupt-state-"));
   const switchPath = path.join(root, "switch.json");
@@ -327,6 +944,60 @@ test("malformed switch state retains durable rollback evidence and fails closed"
     /phase is invalid/i,
   );
   assert.equal(existsSync(evidencePath), true);
+});
+
+test("transaction cleanup preserves unexpected and non-private recovery evidence", async () => {
+  for (const kind of ["unexpected", ...(process.platform === "win32" ? [] : ["non-private"])]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), `codex-profile-transaction-${kind}-`));
+    const primaryHome = path.join(root, "primary");
+    const switchPath = path.join(root, "switch.json");
+    const transactionDir = path.join(root, "chatgpt-profile", "switch-transaction");
+    mkdirSync(primaryHome, { recursive: true });
+    mkdirSync(transactionDir, { recursive: true, mode: 0o700 });
+    const auth = JSON.stringify({ tokens: { access_token: "active", account_id: "active" } });
+    writeFileSync(path.join(primaryHome, "auth.json"), auth, { mode: 0o600 });
+    writeFileSync(path.join(transactionDir, "primary-auth.json"), auth, { mode: 0o600 });
+    const manifestPath = path.join(transactionDir, "manifest.json");
+    writeFileSync(manifestPath, JSON.stringify({
+      version: 2,
+      active: "acct_active_12345678",
+      target: "acct_target_12345678",
+      activeAccountId: "active",
+      targetAccountId: "target",
+      catalogsEnabled: false,
+    }), { mode: 0o600 });
+    if (kind === "unexpected") {
+      writeFileSync(path.join(transactionDir, "foreign.txt"), "retain", { mode: 0o600 });
+    } else {
+      chmodSync(manifestPath, 0o644);
+    }
+    writeFileSync(switchPath, JSON.stringify({
+      version: 1,
+      desired: "acct_target_12345678",
+      active: "acct_active_12345678",
+      pending: true,
+      phase: "preparing",
+    }), { mode: 0o600 });
+
+    await assert.rejects(
+      reconcileChatGPTProfileSwitch({
+        filePath: path.join(root, "pool.json"),
+        homesDir: path.join(root, "accounts"),
+        primaryHome,
+        switchPath,
+        platform: "darwin",
+        processList: "",
+        refreshCatalog: false,
+      }),
+      /unexpected artifact|not private/,
+    );
+    assert.equal(existsSync(path.join(transactionDir, "primary-auth.json")), true);
+    assert.equal(existsSync(manifestPath), true);
+    if (kind === "unexpected") {
+      assert.equal(readFileSync(path.join(transactionDir, "foreign.txt"), "utf8"), "retain");
+    }
+    assert.equal(readChatGPTProfileSwitchState(switchPath).phase, "preparing");
+  }
 });
 
 test("profile detection fails closed across desktop process names", () => {

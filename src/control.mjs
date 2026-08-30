@@ -2896,7 +2896,37 @@ async function handleChatGptSession(action) {
   );
 }
 
-async function handleChatGptAccountSwitch(action, value) {
+function decodeChatGPTLoginLease(value) {
+  if (typeof value !== "string" || value.length < 8 || value.length > 2_048 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("The ChatGPT login completion lease is invalid.");
+  }
+  let lease;
+  try {
+    lease = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch (error) {
+    throw new Error("The ChatGPT login completion lease is invalid.", { cause: error });
+  }
+  if (
+    !lease
+    || typeof lease !== "object"
+    || Array.isArray(lease)
+    || ![2, 3].includes(lease.version)
+    || typeof lease.leaseId !== "string"
+    || !/^[0-9a-f-]{36}$/i.test(lease.leaseId)
+    || !Number.isSafeInteger(lease.pid)
+    || lease.pid < 1
+    || typeof lease.processIdentity !== "string"
+    || !lease.processIdentity
+    || !Number.isFinite(lease.createdAt)
+    || (lease.version === 3 && !["reserved", "running"].includes(lease.phase))
+    || (lease.version === 3 && lease.authDigestBefore !== null && !/^[0-9a-f]{64}$/.test(lease.authDigestBefore))
+  ) {
+    throw new Error("The ChatGPT login completion lease is invalid.");
+  }
+  return lease;
+}
+
+async function handleChatGptAccountSwitch(action, value, completionLease) {
   // Keep this boundary ahead of both dynamic imports. The Control Center polls
   // `status` automatically, and --no-discovery promises that even a background
   // read cannot inspect auth files, create first-run pool state, or migrate the
@@ -2917,6 +2947,8 @@ async function handleChatGptAccountSwitch(action, value) {
   const {
     chatGPTProfileSwitchSnapshot,
     ensureChatGPTProfileAccounts,
+    finalizeChatGPTProfileLogin,
+    recoverCompletedChatGPTProfileLogins,
     reconcileChatGPTProfileSwitch,
     reconcileChatGPTProfileSwitchIfReady,
     removeChatGPTProfileAccount,
@@ -2927,6 +2959,7 @@ async function handleChatGptAccountSwitch(action, value) {
     // This is the single production reconcile poll, owned by the Control
     // Center account view. It is read-only for settled state; after Codex has
     // closed it completes an explicit pending handoff or durable crash phase.
+    await recoverCompletedChatGPTProfileLogins();
     await reconcileChatGPTProfileSwitchIfReady();
     await ensureChatGPTProfileAccounts();
     const beforeRefresh = chatGPTSubscriptionAccountPoolSnapshot();
@@ -2957,6 +2990,13 @@ async function handleChatGptAccountSwitch(action, value) {
     process.stdout.write(`${JSON.stringify({ accountId: value, home: chatGPTSubscriptionAccountHome(value) })}\n`);
     return;
   }
+  if (action === "login-finalize") {
+    if (!value || !/^acct_[A-Za-z0-9_-]{8,80}$/.test(value)) throw new Error("Account id is invalid.");
+    process.stdout.write(`${JSON.stringify(await finalizeChatGPTProfileLogin(value, {
+      expectedLoginLease: decodeChatGPTLoginLease(completionLease),
+    }))}\n`);
+    return;
+  }
   if (action === "remove") {
     const result = await removeChatGPTProfileAccount(value);
     process.stdout.write(`${JSON.stringify(result.removed)}\n`);
@@ -2981,7 +3021,7 @@ async function handleChatGptAccountSwitch(action, value) {
       return;
     }
   }
-  throw new Error("Usage: control chatgpt-account-pool status|add [label]|home <acct_id>|remove <acct_id>|select <acct_id>|profile status|profile reconcile");
+  throw new Error("Usage: control chatgpt-account-pool status|add [label]|home <acct_id>|login-finalize <acct_id> <lease>|remove <acct_id>|select <acct_id>|profile status|profile reconcile");
 }
 
 // The public `/health` leaf intentionally contains only the router summary and
@@ -3074,7 +3114,7 @@ if (args.includes("--probe")) {
   if (args.length > 2) throw new Error("Usage: control chatgpt-session status|enable|disable");
   await handleChatGptSession(args[1]);
 } else if (args[0] === "chatgpt-account-pool") {
-  await handleChatGptAccountSwitch(args[1], args[2]);
+  await handleChatGptAccountSwitch(args[1], args[2], args[3]);
 } else if (args[0] === "health") {
   await printHealth();
 } else if (args[0] === "maintenance") {

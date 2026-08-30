@@ -50,6 +50,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
   const [newAccountLabel, setNewAccountLabel] = useState("");
   const [removeAccountId, setRemoveAccountId] = useState<string | null>(null);
   const [loginPendingId, setLoginPendingId] = useState<string | null>(null);
+  const [loginRetryingId, setLoginRetryingId] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const refreshRef = useRef(onRefresh);
   refreshRef.current = onRefresh;
@@ -69,21 +70,29 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
     });
     return () => { active = false; };
   }, [api, refreshing]);
-  const loginPendingUsable = loginPendingId
-    ? accountPool?.accounts?.[loginPendingId]?.subscription?.usable === true
-    : false;
-  const loginAttempt = loginPendingId
+  const observedLoginAttempt = loginPendingId
     ? accountPool?.loginAttempts?.[loginPendingId]
     : undefined;
+  const loginAttempt = loginPendingId === loginRetryingId && observedLoginAttempt?.status === "failed"
+    ? undefined
+    : observedLoginAttempt;
+  const loginPendingUsable = loginPendingId
+    ? accountPool?.accounts?.[loginPendingId]?.subscription?.usable === true && !loginAttempt
+    : false;
   useEffect(() => {
     if (!loginPendingId) return;
+    if (loginPendingId === loginRetryingId && observedLoginAttempt?.status === "pending") {
+      setLoginRetryingId(null);
+    }
     if (loginPendingUsable) {
       setLoginPendingId(null);
+      setLoginRetryingId(null);
       setLoginError(null);
       return;
     }
     if (loginAttempt?.status === "failed") {
       setLoginPendingId(null);
+      setLoginRetryingId(null);
       setLoginError(loginAttempt.error || "Codex login did not complete. Try again.");
       return;
     }
@@ -98,7 +107,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [loginAttempt?.error, loginAttempt?.status, loginPendingId, loginPendingUsable]);
+  }, [loginAttempt?.error, loginAttempt?.status, loginPendingId, loginPendingUsable, loginRetryingId, observedLoginAttempt?.status]);
   const trayControlsUnavailable = trayCapability?.supported === false;
   const repairFailures = useMemo(
     () => (repairReport?.checks ?? []).filter((check) => check.status === "fail"),
@@ -269,6 +278,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
             </div>
             <div className="settings-list">
               {subscriptionAccounts.map((account) => {
+                const accountLoginAttempt = accountPool?.loginAttempts?.[account.id];
                 const status = account.subscription?.usable ? "Ready" : account.subscription?.expired ? "Session expired" : "Sign-in required";
                 const title = account.subscription?.email || account.label || "ChatGPT account";
                 const label = account.subscription?.email && account.label ? `${account.label} · ` : "";
@@ -291,10 +301,11 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                       >{accountSelection === account.id ? <><Check aria-hidden size={13} strokeWidth={1.9} /> Selected</> : <><Check aria-hidden size={13} strokeWidth={1.9} /> Select</>}</Button>
                       <Button
                         variant="ghost"
-                        disabled={!api || account.state !== "active" || account.subscription?.usable === true || loginPendingId === account.id}
+                        disabled={!api || account.state !== "active" || (account.subscription?.usable === true && accountLoginAttempt?.status !== "failed") || loginPendingId === account.id}
                         onClick={() => {
                           if (!api) return;
                           setLoginError(null);
+                          setLoginRetryingId(accountLoginAttempt?.status === "failed" ? account.id : null);
                           setLoginPendingId(account.id);
                           void runAction(`Login ${account.label || "ChatGPT account"}`, async () => {
                             try {
@@ -306,6 +317,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                               // launch/pre-handoff failure cannot leave the
                               // 1.5-second completion poll running forever.
                               setLoginPendingId(null);
+                              setLoginRetryingId(null);
                               throw error;
                             }
                           });

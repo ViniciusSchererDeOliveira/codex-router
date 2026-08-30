@@ -8,6 +8,8 @@ import test from "node:test";
 
 import {
   CHATGPT_LOGIN_LEASE_MAX_AGE_MS,
+  chatGPTLoginAuthChanged,
+  chatGPTLoginLeaseCompletionCandidate,
   chatGPTLoginLeasePath,
   chatGPTLoginLeaseStatus,
   clearChatGPTLoginLease,
@@ -65,12 +67,71 @@ test("a bounded stale login owner is cleaned before direct core removal", async 
   });
   const result = await removeChatGPTProfileAccount(account.id, {
     ...options,
-    loginLeaseIdentity: () => undefined,
+    loginLeaseIdentity: () => "replacement-owner",
     now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
   });
   assert.equal(result.removed.id, account.id);
   assert.equal(readChatGPTAccountPoolState(options.filePath).accounts[account.id], undefined);
   assert.equal(existsSync(chatGPTSubscriptionAccountHome(account.id, options)), false);
+});
+
+test("changed running auth becomes a recovery candidate while changed reservation stays fail-closed", () => {
+  for (const phase of ["running", "reserved"]) {
+    const { options } = fixture();
+    const account = createChatGPTSubscriptionAccount(options);
+    const authPath = path.join(chatGPTSubscriptionAccountHome(account.id, options), "auth.json");
+    writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "old", account_id: "same" } }), { mode: 0o600 });
+    const lease = createChatGPTLoginLease(account.id, 4242, {
+      homesDir: options.homesDir,
+      identity: () => "departed-owner",
+      now: 1_000,
+      phase,
+    });
+    writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "fresh", account_id: "same" } }), { mode: 0o600 });
+    assert.equal(chatGPTLoginAuthChanged(account.id, lease, options), true);
+    const status = chatGPTLoginLeaseStatus(account.id, {
+      homesDir: options.homesDir,
+      identity: () => "replacement-owner",
+      now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+    });
+    assert.equal(status.active, true);
+    if (phase === "running") {
+      assert.equal(status.completionPending, true);
+      assert.deepEqual(chatGPTLoginLeaseCompletionCandidate(account.id, {
+        homesDir: options.homesDir,
+        identity: () => "replacement-owner",
+        now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+      }), lease);
+    } else {
+      assert.equal(status.attentionRequired, true);
+      assert.equal(chatGPTLoginLeaseCompletionCandidate(account.id, {
+        homesDir: options.homesDir,
+        identity: () => "replacement-owner",
+        now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+      }), undefined);
+    }
+    assert.equal(clearChatGPTLoginLease(account.id, lease, options), true);
+  }
+});
+
+test("age never clears a lease when process ownership is unknown", () => {
+  const { options } = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = createChatGPTLoginLease(account.id, 4242, {
+    homesDir: options.homesDir,
+    identity: () => "owner",
+    now: 1_000,
+  });
+  const status = chatGPTLoginLeaseStatus(account.id, {
+    homesDir: options.homesDir,
+    identity: () => undefined,
+    now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+  });
+  assert.equal(status.active, true);
+  assert.equal(status.uncertain, true);
+  assert.equal(status.attentionRequired, true);
+  assert.equal(existsSync(chatGPTLoginLeasePath(account.id, options)), true);
+  assert.equal(clearChatGPTLoginLease(account.id, lease, options), true);
 });
 
 test("exclusive durable ownership refuses a concurrent login and survives GUI restart", async () => {
@@ -131,17 +192,9 @@ test("exclusive durable ownership refuses a concurrent login and survives GUI re
     await new Promise((resolve) => owner.once("close", resolve));
   }
 
-  // The detached owner is gone, but a restarted GUI has no trustworthy exit
-  // callback. An unexpired unknown owner remains fail-closed for direct CLI.
-  await assert.rejects(
-    removeChatGPTProfileAccount(account.id, options),
-    /browser sign-in is in progress/i,
-  );
-  const removed = await removeChatGPTProfileAccount(account.id, {
-    ...options,
-    loginLeaseIdentity: () => undefined,
-    now: Date.now() + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1_000,
-  });
+  // The exact process probe proves the detached writer is absent and the v3
+  // pre-auth digest proves it wrote nothing, so restart cleanup is immediate.
+  const removed = await removeChatGPTProfileAccount(account.id, options);
   assert.equal(removed.removed.id, account.id);
 });
 

@@ -17,12 +17,17 @@ import {
   chatGPTSubscriptionAccountStatus,
   createChatGPTSubscriptionAccount,
   readChatGPTAccountPoolState,
+  refreshChatGPTSubscriptionAccount,
   refreshBoundedChatGPTSubscriptionAccounts,
   removeChatGPTSubscriptionAccount,
   sanitizeChatGPTAccountPool,
   withChatGPTAccountPoolLock,
   writeChatGPTAccountPoolState,
 } from "../src/chatgpt-account-pool.mjs";
+import {
+  clearChatGPTLoginLease,
+  createChatGPTLoginLease,
+} from "../src/chatgpt-login-lease.mjs";
 
 function runClaimChild(moduleUrl, account, options, now) {
   const source = `
@@ -90,6 +95,28 @@ test("snapshot exposes email and usable status from an isolated auth file", () =
   assert.equal(chatGPTSubscriptionAccountStatus(account.id, options).hasAccountId, true);
 });
 
+test("an owned login lease keeps newly written OAuth auth pending and unusable", () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, options), JSON.stringify({
+    tokens: { access_token: "access-token", account_id: "leased-account" },
+  }), { mode: 0o600 });
+  const identity = () => "test-process";
+  const lease = createChatGPTLoginLease(account.id, process.pid, { ...options, identity });
+  try {
+    const snapshot = chatGPTSubscriptionAccountPoolSnapshot({
+      ...options,
+      loginLeaseIdentity: identity,
+    });
+    assert.equal(snapshot.accounts[account.id].subscription.status, "pending");
+    assert.equal(snapshot.accounts[account.id].subscription.usable, false);
+    assert.equal(snapshot.accounts[account.id].subscription.authenticated, false);
+    assert.equal(snapshot.accounts[account.id].subscription.loginInProgress, true);
+  } finally {
+    assert.equal(clearChatGPTLoginLease(account.id, lease, options), true);
+  }
+});
+
 test("sanitization keeps opaque router ids but never exposes account identity or credentials", () => {
   const state = {
     version: 1,
@@ -154,6 +181,49 @@ test("refresh attempt claims serialize across processes and preserve the retry w
   const persisted = readFileSync(options.filePath, "utf8");
   assert.match(persisted, /lastRefreshAttemptAt/);
   assert.doesNotMatch(persisted, /access_token|refresh_token|id_token/);
+});
+
+test("automatic refresh keeps its exact lease until locked login finalization", async () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = {
+    version: 2,
+    leaseId: "00000000-0000-4000-8000-000000000001",
+    pid: 4321,
+    processIdentity: "fixture-process",
+    createdAt: Date.now(),
+  };
+  const calls = [];
+  const refreshed = await refreshChatGPTSubscriptionAccount(account.id, {
+    ...options,
+    force: true,
+    binary: process.execPath,
+    execFileImpl: (_command, _args, _childOptions, callback) => {
+      queueMicrotask(() => callback(null, "", ""));
+      return { pid: lease.pid, kill() {} };
+    },
+    createLoginLease: () => {
+      calls.push("lease-created");
+      return lease;
+    },
+    attachLoginLease: (_id, expected) => {
+      calls.push("lease-attached");
+      return expected;
+    },
+    clearLoginLease: () => {
+      calls.push("lease-cleared");
+      return true;
+    },
+    finalizeLogin: async (id, finalizeOptions) => {
+      calls.push("finalize-started");
+      assert.equal(id, account.id);
+      assert.equal(finalizeOptions.expectedLoginLease, lease);
+      assert.equal(typeof finalizeOptions.clearLoginLease, "function");
+      assert.equal(calls.includes("lease-cleared"), false);
+    },
+  });
+  assert.equal(refreshed, true);
+  assert.deepEqual(calls, ["lease-created", "lease-attached", "finalize-started"]);
 });
 
 test("one status poll bounds near-expiry refresh children and prioritizes the selected account", async () => {
