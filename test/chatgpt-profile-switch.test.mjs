@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +18,7 @@ import {
   atomicPrivateCopy,
   codexDesktopRunning,
   chatGPTProfileSwitchSnapshot,
+  ensureChatGPTProfileAccounts,
   readChatGPTProfileSwitchState,
   reconcileChatGPTProfileSwitch,
   reconcileChatGPTProfileSwitchIfReady,
@@ -43,6 +44,59 @@ function runModuleChild(source) {
     });
   });
 }
+
+test("settled account discovery leaves state bytes, mtimes, and absent files unchanged", async () => {
+  const emptyRoot = mkdtempSync(path.join(os.tmpdir(), "codex-profile-empty-read-"));
+  const emptyPoolPath = path.join(emptyRoot, "pool.json");
+  const emptySwitchPath = path.join(emptyRoot, "switch.json");
+  await ensureChatGPTProfileAccounts({
+    filePath: emptyPoolPath,
+    homesDir: path.join(emptyRoot, "accounts"),
+    primaryHome: path.join(emptyRoot, "primary"),
+    switchPath: emptySwitchPath,
+  });
+  assert.equal(existsSync(emptyPoolPath), false);
+  assert.equal(existsSync(emptySwitchPath), false);
+
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-settled-read-state-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const auth = JSON.stringify({ tokens: { access_token: "settled-token", account_id: "settled" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), auth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }), auth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[account.id].identity = { accountId: "settled" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: account.id,
+    active: account.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  const settledTime = new Date("2000-01-01T00:00:00.000Z");
+  utimesSync(filePath, settledTime, settledTime);
+  utimesSync(switchPath, settledTime, settledTime);
+  const before = {
+    poolBytes: readFileSync(filePath, "utf8"),
+    poolMtime: statSync(filePath).mtimeMs,
+    switchBytes: readFileSync(switchPath, "utf8"),
+    switchMtime: statSync(switchPath).mtimeMs,
+  };
+
+  for (let read = 0; read < 2; read += 1) {
+    const ensured = await ensureChatGPTProfileAccounts({ filePath, homesDir, primaryHome, switchPath });
+    assert.equal(ensured.currentAccountId, account.id);
+  }
+  assert.equal(readFileSync(filePath, "utf8"), before.poolBytes);
+  assert.equal(statSync(filePath).mtimeMs, before.poolMtime);
+  assert.equal(readFileSync(switchPath, "utf8"), before.switchBytes);
+  assert.equal(statSync(switchPath).mtimeMs, before.switchMtime);
+});
 
 test("a selected profile waits for Codex to close and preserves both account profiles", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-switch-"));

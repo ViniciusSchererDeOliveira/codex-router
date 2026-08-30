@@ -538,9 +538,18 @@ function ensureProfileAccountLocked({
       throw new Error("The saved ChatGPT account identity does not match its login profile.");
     }
     if (account) {
-      account.identity = { accountId: identity.accountId, ...(identity.email ? { email: identity.email } : {}) };
-      writeChatGPTAccountPoolState(state, filePath);
-      state = readChatGPTAccountPoolState(filePath);
+      const nextIdentity = {
+        accountId: identity.accountId,
+        ...(identity.email ? { email: identity.email } : {}),
+      };
+      if (
+        account.identity?.accountId !== nextIdentity.accountId
+        || account.identity?.email !== nextIdentity.email
+      ) {
+        account.identity = nextIdentity;
+        writeChatGPTAccountPoolState(state, filePath);
+        state = readChatGPTAccountPoolState(filePath);
+      }
     }
     if (source === primaryAuthPath(primaryHome)) currentAccountId = id;
   }
@@ -576,7 +585,7 @@ function ensureProfileAccountLocked({
     }
   }
   return {
-    state: readChatGPTAccountPoolState(filePath),
+    state,
     currentAccountId,
   };
 }

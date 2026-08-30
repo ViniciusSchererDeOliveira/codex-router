@@ -287,7 +287,19 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                           if (!api) return;
                           setLoginError(null);
                           setLoginPendingId(account.id);
-                          void runAction(`Login ${account.label || "ChatGPT account"}`, () => api.loginChatGptSubscriptionAccount(account.id)).catch(() => setLoginPendingId(null));
+                          void runAction(`Login ${account.label || "ChatGPT account"}`, async () => {
+                            try {
+                              return await api.loginChatGptSubscriptionAccount(account.id);
+                            } catch (error) {
+                              // App.runAction deliberately owns and swallows
+                              // action failures after showing the toast. Clear
+                              // our local pending owner before rethrowing so a
+                              // launch/pre-handoff failure cannot leave the
+                              // 1.5-second completion poll running forever.
+                              setLoginPendingId(null);
+                              throw error;
+                            }
+                          });
                         }}
                       ><LogIn aria-hidden size={13} strokeWidth={1.7} /> Login</Button>
                       <Button variant="ghost" disabled={!api || account.state === "revoked"} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>

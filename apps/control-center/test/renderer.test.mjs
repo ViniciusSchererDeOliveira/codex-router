@@ -27,6 +27,7 @@ const bridgeSource = String.raw`
   const rejectAccountUsageRead = Number(searchParams.get("rejectAccountUsageRead")) || 0;
   const rejectAccountPool = searchParams.get("rejectAccountPool") === "1";
   const terminalLoginFailure = searchParams.get("terminalLoginFailure") === "1";
+  const rejectLoginImmediately = searchParams.get("rejectLoginImmediately") === "1";
   const staleAccountFailure = searchParams.get("staleAccountFailure") === "1";
   const staleProviderUsage = searchParams.get("staleProviderUsage") === "1";
   const fallbackUsage = searchParams.get("fallbackUsage") === "1";
@@ -337,6 +338,7 @@ const bridgeSource = String.raw`
     },
     loginChatGptSubscriptionAccount: async (accountId) => {
       record("loginChatGptSubscriptionAccount", accountId);
+      if (rejectLoginImmediately) throw new Error("Codex login could not be launched.");
       subscriptionLoginRequested = true;
       return { accountId, opened: true, surface: "browser", pending: true };
     },
@@ -653,6 +655,34 @@ test("the production renderer exposes model discovery and picker actions", { tim
       .filter((call) => call.name === "loginChatGptSubscriptionAccount").length === 2);
     assert.deepEqual(cancelledLoginErrors, []);
     await cancelledLoginPage.close();
+
+    const rejectedLoginPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    const rejectedLoginErrors = [];
+    rejectedLoginPage.setDefaultTimeout(10_000);
+    rejectedLoginPage.on("pageerror", (error) => rejectedLoginErrors.push(error.message));
+    await rejectedLoginPage.goto(`${url}?terminalLoginFailure=1&rejectLoginImmediately=1`, { waitUntil: "domcontentloaded" });
+    await rejectedLoginPage.getByRole("button", { name: "Settings", exact: true }).click();
+    const rejectedAccount = rejectedLoginPage.locator(".subscription-account-row").filter({ hasText: "Current account" });
+    const rejectedLoginButton = rejectedAccount.getByRole("button", { name: "Login", exact: true });
+    await rejectedLoginButton.click();
+    await rejectedLoginPage.getByText("Codex login could not be launched.", { exact: true }).waitFor();
+    await rejectedLoginButton.waitFor({ state: "visible" });
+    assert.equal(await rejectedLoginButton.isEnabled(), true, "an immediate launch rejection must release renderer pending state");
+    await rejectedLoginPage.waitForTimeout(1_800);
+    const readsAfterRejection = await rejectedLoginPage.evaluate(() => window.routerControlTest.calls()
+      .filter((call) => call.name === "getChatGptAccountPool").length);
+    await rejectedLoginPage.waitForTimeout(1_800);
+    assert.equal(
+      await rejectedLoginPage.evaluate(() => window.routerControlTest.calls()
+        .filter((call) => call.name === "getChatGptAccountPool").length),
+      readsAfterRejection,
+      "an immediate launch rejection must not leave the completion poll running",
+    );
+    await rejectedLoginButton.click();
+    await rejectedLoginPage.waitForFunction(() => window.routerControlTest.calls()
+      .filter((call) => call.name === "loginChatGptSubscriptionAccount").length === 2);
+    assert.deepEqual(rejectedLoginErrors, []);
+    await rejectedLoginPage.close();
 
     const corruptPoolPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
     const corruptPoolErrors = [];
