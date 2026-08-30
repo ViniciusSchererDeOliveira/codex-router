@@ -341,11 +341,11 @@ grok login --oauth
 ```
 
 > [!WARNING]
-> **Antigravity OAuth is not a self-service provider in public builds today.**
-> It requires the client secret paired with the integration's OAuth client ID.
-> This project does not distribute that secret, and a Google AI Pro/Ultra
-> subscription, Gemini API key, Google account, or existing `agy` CLI login
-> does not provide a way to retrieve it. Do not use the old
+> **Antigravity OAuth has no bundled or shared OAuth client.** Create and use a
+> Google OAuth Desktop-app client pair that you own, as described below. A
+> Google AI Pro/Ultra subscription, Gemini API key, Google account, or existing
+> `agy` CLI login does not supply that pair, and the router never copies the
+> official `agy` identity or credential store. Do not use the old
 > `your-integration-client-secret` placeholder: it cannot work.
 
 Create a Google OAuth **Desktop app** client in a Google Cloud project you own:
