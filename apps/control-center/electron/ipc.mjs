@@ -1282,6 +1282,9 @@ export function registerIpcHandlers({
   });
   handleAction("removeChatGptSubscriptionAccount", async ({ accountId } = {}) => {
     const id = stringValue(accountId, "Account id", CHATGPT_ACCOUNT_ID);
+    if (subscriptionLoginInFlight.has(id)) {
+      throw new Error("Cannot remove a ChatGPT account while its browser sign-in is in progress.");
+    }
     return runJson(["chatgpt-account-pool", "remove", id], { timeoutMs: 60_000 });
   });
   handleAction("setChatGptAccountSelection", async ({ selection } = {}) => {

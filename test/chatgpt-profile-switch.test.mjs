@@ -672,6 +672,71 @@ test("production reconcile hook completes an installed transaction after restart
   assert.equal(existsSync(transactionDir), false);
 });
 
+test("malformed durable catalog snapshots fail closed without deleting global artifacts", async () => {
+  for (const [label, manifestSnapshot] of [
+    ["missing", undefined],
+    ["malformed", { modelsCachePath: { account: "not-serialized" } }],
+  ]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), `codex-profile-${label}-snapshot-`));
+    const primaryHome = path.join(root, "primary");
+    const switchPath = path.join(root, "switch.json");
+    const transactionDir = path.join(root, "chatgpt-profile", "switch-transaction");
+    const catalog = {
+      modelsCachePath: path.join(root, "models_cache.json"),
+      nativeCatalogPath: path.join(root, "native-models.json"),
+      mergedCatalogPath: path.join(root, "merged-models.json"),
+      nativeAliasPath: path.join(root, "native-aliases.json"),
+      announcedModelsPath: path.join(root, "announced-models.json"),
+    };
+    mkdirSync(primaryHome, { recursive: true });
+    mkdirSync(transactionDir, { recursive: true, mode: 0o700 });
+    const activeAuth = JSON.stringify({ tokens: { access_token: "active-token", account_id: "active" } });
+    writeFileSync(path.join(primaryHome, "auth.json"), activeAuth, { mode: 0o600 });
+    writeFileSync(path.join(transactionDir, "primary-auth.json"), activeAuth, { mode: 0o600 });
+    const manifest = {
+      version: 1,
+      active: "acct_active_12345678",
+      target: "acct_target_12345678",
+      activeAccountId: "active",
+      targetAccountId: "target",
+      catalogsEnabled: true,
+      ...(manifestSnapshot === undefined ? {} : { globalCatalogSnapshot: manifestSnapshot }),
+    };
+    writeFileSync(path.join(transactionDir, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
+    writeFileSync(switchPath, JSON.stringify({
+      version: 1,
+      desired: manifest.target,
+      active: manifest.active,
+      pending: true,
+      phase: "backed-up",
+    }), { mode: 0o600 });
+    const catalogContents = Object.fromEntries(Object.entries(catalog).map(([key, filePath]) => {
+      const contents = JSON.stringify({ key, label, retained: true });
+      writeFileSync(filePath, contents, { mode: 0o600 });
+      return [filePath, contents];
+    }));
+
+    await assert.rejects(
+      reconcileChatGPTProfileSwitch({
+        switchPath,
+        primaryHome,
+        filePath: path.join(root, "pool.json"),
+        homesDir: path.join(root, "accounts"),
+        platform: "darwin",
+        processList: "",
+        ...catalog,
+      }),
+      /catalog snapshot is invalid/i,
+    );
+    for (const [filePath, contents] of Object.entries(catalogContents)) {
+      assert.equal(readFileSync(filePath, "utf8"), contents, `${label} snapshot changed ${path.basename(filePath)}`);
+    }
+    assert.equal(existsSync(path.join(transactionDir, "manifest.json")), true);
+    assert.equal(existsSync(path.join(transactionDir, "primary-auth.json")), true);
+    assert.equal(readChatGPTProfileSwitchState(switchPath).phase, "backed-up");
+  }
+});
+
 test("settled production reconcile reads do not wait on account or catalog locks", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-settled-read-"));
   const filePath = path.join(root, "pool.json");

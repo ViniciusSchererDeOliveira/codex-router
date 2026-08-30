@@ -267,6 +267,19 @@ function writeSwitchTransaction({
   };
 }
 
+function validatePersistedGlobalCatalogSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new Error("The ChatGPT profile switch catalog snapshot is invalid.");
+  }
+  const artifactKeys = new Set(CATALOG_ARTIFACTS.map(([, key]) => key));
+  for (const [key, contents] of Object.entries(snapshot)) {
+    if (!artifactKeys.has(key) || typeof contents !== "string") {
+      throw new Error("The ChatGPT profile switch catalog snapshot is invalid.");
+    }
+  }
+  return snapshot;
+}
+
 function readSwitchTransaction(switchPath) {
   const directory = transactionDirectory(switchPath);
   if (!existsSync(directory)) return undefined;
@@ -293,9 +306,13 @@ function readSwitchTransaction(switchPath) {
     || !parsed.activeAccountId.trim()
     || typeof parsed.targetAccountId !== "string"
     || !parsed.targetAccountId.trim()
+    || typeof parsed.catalogsEnabled !== "boolean"
   ) {
     throw new Error("The ChatGPT profile switch transaction manifest is invalid.");
   }
+  const globalCatalogSnapshot = parsed.catalogsEnabled
+    ? validatePersistedGlobalCatalogSnapshot(parsed.globalCatalogSnapshot)
+    : undefined;
   ensureAuthFile(authPath, "The saved");
   if (authIdentity(authPath)?.accountId !== parsed.activeAccountId) {
     throw new Error("The ChatGPT profile switch transaction identity does not match its manifest.");
@@ -306,9 +323,7 @@ function readSwitchTransaction(switchPath) {
     activeAccountId: parsed.activeAccountId,
     targetAccountId: parsed.targetAccountId,
     catalogsEnabled: parsed.catalogsEnabled === true,
-    globalCatalogSnapshot: parsed.catalogsEnabled === true && parsed.globalCatalogSnapshot
-      ? parsed.globalCatalogSnapshot
-      : undefined,
+    globalCatalogSnapshot,
   };
 }
 
@@ -326,7 +341,7 @@ function removeSwitchTransaction(switchPath) {
 function restoreSwitchTransaction(transaction, switchPath, options) {
   atomicPrivateCopy(transactionAuthPath(switchPath), primaryAuthPath(options.primaryHome));
   if (transaction.catalogsEnabled) {
-    restoreGlobalCatalog(transaction.globalCatalogSnapshot || {}, options);
+    restoreGlobalCatalog(transaction.globalCatalogSnapshot, options);
   }
 }
 

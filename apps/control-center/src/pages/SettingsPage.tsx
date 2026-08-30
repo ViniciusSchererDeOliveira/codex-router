@@ -302,7 +302,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                           });
                         }}
                       ><LogIn aria-hidden size={13} strokeWidth={1.7} /> Login</Button>
-                      <Button variant="ghost" disabled={!api || account.state === "revoked"} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
+                      <Button variant="ghost" disabled={!api || account.state === "revoked" || loginPendingId === account.id} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
                     </div>
                   </div>
                 );
@@ -566,7 +566,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
         <p className="dialog-copy">The account's local OAuth profile will be removed. If it is active, close Codex first; another saved account must be activated before removal.</p>
         <div className="dialog-actions">
           <Button variant="secondary" onClick={() => setRemoveAccountId(null)}>Cancel</Button>
-          <Button variant="danger" disabled={!api || !removeAccountId} onClick={() => {
+          <Button variant="danger" disabled={!api || !removeAccountId || loginPendingId === removeAccountId} onClick={() => {
             const id = removeAccountId;
             setRemoveAccountId(null);
             if (api && id) void runAction("Remove ChatGPT subscription account", () => api.removeChatGptSubscriptionAccount(id));

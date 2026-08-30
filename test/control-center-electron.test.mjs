@@ -1637,6 +1637,14 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(chatgptLogin, /account\.subscription\?\.usable === true/);
   assert.match(chatgptLogin, /profileHome === primaryHome/);
   assert.match(chatgptLogin, /subscriptionLoginInFlight/);
+  const chatgptRemoval = source.match(/handleAction\("removeChatGptSubscriptionAccount"[\s\S]*?\n  \}\);/)?.[0];
+  assert.ok(chatgptRemoval, "ChatGPT subscription removal handler should be readable");
+  assert.match(chatgptRemoval, /subscriptionLoginInFlight\.has\(id\)/);
+  assert.ok(
+    chatgptRemoval.indexOf("subscriptionLoginInFlight.has(id)")
+      < chatgptRemoval.indexOf('["chatgpt-account-pool", "remove", id]'),
+    "the detached login owner must be checked before account removal starts",
+  );
   assert.doesNotMatch(chatgptLogin, /openTerminalCommand/);
   assert.match(source, /const CHATGPT_LOGIN_URL/);
   assert.match(source, /stdio: \["ignore", "pipe", "pipe"\]/);
@@ -1652,6 +1660,7 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   const settings = await readFile(new URL("../apps/control-center/src/pages/SettingsPage.tsx", import.meta.url), "utf8");
   assert.match(settings, /filter\(\(account\) => account\.state !== "revoked"\)/);
   assert.match(settings, /account\.subscription\?\.usable === true/);
+  assert.match(settings, /account\.state === "revoked" \|\| loginPendingId === account\.id/);
 });
 
 test("credential input stays off argv and is delivered over stdin", async () => {

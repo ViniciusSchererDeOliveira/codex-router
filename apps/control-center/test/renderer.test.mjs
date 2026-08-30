@@ -28,6 +28,7 @@ const bridgeSource = String.raw`
   const rejectAccountPool = searchParams.get("rejectAccountPool") === "1";
   const terminalLoginFailure = searchParams.get("terminalLoginFailure") === "1";
   const rejectLoginImmediately = searchParams.get("rejectLoginImmediately") === "1";
+  const loginStaysPending = searchParams.get("loginStaysPending") === "1";
   const staleAccountFailure = searchParams.get("staleAccountFailure") === "1";
   const staleProviderUsage = searchParams.get("staleProviderUsage") === "1";
   const fallbackUsage = searchParams.get("fallbackUsage") === "1";
@@ -217,7 +218,7 @@ const bridgeSource = String.raw`
         accounts: {
           revoked: { id: "revoked", state: "revoked", paused: true, priority: 50, label: "Removed account", health: { state: "healthy" }, turns: 0, requests: 0 },
           active: { id: "active", state: "active", paused: false, priority: 50, label: "Secondary account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "secondary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
-          current: { id: "current", state: "active", paused: false, priority: 50, label: "Current account", subscription: terminalLoginFailure ? { status: "invalid", authenticated: false, usable: false, expired: false, email: "primary@example.com" } : { status: "usable", authenticated: true, usable: true, expired: false, email: "primary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
+          current: { id: "current", state: "active", paused: false, priority: 50, label: "Current account", subscription: terminalLoginFailure || loginStaysPending ? { status: "invalid", authenticated: false, usable: false, expired: false, email: "primary@example.com" } : { status: "usable", authenticated: true, usable: true, expired: false, email: "primary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
         },
         ...(terminalLoginFailure && subscriptionLoginRequested ? { loginAttempts: { current: { status: "failed", error: "Codex login closed before this account became usable.", retryable: true } } } : {}),
         sessions: { count: 0 },
@@ -683,6 +684,21 @@ test("the production renderer exposes model discovery and picker actions", { tim
       .filter((call) => call.name === "loginChatGptSubscriptionAccount").length === 2);
     assert.deepEqual(rejectedLoginErrors, []);
     await rejectedLoginPage.close();
+
+    const pendingRemovalPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    pendingRemovalPage.setDefaultTimeout(10_000);
+    await pendingRemovalPage.goto(`${url}?loginStaysPending=1`, { waitUntil: "domcontentloaded" });
+    await pendingRemovalPage.getByRole("button", { name: "Settings", exact: true }).click();
+    const pendingAccount = pendingRemovalPage.locator(".subscription-account-row").filter({ hasText: "Current account" });
+    await pendingAccount.getByRole("button", { name: "Login", exact: true }).click();
+    await pendingRemovalPage.waitForFunction(() => window.routerControlTest.calls()
+      .some((call) => call.name === "loginChatGptSubscriptionAccount"));
+    assert.equal(
+      await pendingAccount.getByRole("button", { name: "Remove", exact: true }).isDisabled(),
+      true,
+      "an account with a detached OAuth lifecycle must not be removable",
+    );
+    await pendingRemovalPage.close();
 
     const corruptPoolPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
     const corruptPoolErrors = [];
