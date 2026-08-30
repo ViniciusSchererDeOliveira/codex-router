@@ -268,6 +268,45 @@ test("automatic refresh finalizes digest evidence after a late nonzero exit", as
   assert.deepEqual(calls, ["lease-created", "lease-attached", "finalize-started"]);
 });
 
+test("automatic refresh retains changed auth when process attachment fails", async () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = {
+    version: 3,
+    leaseId: "00000000-0000-4000-8000-000000000003",
+    pid: process.pid,
+    processIdentity: "fixture-parent",
+    createdAt: Date.now(),
+    phase: "reserved",
+    authDigestBefore: null,
+  };
+  const calls = [];
+  const refreshed = await refreshChatGPTSubscriptionAccount(account.id, {
+    ...options,
+    force: true,
+    binary: process.execPath,
+    execFileImpl: () => ({
+      pid: 4323,
+      kill() { calls.push("child-killed"); },
+    }),
+    createLoginLease: () => lease,
+    attachLoginLease: () => {
+      writeFileSync(
+        chatGPTSubscriptionAccountAuthPath(account.id, { homesDir: options.homesDir }),
+        JSON.stringify({ tokens: { access_token: "new-token", account_id: "new-account" } }),
+        { mode: 0o600 },
+      );
+      throw new Error("process identity probe failed after auth write");
+    },
+    clearLoginLease: () => {
+      calls.push("lease-cleared");
+      return true;
+    },
+  });
+  assert.equal(refreshed, false);
+  assert.deepEqual(calls, ["child-killed"]);
+});
+
 test("one status poll bounds near-expiry refresh children and prioritizes the selected account", async () => {
   const selectedId = "acct_00000063";
   const accounts = Object.fromEntries(Array.from({ length: 64 }, (_, index) => {

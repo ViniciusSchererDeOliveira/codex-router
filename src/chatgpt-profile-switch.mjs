@@ -1133,27 +1133,31 @@ async function applyLocked(selection, options) {
     options.afterSwitchBackup?.();
     atomicPrivateContents(targetSnapshot.contents, primary);
     options.afterSwitchInstall?.();
-    const targetStillCurrent = (() => {
+    const assertTargetSnapshotInstalled = () => {
+      let targetStillCurrent = false;
       try {
         ensureAuthFile(targetProfile, "The selected");
         ensureAuthFile(primary, "The active");
-        return privateFileIsProtected(targetProfile)
+        targetStillCurrent = privateFileIsProtected(targetProfile)
           && privateFileIsProtected(primary)
           && readFileSync(targetProfile).equals(targetSnapshot.contents)
           && readFileSync(primary).equals(targetSnapshot.contents)
           && authIdentity(primary)?.accountId === targetIdentity.accountId;
-      } catch {
-        return false;
+      } catch {}
+      if (!targetStillCurrent) {
+        throw new Error("The selected ChatGPT login profile changed during the native switch.");
       }
-    })();
-    if (!targetStillCurrent) {
-      throw new Error("The selected ChatGPT login profile changed during the native switch.");
-    }
+    };
+    assertTargetSnapshotInstalled();
     if (catalogsEnabled) {
       restoreAccountCatalog(target, options);
       await refreshActiveCatalog(options);
       snapshotAccountCatalog(target, options);
     }
+    // Catalog publication can await the Codex CLI. Recheck the exact source
+    // generation after that asynchronous boundary and immediately before the
+    // installed phase becomes durable.
+    assertTargetSnapshotInstalled();
     writeState({ desired: target, active: target, pending: false, phase: "installed" }, switchPath);
     options.afterSwitchInstalled?.();
     const completed = writeState({ desired: target, active: target, pending: false, phase: "idle" }, switchPath);

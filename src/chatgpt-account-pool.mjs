@@ -13,6 +13,7 @@ import { spawnableCommand } from "./spawnable-command.mjs";
 import {
   attachChatGPTLoginLease,
   assertChatGPTLoginLeaseInactive,
+  chatGPTLoginAuthChanged,
   chatGPTLoginLeaseStatus,
   clearChatGPTLoginLease,
   createChatGPTLoginLease,
@@ -509,7 +510,11 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, {
     } catch {
       try { child?.kill?.(); } catch {}
       if (lease) {
-        try { clearLoginLease(id, lease, { homesDir }); } catch {}
+        try {
+          if (!chatGPTLoginAuthChanged(id, lease, { homesDir })) {
+            clearLoginLease(id, lease, { homesDir });
+          }
+        } catch {}
       }
       resolve(false);
     }
