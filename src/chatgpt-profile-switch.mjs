@@ -707,6 +707,25 @@ function authIdentity(filePath) {
   }
 }
 
+function failedLoginDiscardCode(state, accountId, homesDir) {
+  const account = state.accounts[accountId];
+  if (!account) return undefined;
+  const identity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
+  if (!identity) return "invalid-auth";
+  const conflicts = (
+    (account.identity?.accountId && account.identity.accountId !== identity.accountId)
+    || Object.entries(state.accounts).some(([candidateId, candidateAccount]) => (
+      candidateId !== accountId
+      && (
+        candidateAccount?.identity?.accountId === identity.accountId
+        || authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
+          === identity.accountId
+      )
+    ))
+  );
+  return conflicts ? "identity-conflict" : undefined;
+}
+
 function authSnapshot(filePath, label) {
   ensureAuthFile(filePath, label);
   if (!privateFileIsProtected(filePath)) throw new Error(`${label} login profile is not owner-only.`);
@@ -928,15 +947,14 @@ export async function recoverCompletedChatGPTProfileLogins(options = {}) {
         expectedLoginLease: candidate,
       });
       if (result.loginFinalizationPending !== true) recovered.push(accountId);
-    } catch (error) {
-      const detail = String(error?.message || "");
+    } catch {
       failures.push({
         accountId,
-        code: /registered more than once|identity does not match/i.test(detail)
-          ? "identity-conflict"
-          : /profile is invalid after hardening/i.test(detail)
-            ? "invalid-auth"
-            : "finalization-failed",
+        code: failedLoginDiscardCode(
+          readChatGPTAccountPoolState(filePath),
+          accountId,
+          homesDir,
+        ) || "finalization-failed",
       });
     }
   }
@@ -956,24 +974,10 @@ export async function discardCompletedChatGPTProfileLogin(accountId, options = {
     });
     if (!candidate) return false;
     const state = readChatGPTAccountPoolState(options.filePath || CHATGPT_ACCOUNT_POOL_PATH);
-    const account = state.accounts[accountId];
-    if (!account) return false;
-    const identity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
-    const conflicts = identity && (
-      (account.identity?.accountId && account.identity.accountId !== identity.accountId)
-      || Object.entries(state.accounts).some(([candidateId, candidateAccount]) => (
-        candidateId !== accountId
-        && (
-          candidateAccount?.identity?.accountId === identity.accountId
-          || authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
-            === identity.accountId
-        )
-      ))
-    );
     // A valid, unique completion is recovery evidence, not retry debris. It
     // may be waiting for the active Codex app to close and must never be
     // discarded by a direct CLI reset or an account-removal attempt.
-    if (identity && !conflicts) return false;
+    if (!failedLoginDiscardCode(state, accountId, homesDir)) return false;
     const clearLoginLease = options.clearLoginLease || clearChatGPTLoginLease;
     if (!clearLoginLease(accountId, candidate, { homesDir })) {
       throw new Error("The ChatGPT login completion lease changed before retry cleanup.");
@@ -1333,9 +1337,29 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
   if (!isChatGPTAccountId(accountId)) throw new Error("Account id is invalid.");
   return withChatGPTAccountPoolLock(() => withProfileCatalogLock(async () => {
     recoverInterruptedSwitchLocked(options);
-    ensureProfileAccountLocked(options);
     const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
     const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
+    const initialPool = readChatGPTAccountPoolState(filePath);
+    const initialProfile = readChatGPTProfileSwitchState(switchPath);
+    const homesDir = options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR;
+    const targetIdentity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
+    const inactiveIdentityConflict = Boolean(
+      targetIdentity
+      && initialProfile.active !== accountId
+      && initialProfile.desired !== accountId
+      && Object.entries(initialPool.accounts).some(([candidateId, candidate]) => (
+        candidateId !== accountId
+        && (
+          candidate?.identity?.accountId === targetIdentity.accountId
+          || authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
+            === targetIdentity.accountId
+        )
+      )),
+    );
+    // Normal discovery must reject duplicate identities. Removal is the one
+    // operation that can resolve an already-classified duplicate, and only
+    // when the conflicted target is neither active nor desired.
+    if (!inactiveIdentityConflict) ensureProfileAccountLocked(options);
     const before = {
       pool: readChatGPTAccountPoolState(filePath),
       profile: readChatGPTProfileSwitchState(switchPath),
@@ -1343,7 +1367,7 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
     const account = before.pool.accounts[accountId];
     if (!account) throw new Error("Account id is not registered.");
     assertChatGPTLoginLeaseInactive(accountId, {
-      homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
+      homesDir,
       ...(options.loginLeaseIdentity ? { identity: options.loginLeaseIdentity } : {}),
       ...(options.now === undefined ? {} : { now: options.now }),
       ...(options.loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: options.loginLeaseMaxAgeMs }),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -572,6 +572,34 @@ test("restart recovery reports one invalid login while finalizing another", asyn
   assert.equal(await discardCompletedChatGPTProfileLogin(invalid.id, options), false);
 });
 
+test("restart recovery makes a deleted completed auth profile explicitly retryable", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-deleted-auth-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const authPath = chatGPTSubscriptionAccountAuthPath(account.id, { homesDir });
+  writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "old", account_id: "old" } }), { mode: 0o600 });
+  createChatGPTLoginLease(account.id, 4242, {
+    homesDir,
+    identity: () => "departed-owner",
+    now: 1_000,
+    phase: "running",
+  });
+  rmSync(authPath);
+  const options = {
+    filePath,
+    homesDir,
+    refreshCatalog: false,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 2_000,
+  };
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), {
+    recovered: [],
+    failures: [{ accountId: account.id, code: "invalid-auth" }],
+  });
+  assert.equal(await discardCompletedChatGPTProfileLogin(account.id, options), true);
+});
+
 test("explicit retry resets only an exactly ended changed login", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-reset-"));
   const homesDir = path.join(root, "accounts");
@@ -848,6 +876,53 @@ test("login finalization rejects duplicate unbound credentials without clearing 
   );
   assert.equal(cleared, false);
   assert.equal(readChatGPTAccountPoolState(filePath).accounts[second.id].identity, undefined);
+});
+
+test("an inactive identity-conflict account remains removable after explicit failed-login reset", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-conflict-remove-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const duplicate = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const auth = JSON.stringify({ tokens: { access_token: "duplicate", account_id: "same-account" } });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), auth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[first.id].identity = { accountId: "same-account" };
+  writeChatGPTAccountPoolState(pool, filePath);
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: first.id,
+    active: first.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  createChatGPTLoginLease(duplicate.id, 4242, {
+    homesDir,
+    identity: () => "departed-owner",
+    now: 1_000,
+    phase: "running",
+  });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(duplicate.id, { homesDir }), auth, { mode: 0o600 });
+  const options = {
+    filePath,
+    homesDir,
+    switchPath,
+    refreshCatalog: false,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 2_000,
+  };
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), {
+    recovered: [],
+    failures: [{ accountId: duplicate.id, code: "identity-conflict" }],
+  });
+  assert.equal(await discardCompletedChatGPTProfileLogin(duplicate.id, options), true);
+  const removed = await removeChatGPTProfileAccount(duplicate.id, options);
+  assert.equal(removed.removed.id, duplicate.id);
+  assert.equal(removed.removed.state, "revoked");
+  const persisted = readChatGPTAccountPoolState(filePath).accounts[duplicate.id];
+  assert.ok(!persisted || persisted.state === "revoked");
+  assert.equal(removed.profile.active, first.id);
 });
 
 test("Windows login finalization replaces a foreign inherited OAuth ACL", { skip: process.platform !== "win32" }, async () => {
