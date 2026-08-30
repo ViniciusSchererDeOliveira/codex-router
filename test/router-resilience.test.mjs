@@ -419,6 +419,15 @@ test("activity record retention never cancels or releases a live request", async
 
 test("same encrypted payload shares one relay and expiry removes the retained plaintext", async () => {
   let nativeRequests = 0;
+  let gatewayRequests = 0;
+  let markGatewayRequestsStarted;
+  const gatewayRequestsStarted = new Promise((resolve) => {
+    markGatewayRequestsStarted = resolve;
+  });
+  let releaseGateway;
+  const gatewayReleased = new Promise((resolve) => {
+    releaseGateway = resolve;
+  });
   const native = await mockServer(async (_request, response) => {
     nativeRequests += 1;
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -431,6 +440,9 @@ test("same encrypted payload shares one relay and expiry removes the retained pl
       response.end(JSON.stringify({ ok: true }));
       return;
     }
+    gatewayRequests += 1;
+    if (gatewayRequests === 2) markGatewayRequestsStarted();
+    await gatewayReleased;
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ id: "r-coalesced", output: [] }));
   });
@@ -468,25 +480,42 @@ test("same encrypted payload shares one relay and expiry removes the retained pl
   };
   try {
     await waitFor(`http://127.0.0.1:${routerPort}/health`, router);
-    const [first, second] = await Promise.all([
-      fetch(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      }),
-      fetch(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
+    const firstPending = fetch(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const secondPending = fetch(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    await Promise.race([
+      gatewayRequestsStarted,
+      new Promise((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`Timed out waiting for routed payloads: ${router.testErrors()}`)),
+          5_000,
+        );
+        timer.unref?.();
       }),
     ]);
-    assert.equal(first.status, 200, await first.text());
-    assert.equal(second.status, 200, await second.text());
-    assert.equal(nativeRequests, 1);
+    // The router retains the plaintext before forwarding either routed turn.
+    // Hold both gateway responses so slow process startup and downstream work
+    // cannot consume the cache TTL before this retention assertion.
     const retained = await fetch(`${callerBaseUrl(routerPort, CALLER_KEY)}/health`).then((r) => r.json());
+    assert.equal(nativeRequests, 1);
     assert.equal(retained.resources.maxDecodedBodyBytes, 256 * 1024 * 1024);
     assert.equal(retained.resources.agentPayloadCache.entries, 1);
     assert.ok(retained.resources.agentPayloadCache.coalesced >= 1);
+
+    releaseGateway();
+    const [first, second] = await Promise.all([
+      firstPending,
+      secondPending,
+    ]);
+    assert.equal(first.status, 200, await first.text());
+    assert.equal(second.status, 200, await second.text());
     const expiryDeadline = Date.now() + 4_000;
     let expired;
     do {
@@ -498,6 +527,7 @@ test("same encrypted payload shares one relay and expiry removes the retained pl
     assert.equal(expired.resources.agentPayloadCache.bytes, 0);
     assert.ok(expired.resources.agentPayloadCache.expirations >= 1);
   } finally {
+    releaseGateway();
     await stopChild(router);
     await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
   }
