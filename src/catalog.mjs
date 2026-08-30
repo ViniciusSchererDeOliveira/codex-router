@@ -12,16 +12,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { protectPrivateFile } from "./file-security.mjs";
-import { isManagedCallerBaseUrl } from "./caller-auth.mjs";
+import { isManagedCodexBaseUrl } from "./caller-auth.mjs";
 import { applyInstructionOverlay } from "./instruction-overlays.mjs";
 import {
   ANNOUNCED_MODELS_PATH,
   CODEX_PROVIDER_MODE_PATH,
   CONFIG_PATH,
+  LEGACY_PORTS,
   MERGED_CATALOG_PATH,
   MODELS_CACHE_PATH,
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
+  PORTS,
 } from "./paths.mjs";
 import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
 import { readUserModels } from "./user-models.mjs";
@@ -477,6 +479,11 @@ function loginFreeConfigured() {
 // the dedicated signed provider carries the same URL explicitly. Any other
 // custom provider (for example a configuration switcher) owns the endpoint and
 // would make external picker entries misleading.
+function managedCodexRouterBaseUrl(value) {
+  return isManagedCodexBaseUrl(value, PORTS.router) ||
+    isManagedCodexBaseUrl(value, LEGACY_PORTS.router);
+}
+
 export function routedCatalogConfigured(contents, override = process.env.MODEL_ROUTER_SIGNED_ROUTING) {
   if (override === "1") return true;
   if (override === "0") return false;
@@ -488,7 +495,7 @@ export function routedCatalogConfigured(contents, override = process.env.MODEL_R
       // Before first install there is no managed URL yet, but the catalog
       // still has to be buildable. Once an URL is present, only the caller-
       // capability endpoint proves that OpenAI traffic reaches this router.
-      return baseUrl === undefined || isManagedCallerBaseUrl(baseUrl);
+      return baseUrl === undefined || managedCodexRouterBaseUrl(baseUrl);
     }
 
     const providerPath = ["model_providers", provider];
@@ -499,7 +506,7 @@ export function routedCatalogConfigured(contents, override = process.env.MODEL_R
     );
     if (directTables.length !== 1) return false;
     const baseUrl = tomlStringValue(document, providerPath, "base_url");
-    return Boolean(baseUrl && isManagedCallerBaseUrl(baseUrl));
+    return Boolean(baseUrl && managedCodexRouterBaseUrl(baseUrl));
   } catch {
     return false;
   }

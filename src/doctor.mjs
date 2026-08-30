@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
-import { validCallerSecret } from "./caller-auth.mjs";
+import { redactCallerUrl, validCallerSecret } from "./caller-auth.mjs";
 import { codexAuthStatus, codexVersion, findCodexBinary, runCodex } from "./codex-binary.mjs";
 import { commandOnPath, spawnableCommand } from "./spawnable-command.mjs";
 import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
@@ -372,8 +372,9 @@ if (codexTarget) {
       : undefined,
   );
 }
-// Both clients hold the managed base URL, which is a local caller capability,
-// so both documents are held to the same privacy bound.
+// Gemini and DSH still carry the caller capability in their private documents.
+// Modern Codex providers obtain it from an auth command instead, so Codex's
+// config does not need to be a credential store. Legacy capability configs do.
 const privacyTarget = codexTarget
   ? CONFIG_PATH
   : TARGET === "gemini"
@@ -382,7 +383,14 @@ const privacyTarget = codexTarget
 const configMode = existsSync(privacyTarget)
   ? statSync(privacyTarget).mode & 0o777
   : undefined;
-const configProtected = privateFileIsProtected(privacyTarget);
+const codexConfigText = codexTarget && existsSync(CONFIG_PATH)
+  ? readFileSync(CONFIG_PATH, "utf8")
+  : "";
+const codexConfigCarriesCallerCapability =
+  codexTarget && redactCallerUrl(codexConfigText) !== codexConfigText;
+const privacyRequired = !codexTarget || codexConfigCarriesCallerCapability;
+const configProtected =
+  configMode !== undefined && (!privacyRequired || privateFileIsProtected(privacyTarget));
 add(
   configProtected ? "ok" : "fail",
   codexTarget
@@ -392,10 +400,16 @@ add(
       : "Harness settings privacy",
   configMode === undefined
     ? "missing"
-    : process.platform === "win32"
-      ? "current-user Windows ACL"
-      : `mode ${configMode.toString(8)}`,
-  "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
+    : codexTarget && !privacyRequired
+      ? "router credentials stay outside config.toml"
+      : process.platform === "win32"
+        ? configProtected
+          ? "current-user Windows ACL"
+          : "Windows ACL is broader than the current user"
+        : `mode ${configMode.toString(8)}`,
+  configProtected
+    ? undefined
+    : "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
 );
 
 let selection = { providers: [], explicit: false };
