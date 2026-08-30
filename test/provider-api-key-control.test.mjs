@@ -17,6 +17,12 @@ const poolStatePath = path.join(stateDir, "provider-api-key-pools.json");
 const launchAgentsDir = path.join(root, "launch-agents");
 const inactiveRouterPort = await freePort();
 const foregroundRouterPort = await freePort();
+// These two cumulative mutation scenarios cross four or five sequential
+// private-file writes, including exact-file rollback. Each Windows write keeps
+// its own 15-second owner-only ACL bound, so the outer test must preserve all
+// of those production epochs plus child-publication startup. POSIX does not
+// launch the ACL helper and keeps the tighter regression bound.
+const ACL_HEAVY_MUTATION_TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 30_000;
 process.env.CODEX_HOME = path.join(root, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 process.env.MODEL_ROUTER_PROVIDER_CREDENTIAL_STORE = credentialStorePath;
@@ -309,7 +315,9 @@ test("an environment-backed mutation waits for service ownership through publica
   assert.equal(existsSync(poolStatePath), true);
 });
 
-test("remove and delete of environment pool entries name the installed-service cleanup", { timeout: 30_000 }, async () => {
+test("remove and delete of environment pool entries name the installed-service cleanup", {
+  timeout: ACL_HEAVY_MUTATION_TEST_TIMEOUT_MS,
+}, async () => {
   rmSync(poolStatePath, { force: true });
   const first = await addEnvironmentCredentialToPool("opencode-go", "OPENCODE_API_KEY", {
     credentialStorePath,
@@ -380,7 +388,9 @@ test("remove and delete of environment pool entries name the installed-service c
   }
 });
 
-test("a failed client publication restores both pool metadata files", { timeout: 30_000 }, async () => {
+test("a failed client publication restores both pool metadata files", {
+  timeout: ACL_HEAVY_MUTATION_TEST_TIMEOUT_MS,
+}, async () => {
   rmSync(poolStatePath, { force: true });
   const added = await addEnvironmentCredentialToPool("opencode-go", "OPENCODE_API_KEY", {
     credentialStorePath,
