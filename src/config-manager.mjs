@@ -617,12 +617,51 @@ function managedSignedProviderBlock(providerId, baseUrl) {
     // the provider half enabled; the catalog's supports_search_tool field is
     // the per-model gate.
     "supports_standalone_web_search = true",
-    "supports_websockets = false",
+    "supports_websockets = true",
     signedProviderEndMarker,
   ].join("\n");
 }
 
 function managedLoginFreeProviderBlock(providerId, baseUrl) {
+  const headerId = /^[A-Za-z0-9_-]+$/.test(providerId)
+    ? providerId
+    : JSON.stringify(providerId);
+  return [
+    signedProviderStartMarker,
+    `[model_providers.${headerId}]`,
+    'name = "Codex Router (external models)"',
+    `base_url = ${JSON.stringify(baseUrl)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "supports_standalone_web_search = true",
+    "supports_websockets = true",
+    managedCallerAuthBlock(providerId),
+    signedProviderEndMarker,
+  ].join("\n");
+}
+
+// The immediately previous managed shape advertised the HTTP fallback even
+// after standalone search was added. Accept that exact signed block during an
+// update so enabling the new edge transport cannot turn router-owned state
+// into apparent user drift.
+function managedSignedProviderBlockHttpFallback(providerId, baseUrl) {
+  const headerId = /^[A-Za-z0-9_-]+$/.test(providerId)
+    ? providerId
+    : JSON.stringify(providerId);
+  return [
+    signedProviderStartMarker,
+    `[model_providers.${headerId}]`,
+    'name = "Codex Router (with ChatGPT)"',
+    `base_url = ${JSON.stringify(baseUrl)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "supports_standalone_web_search = true",
+    "supports_websockets = false",
+    signedProviderEndMarker,
+  ].join("\n");
+}
+
+function managedLoginFreeProviderBlockHttpFallback(providerId, baseUrl) {
   const headerId = /^[A-Za-z0-9_-]+$/.test(providerId)
     ? providerId
     : JSON.stringify(providerId);
@@ -678,6 +717,7 @@ function managedLoginFreeProviderBlockLegacy(providerId, baseUrl) {
 function managedSignedProviderBlockMatches(actual, providerId, baseUrl) {
   return [
     managedSignedProviderBlock(providerId, baseUrl),
+    managedSignedProviderBlockHttpFallback(providerId, baseUrl),
     managedSignedProviderBlockLegacy(providerId, baseUrl),
   ].includes(actual);
 }
@@ -685,6 +725,7 @@ function managedSignedProviderBlockMatches(actual, providerId, baseUrl) {
 function managedLoginFreeProviderBlockMatches(actual, providerId, baseUrl) {
   return [
     managedLoginFreeProviderBlock(providerId, baseUrl),
+    managedLoginFreeProviderBlockHttpFallback(providerId, baseUrl),
     managedLoginFreeProviderBlockLegacy(providerId, baseUrl),
   ].includes(actual);
 }

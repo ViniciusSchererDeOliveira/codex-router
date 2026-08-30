@@ -879,6 +879,9 @@ test("router preserves native auth and isolates every external route", async () 
       Authorization: "Bearer CODEX_CALLER_SECRET",
       "ChatGPT-Account-Id": "account-secret",
       "X-Codex-Installation-Id": "installation-secret",
+      Traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+      Tracestate: "vendor=value",
+      "X-OpenAI-Internal-Codex-Responses-Lite": "true",
       "X-Private-Header": "must-not-forward",
       "Content-Type": "application/json",
     };
@@ -890,7 +893,10 @@ test("router preserves native auth and isolates every external route", async () 
           previous_response_id: "remove-me",
           prompt_cache_retention: "24h",
           prompt_cache_options: { ttl: "30m" },
-          client_metadata: { workspace: "caller-owned" },
+          client_metadata: {
+            workspace: "caller-owned",
+            "x-codex-turn-metadata": "native-canonical-turn-metadata",
+          },
         }),
       ),
     );
@@ -918,7 +924,11 @@ test("router preserves native auth and isolates every external route", async () 
         body: JSON.stringify({
           model,
           input: "external test",
-          client_metadata: { workspace: "caller-owned" },
+          client_metadata: {
+            workspace: "caller-owned",
+            "x-codex-turn-metadata": "routed-canonical-turn-metadata",
+            "x-codex-turn-state": "routed-turn-state",
+          },
         }),
       });
       assert.equal(response.status, 200);
@@ -927,6 +937,12 @@ test("router preserves native auth and isolates every external route", async () 
 
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
+    assert.equal(
+      nativeRequests[0].headers.traceparent,
+      "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+    );
+    assert.equal(nativeRequests[0].headers.tracestate, "vendor=value");
+    assert.equal(nativeRequests[0].headers["x-openai-internal-codex-responses-lite"], "true");
     assert.equal(nativeRequests[0].headers["x-private-header"], undefined);
     assert.equal(nativeRequests[0].url, "/backend-api/codex/responses");
     assert.doesNotMatch(nativeRequests[0].url, /PROVIDER_QUERY_SECRET/);
@@ -934,11 +950,17 @@ test("router preserves native auth and isolates every external route", async () 
     assert.equal(nativeRequests[0].body.prompt_cache_retention, undefined);
     assert.deepEqual(nativeRequests[0].body.prompt_cache_options, { ttl: "30m" });
     // Native OpenAI traffic owns client_metadata; only routed traffic drops it.
-    assert.deepEqual(nativeRequests[0].body.client_metadata, { workspace: "caller-owned" });
+    assert.deepEqual(nativeRequests[0].body.client_metadata, {
+      workspace: "caller-owned",
+      "x-codex-turn-metadata": "native-canonical-turn-metadata",
+    });
     for (const request of routedRequests) {
       assert.equal(request.headers.authorization, `Bearer ${INTERNAL_KEY}`);
       assert.equal(request.headers["chatgpt-account-id"], undefined);
       assert.equal(request.headers["x-codex-installation-id"], undefined);
+      assert.equal(request.headers.traceparent, undefined);
+      assert.equal(request.headers.tracestate, undefined);
+      assert.equal(request.headers["x-openai-internal-codex-responses-lite"], undefined);
       assert.equal(request.headers["x-private-header"], undefined);
       assert.equal(request.body.client_metadata, undefined);
     }

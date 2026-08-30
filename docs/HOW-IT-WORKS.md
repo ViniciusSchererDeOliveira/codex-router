@@ -262,10 +262,15 @@ citations, endpoints, or credentials.
 
 ## Transport and compaction
 
-Current Codex builds first attempt a Responses WebSocket. The router responds
-with HTTP 426, and Codex falls back to HTTP. Request bodies may use Zstandard,
-gzip, deflate, or Brotli; the router safely decompresses them before inspecting
-the model ID.
+Current Codex builds use the Responses WebSocket v2 transport. The router
+authenticates the caller capability before upgrading, accepts
+`response.create` messages, reconstructs full history when Codex sends a
+`previous_response_id` delta, and re-enters its own caller-authenticated HTTP
+Responses route. SSE response events are translated back to WebSocket JSON
+frames. The WebSocket edge never selects or contacts a provider itself, and
+the caller capability is never relayed to an upstream. HTTP request bodies may
+use Zstandard, gzip, deflate, or Brotli; the router safely decompresses them
+before inspecting the model ID.
 
 Codex can compact history through `/responses/compact` or a
 `compaction_trigger`. External Chat Completions providers cannot create OpenAI's

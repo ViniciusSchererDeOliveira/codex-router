@@ -184,6 +184,7 @@ import {
   installStableFetchTransport,
   loopbackProbeFetch,
 } from "./fetch-transport.mjs";
+import { handleResponsesWebSocketUpgrade } from "./responses-websocket.mjs";
 
 installStableFetchTransport();
 
@@ -490,6 +491,8 @@ const FORWARD_HEADERS = new Set([
   "session_id",
   "session-id",
   "thread-id",
+  "traceparent",
+  "tracestate",
   "x-client-request-id",
   "x-codex-beta-features",
   "x-codex-installation-id",
@@ -498,6 +501,7 @@ const FORWARD_HEADERS = new Set([
   "x-codex-turn-state",
   "x-codex-window-id",
   "x-oai-attestation",
+  "x-openai-internal-codex-responses-lite",
   "x-openai-subagent",
   "x-responsesapi-include-timing-metrics",
 ]);
@@ -689,6 +693,13 @@ function authenticatedDirectV1Route(request, pathname) {
     return pathname;
   }
   return undefined;
+}
+
+function authenticatedCallerRoute(request, requestUrl) {
+  return (
+    authenticatedRoute(requestUrl.pathname, CALLER_KEY) ||
+    authenticatedDirectV1Route(request, requestUrl.pathname)
+  );
 }
 
 // ChatGPT's own backend accepts a narrower request than the public Responses
@@ -4584,9 +4595,7 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const route =
-    authenticatedRoute(requestUrl.pathname, CALLER_KEY) ||
-    authenticatedDirectV1Route(request, requestUrl.pathname);
+  const route = authenticatedCallerRoute(request, requestUrl);
   if (!route) {
     writeJson(response, 401, {
       error: {
@@ -4701,11 +4710,16 @@ const server = http.createServer((request, response) => {
   });
 });
 
-server.on("upgrade", (_request, socket) => {
-  socket.on("error", () => {});
-  socket.end(
-    "HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-  );
+server.on("upgrade", (request, socket, head) => {
+  handleResponsesWebSocketUpgrade(request, socket, head, {
+    callerKey: CALLER_KEY,
+    authenticateUpgrade: authenticatedCallerRoute,
+    // The WebSocket is an edge translation only. Every complete request
+    // re-enters this caller-authenticated HTTP route, so routing, provider
+    // credentials, retries, failover, transforms, usage, and cancellation all
+    // continue to have one implementation.
+    responsesUrl: `${callerBaseUrl(LISTEN_PORT, CALLER_KEY)}/responses`,
+  });
 });
 // Without this an 'error' event is unhandled and the process exits silently.
 // Under a supervisor that reads as a crash loop with the port never bound and
