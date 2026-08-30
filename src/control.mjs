@@ -18,6 +18,8 @@ import { withNativeContextVariants } from "./native-context-variants.mjs";
 import {
   DSH_CATALOG_PATH,
   GEMINI_CATALOG_PATH,
+  PROVIDER_API_KEY_POOL_PATH,
+  PROVIDER_CREDENTIAL_STORE_PATH,
   PROVIDER_SELECTION_PATH,
 } from "./paths.mjs";
 // Same reasoning: presence is a property of the shared plane, not of a target,
@@ -716,8 +718,12 @@ async function printProviderOnboarding() {
 }
 
 async function handleGenericProviders(...commandArgs) {
-  const { runGenericProviderCli } = await import("./generic-providers.mjs");
-  await runGenericProviderCli(commandArgs, { output: process.stdout });
+  // The control center and the provider CLI must cross the same publication
+  // boundary. Calling the descriptor CRUD layer directly here can leave a
+  // running route and every installed client's picker on the pre-mutation
+  // registry until some unrelated later apply.
+  const { runGenericCommand } = await import("./providers.mjs");
+  await runGenericCommand(commandArgs);
 }
 
 async function installProviderCli(providerId) {
@@ -880,6 +886,105 @@ async function deleteProviderCredential(providerId) {
   process.stdout.write(
     `${JSON.stringify({ ...providerOnboardingSnapshot(), removal })}\n`,
   );
+}
+
+async function handleProviderKeyPool(providerId, action, value) {
+  const {
+    addEnvironmentCredentialToPool,
+    addStoredCredentialToPool,
+    deleteStoredCredentialPool,
+    removeStoredCredentialFromPool,
+    setStoredCredentialPoolPolicy,
+    setStoredCredentialPoolState,
+    storedCredentialPoolUsesServiceEnvironment,
+    storedCredentialRequiresServiceEnvironment,
+    storedCredentialPoolStatus,
+  } = await import("./provider-api-key-control.mjs");
+  if (!action || action === "status") {
+    // Status is deliberately lock-free and read-only. It must remain usable
+    // while a catalog publication is slow or recovering an abandoned owner.
+    process.stdout.write(`${JSON.stringify(storedCredentialPoolStatus(providerId), null, 2)}\n`);
+    return;
+  }
+  let mutation;
+  if (action === "add" && value) {
+    mutation = () => addStoredCredentialToPool(providerId, value);
+  } else if (action === "add-env" && value) {
+    mutation = () => addEnvironmentCredentialToPool(providerId, value);
+  } else if (action === "remove" && value) {
+    mutation = () => removeStoredCredentialFromPool(providerId, value);
+  } else if (action === "delete" && !value) {
+    mutation = () => deleteStoredCredentialPool(providerId);
+  } else if ((action === "pause" || action === "resume") && value) {
+    mutation = () => setStoredCredentialPoolState(providerId, value, action === "pause");
+  } else if (action === "policy" && value) {
+    mutation = () => setStoredCredentialPoolPolicy(providerId, value);
+  } else {
+    throw new Error("Usage: control key-pool <provider> status|add|add-env|remove|delete|pause|resume|policy [credential-id|environment-name|strategy]");
+  }
+  const addition = action === "add" || action === "add-env";
+  const removal = action === "remove" || action === "delete";
+  let environmentBacked = false;
+  let serviceEnvironmentStatus;
+  let result;
+  // Pool readiness decides whether this provider's models are routable. Treat
+  // its two metadata files, the gateway, and every installed client as one
+  // publication: a failed rebuild restores the exact previous pool/store and
+  // republishes that state rather than leaving a half-adopted credential.
+  const transact = (lock = true) => transactModelOverlayMutation({
+    files: [PROVIDER_API_KEY_POOL_PATH, PROVIDER_CREDENTIAL_STORE_PATH],
+    mutate: async () => { result = await mutation(); },
+    lock,
+  });
+  if (addition || removal) {
+    // Classify against the same pool/store generation the transaction will
+    // change. In particular, a concurrent pause/remove must not turn an opaque
+    // remove id from environment-backed into apparently ordinary metadata.
+    await withModelOverlayLock(async () => {
+      environmentBacked = action === "add-env" || (
+        action === "add" && storedCredentialRequiresServiceEnvironment(providerId, value)
+      ) || (
+        removal && storedCredentialPoolUsesServiceEnvironment(providerId, {
+          ...(action === "remove" ? { credentialId: value } : {}),
+        })
+      );
+      if (!environmentBacked) {
+        await transact(false);
+        return;
+      }
+
+      // Keep lock ordering consistent with model-overlay operations that
+      // restart the service: publication ownership first, service ownership
+      // second. The service lock stays held through publication, serializing
+      // both a new variable and removal of a retired one with service renders.
+      const { withServiceOperationLock } = await import("./service-operation-lock.mjs");
+      await withServiceOperationLock(async () => {
+        const {
+          environmentPoolMutationServiceStatus,
+          routerServiceStatus,
+        } = await import("./router-restart.mjs");
+        serviceEnvironmentStatus = addition
+          ? await environmentPoolMutationServiceStatus()
+          : await routerServiceStatus();
+        await transact(false);
+      });
+    });
+  } else {
+    await transact();
+  }
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (environmentBacked) {
+    if (removal) {
+      const { environmentPoolRemovalReminder } = await import("./router-restart.mjs");
+      process.stderr.write(environmentPoolRemovalReminder(serviceEnvironmentStatus));
+    } else {
+      process.stderr.write(
+        serviceEnvironmentStatus.serviceReinstallRequired
+          ? "Environment-backed pool entry staged. Rerun the installer from this same environment; a service restart alone will not persist the variable.\n"
+          : "Environment-backed pool entry registered. Start the foreground router from this environment, or install the managed service from it.\n",
+      );
+    }
+  }
 }
 
 async function setLoginFreeMode(desired) {
@@ -2304,9 +2409,20 @@ async function handleLocalModels(action, value, ...rest) {
     }
     const cancelled = () => readLocalDownload()?.status === "cancelled";
     try {
-      const { fetchRegistryCapabilities, detectMachine, fitAdvisory, rateDiskFit, rateModelFit } =
-        await import("./local-models.mjs");
-      const advertised = await fetchRegistryCapabilities(tag);
+      const {
+        EXPLORE_LOCAL_MODELS,
+        fetchRegistryCapabilities,
+        detectMachine,
+        fitAdvisory,
+        rateDiskFit,
+        rateModelFit,
+      } = await import("./local-models.mjs");
+      // Hugging Face namespaced tags are pulled directly by Ollama and do not
+      // have a registry.ollama.ai manifest. Their checked-in catalog size is
+      // still authoritative enough for the safety gate: without this fallback
+      // a 93-467 GB GLM download could bypass the explicit --force consent.
+      const advertised = await fetchRegistryCapabilities(tag)
+        || EXPLORE_LOCAL_MODELS.find((entry) => entry.tag === tag);
       if (cancelled()) return;
       // A missing tool template costs nothing to discover afterwards; gigabytes
       // that cannot run cost the download and the disk. So the tool note stays
@@ -2965,6 +3081,9 @@ if (args.includes("--probe")) {
   } else {
     await saveProviderCredential(args[1]);
   }
+} else if (args[0] === "key-pool") {
+  if (!args[1]) throw new Error("Usage: control key-pool <provider> status|add|add-env|remove|delete|pause|resume|policy [credential-id|environment-name|strategy]");
+  await handleProviderKeyPool(args[1], args[2], args[3]);
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
 } else if (args[0] === "signed-routing") {

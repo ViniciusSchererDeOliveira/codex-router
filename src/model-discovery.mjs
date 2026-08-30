@@ -19,7 +19,7 @@ import {
   anonymousModelAllowed,
   CHECKED_IN_MODELS,
   MODELS,
-  PROVIDERS,
+  RUNTIME_PROVIDERS,
   resolveProviderBaseUrl,
 } from "./model-registry.mjs";
 import { curatedModelBlockReason } from "./opencode-curation.mjs";
@@ -325,8 +325,22 @@ export async function discoverProviderModels(
   providerId,
   { refresh = false, cache = true, fixture = false, scope, loadPayload = providerPayload } = {},
 ) {
-  const provider = PROVIDERS.get(providerId);
+  const provider = RUNTIME_PROVIDERS.get(providerId);
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);
+  if (provider.generic === true) {
+    const fixturePath = option("--fixture");
+    const genericFixture = fixturePath
+      ? JSON.parse(readFileSync(path.resolve(fixturePath), "utf8"))
+      : fixture && fixture !== true
+        ? fixture
+        : undefined;
+    return discoverGenericProviderModels(providerId, {
+      refresh,
+      cache,
+      scope,
+      ...(genericFixture !== undefined ? { fixture: genericFixture } : {}),
+    });
+  }
   // Discovery asks one endpoint what it serves. A per-model-endpoint provider
   // is not an endpoint, so there is no single host to ask and no answer that
   // would mean anything for the models under it. Refusing beats picking one of
@@ -533,16 +547,43 @@ export async function discoverGenericProviderModels(
   const merged = mergeDiscoveredModels({
     providerId,
     live: Object.values(modelMetadata),
+    userOverrides: providerUserMetadata(providerId),
     defaults: {},
   });
+  const registered = MODELS
+    .filter((model) => model.provider === providerId)
+    .map((model) => model.upstreamModel)
+    .sort();
+  const registeredSet = new Set(registered);
+  const discoveredSet = new Set(discovered);
+  const unregistered = discovered.filter((id) => !registeredSet.has(id));
+  const publicationBlocked = descriptor.adapter === "openai-completions"
+    ? "This endpoint exposes legacy OpenAI Completions. Codex Router can inspect its catalog, but has no completions caller surface and will not publish an unusable route."
+    : undefined;
+  const blocked = publicationBlocked
+    ? Object.fromEntries(unregistered.map((id) => [id, publicationBlocked]))
+    : {};
+  const contextLengths = Object.fromEntries(
+    Object.entries(modelMetadata)
+      .filter(([, metadata]) => Number.isInteger(metadata?.contextWindow))
+      .map(([id, metadata]) => [id, metadata.contextWindow]),
+  );
   return {
     provider: providerId,
     descriptor: { ...descriptor, headers: undefined },
     discovered,
+    registered,
+    unregistered,
+    addable: unregistered.filter((id) => !Object.hasOwn(blocked, id)),
+    blocked,
+    unavailable: registered.filter((id) => !discoveredSet.has(id)),
+    contextLengths,
     modelMetadata: merged,
     cached: Boolean(cached),
     stale: Boolean(cached?.stale),
     fetchedAt,
+    note: publicationBlocked ||
+      "Discovery never grants request behavior or edits the registry; curation must explicitly select every published model and any request profile.",
   };
 }
 

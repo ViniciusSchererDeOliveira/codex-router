@@ -99,6 +99,22 @@ export function parseRateLimitHeaders(headers, { now = Date.now() } = {}) {
   };
 }
 
+// Pool selection needs one unambiguous unit per credential. Only a complete
+// request window is safe to attach to the key that produced this response;
+// token windows are intentionally left in provider-level telemetry because a
+// streamed usage event is not guaranteed to retain the winning credential id.
+export function requestQuotaFromRateLimitHeaders(headers, { now = Date.now() } = {}) {
+  const requests = parseRateLimitHeaders(headers, { now })?.requests;
+  if (!(requests?.limit > 0) || !Number.isFinite(requests.remaining)) return undefined;
+  return {
+    unit: "requests",
+    limit: requests.limit,
+    remaining: requests.remaining,
+    ...(requests.resetAt ? { resetAt: requests.resetAt } : {}),
+    observedAt: new Date(now).toISOString(),
+  };
+}
+
 // The soonest moment a provider is worth retrying, or undefined when nothing in
 // the response says the caller is currently limited. A cooldown map reads this.
 export function cooldownUntil(snapshot) {

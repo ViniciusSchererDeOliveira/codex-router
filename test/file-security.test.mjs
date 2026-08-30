@@ -4,13 +4,32 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   privateFileIsProtected,
   protectPrivateFile,
   writePrivateJson,
+  writePrivateJsonAsync,
   writePrivateFile,
 } from "../src/file-security.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("the Windows async ACL path uses the bounded one-shot script", () => {
+  const implementation = readFileSync(path.join(root, "src", "file-security.mjs"), "utf8");
+  assert.match(
+    implementation,
+    /protectPrivateFilesWin32Async\(paths\)/,
+  );
+  assert.match(implementation, /powershellPrivateArgs\(\)/);
+  assert.match(implementation, /"-EncodedCommand"/);
+  assert.match(implementation, /taskkill\.exe/);
+  assert.match(implementation, /treeKiller\.unref/);
+  assert.doesNotMatch(implementation, /execFileSync\(\s*\n?\s*"taskkill\.exe"/);
+  assert.match(implementation, /WINDOWS_PRIVATE_ASYNC_TIMEOUT_MS/);
+  assert.doesNotMatch(implementation, /powershellPrivateWorkerScript/);
+});
 
 test("private JSON state uses one owner-only atomic writer", () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "codex-router-private-json-"));
@@ -238,6 +257,22 @@ test(
           inherited: false,
         },
       ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+test(
+  "Windows request-path private writes use bounded ACL operations and preserve the atomic target ACL",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-router-write-async-"));
+    const target = path.join(directory, "pool.json");
+    try {
+      await writePrivateJsonAsync(target, { version: 1, value: "first" });
+      await writePrivateJsonAsync(target, { version: 1, value: "second" });
+      assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), { version: 1, value: "second" });
+      assert.equal(privateFileIsProtected(target), true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

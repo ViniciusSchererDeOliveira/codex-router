@@ -7,12 +7,9 @@ import {
   runOperationProcessTree,
   runProcessTree,
 } from "./process-tree.mjs";
+import { waitForRouterHealth } from "./router-health.mjs";
 
 const SERVICE_SCRIPT = path.join(SOURCE_ROOT, "src", "service.mjs");
-// Status is a read-only preflight and is capped separately. Once restart
-// begins, its child loses ten seconds to the process-owner cleanup reserve and
-// service.mjs may spend ten more seconds in the platform renderer before the
-// documented full 300-second LiteLLM readiness wait starts.
 const SERVICE_STATUS_OPERATION_MS = 10_000;
 const SERVICE_PROCESS_OWNER_RESERVE_MS = 10_000;
 const SERVICE_PLATFORM_COMMAND_RESERVE_MS = 10_000;
@@ -22,9 +19,6 @@ export const ROUTER_SERVICE_RESTART_MINIMUM_MS =
   + SERVICE_PROCESS_OWNER_RESERVE_MS
   + SERVICE_PLATFORM_COMMAND_RESERVE_MS
   + SERVICE_READINESS_ALLOWANCE_MS;
-// Keep a small handoff margin so a newly-created default deadline is still
-// larger than the exact minimum when the status process and restart child are
-// scheduled on different event-loop turns.
 export const ROUTER_SERVICE_RESTART_OPERATION_MS =
   ROUTER_SERVICE_RESTART_MINIMUM_MS + 1_000;
 const SERVICE_RESTART_PHASE_MINIMUM_MS =
@@ -124,18 +118,105 @@ export async function routerServiceStatus({
     childOwnsOperations: false,
   });
   assertOperationActive(signal, operationDeadline);
-  if (result.error) return { installed: false };
-  if (result.status !== 0) return { installed: false };
+  if (result.error || result.status !== 0) {
+    return { installed: false, statusUnknown: true };
+  }
   try {
     const parsed = JSON.parse(result.stdout);
+    if (
+      typeof parsed?.installed !== "boolean" ||
+      typeof parsed?.loaded !== "boolean" ||
+      typeof parsed?.state !== "string"
+    ) {
+      return { installed: false, statusUnknown: true };
+    }
     return {
-      installed: parsed.installed === true,
-      loaded: parsed.loaded === true,
-      state: typeof parsed.state === "string" ? parsed.state : undefined,
+      installed: parsed.installed,
+      loaded: parsed.loaded,
+      state: parsed.state,
     };
   } catch {
-    return { installed: false };
+    return { installed: false, statusUnknown: true };
   }
+}
+
+function environmentMutationError(message) {
+  const error = new Error(message);
+  error.code = "provider_api_key_pool_service_environment_stale";
+  return error;
+}
+
+export async function environmentPoolMutationServiceStatus({
+  spawn,
+  env = process.env,
+  waitForHealth = waitForRouterHealth,
+  signal,
+  deadline,
+} = {}) {
+  const status = await routerServiceStatus({ spawn, env, signal, deadline });
+  if (status.statusUnknown) {
+    throw environmentMutationError(
+      "Cannot safely add an environment-backed API-key pool entry because the background service state could not be verified. " +
+        "Repair or stop the service, then retry; publishing while ownership is unknown could expose a route that cannot authenticate.",
+    );
+  }
+  if (status.loaded) {
+    throw environmentMutationError(
+      "Cannot add an environment-backed API-key pool entry while the managed router service is running. " +
+        "Stop the service, repeat the command with every pooled variable set, then rerun the installer; " +
+        "a restart alone does not rewrite the service environment.",
+    );
+  }
+
+  let health;
+  try {
+    health = await waitForHealth({ timeoutMs: 0, requestTimeoutMs: 1_000 });
+  } catch {
+    health = { ok: false };
+  }
+  const liveRouter = health?.ok === true || health?.degradedPayload?.service === "codex-router";
+  if (liveRouter) {
+    throw environmentMutationError(
+      "Cannot add an environment-backed API-key pool entry while a live router process is already serving. " +
+        "Stop the foreground router, repeat the command from the environment containing every pooled variable, then start it again.",
+    );
+  }
+  if (health?.connectionRefused !== true) {
+    throw environmentMutationError(
+      "Cannot safely add an environment-backed API-key pool entry because the router process state could not be verified. " +
+        "Stop or repair the router, then retry; only a confirmed empty loopback port is safe to publish against.",
+    );
+  }
+  return {
+    ...status,
+    serviceReinstallRequired: status.installed === true,
+  };
+}
+
+export function environmentPoolRemovalReminder(status) {
+  if (status?.installed === true) {
+    return (
+      "Environment-backed pool metadata removed. Rerun the installer to remove the retired secret " +
+      "from the managed service definition; a service restart alone replays the old definition.\n"
+    );
+  }
+  if (status?.statusUnknown) {
+    return (
+      "Environment-backed pool metadata removed. Background service status could not be verified; " +
+      "if one is installed, rerun the installer to remove the retired secret from its definition; " +
+      "a restart alone may replay the old definition.\n"
+    );
+  }
+  if (status?.loaded === true) {
+    return (
+      "Environment-backed pool metadata removed. Stop and restart the loaded router process to " +
+      "drop the retired variable from its inherited environment.\n"
+    );
+  }
+  return (
+    "Environment-backed pool metadata removed. Restart any foreground router to drop the retired " +
+    "variable from its process environment.\n"
+  );
 }
 
 export async function restartRouterServiceIfInstalled({
@@ -151,9 +232,6 @@ export async function restartRouterServiceIfInstalled({
     signal,
     deadline: operationDeadline,
   })).installed) return false;
-  // Refuse before asking the platform service manager to mutate anything. The
-  // child deadline is contracted by ten seconds; what remains must still
-  // cover the platform restart and the full 300-second readiness allowance.
   assertOperationAllowance(
     signal,
     operationDeadline,

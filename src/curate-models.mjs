@@ -2,7 +2,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { discoverProviderModels } from "./model-discovery.mjs";
-import { CHECKED_IN_MODELS, PROVIDERS, USER_MODEL_WARNINGS } from "./model-registry.mjs";
+import {
+  CHECKED_IN_MODELS,
+  RUNTIME_PROVIDERS,
+  RUNTIME_PROVIDER_WARNINGS,
+  USER_MODEL_WARNINGS,
+} from "./model-registry.mjs";
 import { confirm, promptLine } from "./setup-shared.mjs";
 import { toggleSelection } from "./setup-ui.mjs";
 import {
@@ -33,6 +38,7 @@ import {
   MODEL_PICKER_STATE_PATH,
   setModelsVisible,
 } from "./model-picker-state.mjs";
+import { CURATABLE_REQUEST_PROFILES, curatableRequestProfile } from "./request-profiles.mjs";
 
 // Interactive curation: list the provider's live models that are not part of
 // the checked-in registry, let the user toggle the ones they want, and persist
@@ -83,7 +89,14 @@ const AUTO_TOOL_CHOICE = "auto-tool-choice";
 const REQUEST_PROFILE_DESCRIPTIONS = {
   [AUTO_TOOL_CHOICE]:
     'reject a forced tool_choice ("required") while still calling tools under "auto"',
+  "codex-encrypted-schema":
+    "reject Codex's encrypted annotation on JSON-Schema nodes while accepting the same tool schema without it",
 };
+
+if (Object.keys(REQUEST_PROFILE_DESCRIPTIONS).some((profile) => !curatableRequestProfile(profile)) ||
+    CURATABLE_REQUEST_PROFILES.some((profile) => !REQUEST_PROFILE_DESCRIPTIONS[profile])) {
+  throw new Error("Curatable request-profile descriptions are out of sync.");
+}
 
 // Codex compacts at this fraction of the declared window.
 const AUTO_COMPACT_RATIO = 0.85;
@@ -287,9 +300,17 @@ export function parseEfforts(raw) {
 }
 
 if (!requestedProviderId) usage();
-const provider = PROVIDERS.get(providerId);
+const provider = RUNTIME_PROVIDERS.get(providerId);
 if (!provider) {
+  for (const warning of RUNTIME_PROVIDER_WARNINGS) console.error(warning);
   console.error(`Unknown provider: ${providerId}`);
+  process.exit(2);
+}
+if (provider.generic === true && provider.adapter === "openai-completions") {
+  console.error(
+    `${provider.displayName} exposes legacy OpenAI Completions. Codex Router can discover ` +
+      "that catalog but has no completions caller surface, so those models cannot be curated or published.",
+  );
   process.exit(2);
 }
 const flagEfforts = (() => {
@@ -344,6 +365,7 @@ function chooseInteractively(candidates, curated) {
 
 
 async function main() {
+  for (const warning of RUNTIME_PROVIDER_WARNINGS) console.error(warning);
   for (const warning of USER_MODEL_WARNINGS) console.error(warning);
   const existing = readUserModels();
   const familyProviderIds = curationProviderIds(providerId);

@@ -5,28 +5,36 @@ import {
   Coins,
   Gauge,
 } from "lucide-react";
-import { Badge, Button, EmptyState, PageHeader, SectionHeading, SkeletonBlock } from "../components";
+import { Badge, Button, EmptyState, PageHeader, PanelSkeleton, SectionHeading, SkeletonBlock } from "../components";
 import {
+  accountBucketsWithRouterFallback,
   bucketRange,
+  classNames,
   compactNumber,
   exactNumber,
   formatDateTime,
   metricValue,
   remainingPercent,
+  type AccountBucketSource,
 } from "../lib";
 import type {
   AccountUsage,
   ProviderUsage,
   ProviderUsageSnapshot,
   RouterControlApi,
+  RouterDataReady,
   RouterTarget,
   UsageBucket,
   UsageEvent,
   UsageMetric,
 } from "../types";
+import type { Translate } from "../i18n";
 import "./usage-status.css";
 
-type UsageBucketWithRequests = UsageBucket & { requests?: number };
+type UsageBucketWithRequests = UsageBucket & {
+  requests?: number;
+  displaySource?: AccountBucketSource;
+};
 type ProviderAccount = NonNullable<ProviderUsage["account"]> & {
   plan?: string;
 };
@@ -82,16 +90,20 @@ export function UsagePage({
   providerUsage,
   api,
   refreshing,
+  dataReady,
   onRefresh,
   focusRequest,
+  t,
 }: {
   target?: RouterTarget;
   account?: AccountUsage;
   providerUsage?: ProviderUsageSnapshot;
   api?: RouterControlApi;
   refreshing: boolean;
+  dataReady: RouterDataReady;
   onRefresh: () => void;
   focusRequest?: { id: number; sourceId?: string; allowance: boolean };
+  t: Translate;
 }) {
   const [range, setRange] = useState<7 | 30 | 90>(30);
   const [selected, setSelected] = useState("");
@@ -102,8 +114,8 @@ export function UsagePage({
   const handledFocusRequest = useRef<number | undefined>(undefined);
 
   const sources = useMemo(
-    () => buildSources(target, account, providerUsage),
-    [account, providerUsage, target],
+    () => buildSources(t, target, account, providerUsage),
+    [account, providerUsage, t, target],
   );
 
   useEffect(() => {
@@ -119,7 +131,12 @@ export function UsagePage({
     ?? sources[0];
 
   const routerAggregate = sources.find((entry) => entry.id === "all-router");
-  const latestReportedBucket = source?.kind === "subscription" ? source.buckets.at(-1) : undefined;
+  // The mixed display series may end in a local fallback. Keep the account
+  // headline tied to OpenAI's raw stream so a router-only value is never
+  // presented as the last globally reported day.
+  const latestReportedBucket = source?.kind === "subscription"
+    ? account?.dailyUsageBuckets?.at(-1)
+    : undefined;
   const fetchedAt = source?.kind === "subscription"
     ? account?.fetchedAt
     : providerUsage?.fetchedAt;
@@ -128,15 +145,17 @@ export function UsagePage({
     () => bucketsForRange(source?.buckets ?? [], range),
     [range, source?.buckets],
   );
-  const rangeTokens = buckets.reduce((sum, bucket) => sum + bucket.tokens, 0);
   const bucketRequestsAvailable = buckets.some((bucket) => bucket.requests !== undefined);
   const rangeRequests = bucketRequestsAvailable
     ? buckets.reduce((sum, bucket) => sum + (bucket.requests || 0), 0)
     : null;
   const chartBreakdownAvailable = buckets.some((bucket) => tokenParts(bucket) !== null);
   const summary = source
-    ? usageSummary(source, range, rangeTokens, rangeRequests, latestReportedBucket)
+    ? usageSummary(source, range, buckets, rangeRequests, t, latestReportedBucket)
     : [];
+  const localFallbackDays = source?.kind === "subscription"
+    ? buckets.filter((bucket) => bucket.displaySource === "router-fallback").length
+    : 0;
 
   const allowances = useMemo<AllowanceRow[]>(() => {
     if (!source) return [];
@@ -248,7 +267,7 @@ export function UsagePage({
       />
 
       {!source ? (
-        refreshing ? <UsageLoading /> : (
+        !dataReady.snapshot || !dataReady.accountUsage || !dataReady.providerUsage ? <UsageLoading /> : (
           <EmptyState
             icon={<BarChart3 size={22} />}
             title="No usage sources available"
@@ -263,19 +282,28 @@ export function UsagePage({
           <div className="us-primary-grid">
             <section className="panel-section us-chart-panel">
               <SectionHeading
-                title={source.kind === "subscription" ? "Daily account tokens" : "Daily router traffic"}
+                title={source.kind === "subscription"
+                  ? localFallbackDays > 0 ? t("usage.fallback.chartTitle") : "Daily account tokens"
+                  : "Daily router traffic"}
                 description={source.kind === "subscription"
-                  ? chartBreakdownAvailable
-                    ? `${source.name}, shown over the selected local date range with the reported input/cache/output split.`
-                    : `${source.name}, shown over the selected local date range. The account API reports daily totals only.`
+                  ? localFallbackDays > 0
+                    ? t(
+                        localFallbackDays === 1
+                          ? "usage.fallback.chartDescriptionOne"
+                          : "usage.fallback.chartDescription",
+                        { name: source.name, count: localFallbackDays },
+                      )
+                    : chartBreakdownAvailable
+                      ? `${source.name}, shown over the selected local date range with the reported input/cache/output split.`
+                      : `${source.name}, shown over the selected local date range. The account API reports daily totals only.`
                   : `${source.name}, shown over the selected local date range. Router bars split regular input, cached input, and output.`}
                 action={<RangePicker value={range} onChange={setRange} />}
               />
-              {buckets.some((bucket) => bucket.tokens > 0 || (bucket.requests || 0) > 0) ? (
+              {buckets.some((bucket) => bucket.tokens > 0) ? (
                 <UsageChart
                   buckets={buckets}
-                  requestsAvailable={bucketRequestsAvailable}
                   sourceKind={source.kind}
+                  t={t}
                 />
               ) : (
                 <div className="us-chart-empty">
@@ -284,7 +312,7 @@ export function UsagePage({
                     title="No traffic in this range"
                     body={source.kind === "subscription"
                       ? "ChatGPT has not reported token usage for these dates."
-                      : "No metered requests were observed by the local router for these dates."}
+                      : "No token usage was observed by the local router for these dates."}
                   />
                 </div>
               )}
@@ -331,7 +359,12 @@ export function UsagePage({
                       navigationFocused={allowanceFocused && row.id === targetAllowanceRowId}
                     />
                   ))}
+                  {!dataReady.accountUsage || !dataReady.providerUsage ? (
+                    <SkeletonBlock className="us-loading-metric" />
+                  ) : null}
                 </div>
+              ) : !dataReady.accountUsage || !dataReady.providerUsage ? (
+                <PanelSkeleton label="Loading account allowances" count={2} />
               ) : (
                 <EmptyState
                   icon={<Gauge size={20} />}
@@ -370,8 +403,15 @@ export function UsagePage({
                     source={entry}
                     selected={entry.id === source.id}
                     onSelect={() => setSelected(entry.id)}
+                    t={t}
                   />
                 ))}
+                {!dataReady.providerUsage ? (
+                  <>
+                    <SkeletonBlock className="us-loading-source" />
+                    <SkeletonBlock className="us-loading-source" />
+                  </>
+                ) : null}
               </div>
               {sources.some((entry) => entry.kind === "subscription") ? (
                 <>
@@ -383,6 +423,7 @@ export function UsagePage({
                         source={entry}
                         selected={entry.id === source.id}
                         onSelect={() => setSelected(entry.id)}
+                        t={t}
                       />
                     ))}
                   </div>
@@ -397,6 +438,7 @@ export function UsagePage({
 }
 
 function buildSources(
+  t: Translate,
   target?: RouterTarget,
   account?: AccountUsage,
   snapshot?: ProviderUsageSnapshot,
@@ -548,14 +590,29 @@ function buildSources(
   }
 
   if (account) {
+    const localOpenAiBuckets = providerSources.find((entry) => entry.id === "provider:openai")?.buckets ?? [];
+    const accountBuckets = accountBucketsWithRouterFallback(
+      account.dailyUsageBuckets ?? [],
+      localOpenAiBuckets,
+    );
+    const fallbackDays = accountBuckets.filter((bucket) => bucket.displaySource === "router-fallback").length;
     result.push({
       id: "chatgpt-subscription",
       kind: "subscription",
-      name: "ChatGPT account · reported by OpenAI",
+      name: fallbackDays > 0
+        ? t("usage.fallback.source")
+        : "ChatGPT account · reported by OpenAI",
       detail: account.planType
-        ? `${friendlyPlanName(account.planType)} plan · account-level usage as OpenAI reports it; not included in this router total`
-        : "Account-level usage as OpenAI reports it; not included in this router total",
-      buckets: account.dailyUsageBuckets ?? [],
+        ? fallbackDays > 0
+          ? `${friendlyPlanName(account.planType)} plan · ${t(
+              fallbackDays === 1 ? "usage.fallback.detailOne" : "usage.fallback.detail",
+              { count: fallbackDays },
+            )}`
+          : `${friendlyPlanName(account.planType)} plan · account-level usage as OpenAI reports it; this view is not added to the all-router total`
+        : fallbackDays > 0
+          ? t(fallbackDays === 1 ? "usage.fallback.detailOne" : "usage.fallback.detail", { count: fallbackDays })
+          : "Account-level usage as OpenAI reports it; this view is not added to the all-router total",
+      buckets: accountBuckets,
       metrics: codexAccountMetrics(account),
       requests: null,
       successfulRequests: null,
@@ -593,12 +650,20 @@ function buildSources(
 function usageSummary(
   source: UsageSource,
   range: number,
-  rangeTokens: number,
+  rangeBuckets: UsageBucketWithRequests[],
   rangeRequests: number | null,
+  t: Translate,
   latestReportedBucket?: UsageBucketWithRequests,
 ): Array<{ label: string; value: string; detail: string; tone?: TokenTone }> {
+  const rangeTokens = rangeBuckets.reduce((sum, bucket) => sum + bucket.tokens, 0);
   if (source.kind === "subscription") {
     const latestTokens = latestReportedBucket?.tokens;
+    const fallbackTokens = rangeBuckets
+      .filter((bucket) => bucket.displaySource === "router-fallback")
+      .reduce((sum, bucket) => sum + bucket.tokens, 0);
+    const fallbackDays = rangeBuckets
+      .filter((bucket) => bucket.displaySource === "router-fallback").length;
+    const accountTokens = rangeTokens - fallbackTokens;
     return [
       {
         label: "Last reported day",
@@ -607,7 +672,17 @@ function usageSummary(
           ? `${exactNumber(latestTokens)} account tokens · ${formatBucketDate(latestReportedBucket.startDate)}`
           : "ChatGPT has not published a daily bucket",
       },
-      { label: `Last ${range} days`, value: compactNumber(rangeTokens), detail: `${exactNumber(rangeTokens)} account tokens` },
+      {
+        label: `Last ${range} days`,
+        value: compactNumber(rangeTokens),
+        detail: fallbackDays > 0
+          ? t("usage.fallback.summary", {
+              total: exactNumber(rangeTokens),
+              account: exactNumber(accountTokens),
+              fallback: exactNumber(fallbackTokens),
+            })
+          : `${exactNumber(rangeTokens)} account tokens`,
+      },
       { label: "Account lifetime", value: optionalCompact(source.lifetimeTokens), detail: "Reported by OpenAI" },
       { label: "Peak day", value: optionalCompact(source.peakDailyTokens), detail: "Account history" },
       { label: "Current streak", value: source.streakDays == null ? "Not reported" : `${source.streakDays} days`, detail: "Account activity" },
@@ -723,15 +798,17 @@ function TokenMix({ source, buckets, range }: {
   buckets: UsageBucketWithRequests[];
   range: 7 | 30 | 90;
 }) {
+  const completeRangeMix = hasCompleteTokenBreakdown(buckets)
+    && (source.kind !== "subscription"
+      || !buckets.some((bucket) => bucket.displaySource === "router-fallback"));
   const bucketMix = buckets.reduce((totals, bucket) => {
     const parts = tokenParts(bucket);
     if (!parts) return totals;
     totals.regular += parts.find((part) => part.tone === "regular-input")?.tokens ?? 0;
     totals.cached += parts.find((part) => part.tone === "cached-input")?.tokens ?? 0;
     totals.output += parts.find((part) => part.tone === "output")?.tokens ?? 0;
-    totals.seen = true;
     return totals;
-  }, { regular: 0, cached: 0, output: 0, seen: false });
+  }, { regular: 0, cached: 0, output: 0 });
   const input = source.kind === "subscription" ? null : source.last24hInputTokens;
   const recentRegular = source.kind === "subscription"
     ? null
@@ -741,11 +818,11 @@ function TokenMix({ source, buckets, range }: {
         : null);
   const recentCached = source.kind === "subscription" ? null : source.last24hCachedInputTokens;
   const recentOutput = source.kind === "subscription" ? null : source.last24hOutputTokens;
-  const regular = bucketMix.seen ? bucketMix.regular : recentRegular;
-  const cached = bucketMix.seen ? bucketMix.cached : recentCached;
-  const output = bucketMix.seen ? bucketMix.output : recentOutput;
+  const regular = completeRangeMix ? bucketMix.regular : recentRegular;
+  const cached = completeRangeMix ? bucketMix.cached : recentCached;
+  const output = completeRangeMix ? bucketMix.output : recentOutput;
   if (regular == null && cached == null && output == null) return null;
-  const scope = bucketMix.seen ? `selected ${range}-day range` : "last 24h";
+  const scope = completeRangeMix ? `selected ${range}-day range` : "last 24h";
   const rows = [
     { label: "Regular input", value: regular, tone: "regular" as const },
     { label: "Cached input", value: cached, tone: "cached" as const },
@@ -786,38 +863,46 @@ function RangePicker({ value, onChange }: {
   );
 }
 
-function UsageChart({ buckets, requestsAvailable, sourceKind }: {
+function UsageChart({ buckets, sourceKind, t }: {
   buckets: UsageBucketWithRequests[];
-  requestsAvailable: boolean;
   sourceKind: UsageSource["kind"];
+  t: Translate;
 }) {
   const width = 840;
   const height = 228;
   const paddingX = 14;
   const paddingY = 15;
   const tokenMax = Math.max(...buckets.map((bucket) => bucket.tokens), 1);
-  const requestMax = Math.max(...buckets.map((bucket) => bucket.requests || 0), 1);
   const innerWidth = width - paddingX * 2;
   const innerHeight = height - paddingY * 2;
   const barSlot = innerWidth / Math.max(1, buckets.length);
   const barWidth = Math.max(2, Math.min(9, barSlot * 0.45));
   const breakdownAvailable = buckets.some((bucket) => tokenParts(bucket) !== null);
+  const fallbackDays = buckets.filter((bucket) => bucket.displaySource === "router-fallback").length;
+  const sourceLabel = sourceKind === "subscription" ? "Daily account" : "Daily router";
+  const breakdownLabel = breakdownAvailable
+    ? " split into regular input, cached input, and output"
+    : " shown as account totals";
+  const ariaLabel = fallbackDays > 0
+    ? t(fallbackDays === 1 ? "usage.fallback.chartAriaOne" : "usage.fallback.chartAria", { count: fallbackDays })
+    : `${sourceLabel} token usage${breakdownLabel}`;
 
   return (
     <div
       className="us-chart-wrap"
       role="group"
-      aria-label={`${sourceKind === "subscription" ? "Daily account" : "Daily router"} token usage${breakdownAvailable ? " split into regular input, cached input, and output" : " shown as account totals"}${requestsAvailable ? " with request counts" : ""}`}
+      aria-label={ariaLabel}
     >
       <div className="us-chart-legend" aria-hidden="true">
         {breakdownAvailable ? (
           <>
+            {sourceKind === "subscription" && fallbackDays > 0 ? <span className="is-account">Account total</span> : null}
             <span className="is-regular">Regular input</span>
             <span className="is-cached">Cached input</span>
             <span className="is-output">Output</span>
           </>
         ) : <span className={sourceKind === "subscription" ? "is-account" : "is-token"}>{sourceKind === "subscription" ? "Account total" : "Tokens"}</span>}
-        {requestsAvailable ? <span className="is-request">Requests</span> : null}
+        {fallbackDays > 0 ? <span className="is-router-fallback">{t("usage.fallback.legend")}</span> : null}
       </div>
       <div className="us-chart-scale" aria-hidden="true">
         <strong>{compactNumber(tokenMax)}</strong>
@@ -835,24 +920,6 @@ function UsageChart({ buckets, requestsAvailable, sourceKind }: {
             />
           ))}
         </g>
-        {requestsAvailable ? (
-          <g className="us-chart-request-bars">
-            {buckets.map((bucket, index) => {
-              const barHeight = ((bucket.requests || 0) / requestMax) * innerHeight;
-              const x = paddingX + index * barSlot + barSlot / 2 - barWidth / 2;
-              return (
-                <rect
-                  key={`${bucket.startDate}-requests`}
-                  x={x}
-                  y={height - paddingY - barHeight}
-                  width={barWidth}
-                  height={Math.max(bucket.requests ? 2 : 0, barHeight)}
-                  rx="2"
-                />
-              );
-            })}
-          </g>
-        ) : null}
         <g className="us-chart-token-bars">
           {buckets.map((bucket, index) => {
             const x = paddingX + index * barSlot + barSlot / 2 - barWidth / 2;
@@ -862,7 +929,10 @@ function UsageChart({ buckets, requestsAvailable, sourceKind }: {
               return (
                 <rect
                   key={`${bucket.startDate}-tokens`}
-                  className="total"
+                  className={classNames(
+                    "total",
+                    bucket.displaySource === "router-fallback" && "router-fallback",
+                  )}
                   x={x}
                   y={height - paddingY - barHeight}
                   width={barWidth}
@@ -884,7 +954,10 @@ function UsageChart({ buckets, requestsAvailable, sourceKind }: {
                   return (
                     <rect
                       key={`${bucket.startDate}-${part.tone}`}
-                      className={part.tone}
+                      className={classNames(
+                        part.tone,
+                        bucket.displaySource === "router-fallback" && "router-fallback",
+                      )}
                       x={x}
                       y={y}
                       width={barWidth}
@@ -915,8 +988,10 @@ function UsageChart({ buckets, requestsAvailable, sourceKind }: {
           const label = [
             `${formatBucketDate(bucket.startDate)}.`,
             `Total: ${exactNumber(bucket.tokens)} tokens.`,
+            ...(bucket.displaySource === "router-fallback"
+              ? [t("usage.fallback.point")]
+              : []),
             ...breakdownItems.map((item) => `${item}.`),
-            ...(bucket.requests !== undefined ? [`Requests: ${exactNumber(bucket.requests)}.`] : []),
           ].join(" ");
           const edge = buckets.length === 1
             ? "single"
@@ -932,7 +1007,7 @@ function UsageChart({ buckets, requestsAvailable, sourceKind }: {
               aria-label={label}
               data-edge={edge}
             >
-              <ChartTooltip bucket={bucket} parts={parts} sourceKind={sourceKind} />
+              <ChartTooltip bucket={bucket} parts={parts} sourceKind={sourceKind} t={t} />
             </button>
           );
         })}
@@ -946,13 +1021,15 @@ function UsageChartHint({ sourceKind, buckets, range }: {
   buckets: UsageBucketWithRequests[];
   range: 7 | 30 | 90;
 }) {
-  const breakdownAvailable = buckets.some((bucket) => tokenParts(bucket) !== null);
+  const breakdownComplete = hasCompleteTokenBreakdown(buckets)
+    && (sourceKind !== "subscription"
+      || !buckets.some((bucket) => bucket.displaySource === "router-fallback"));
   if (sourceKind === "subscription") {
     return (
       <p className="us-chart-hint is-account" role="note">
         <strong>Account graph</strong>
         <span>
-          {breakdownAvailable
+          {breakdownComplete
             ? `The account API supplied the input/cache/output split for this ${range}-day range.`
             : "OpenAI supplies daily account totals only here; use “This router · all providers” for regular input, cached input, and output."}
         </span>
@@ -963,7 +1040,7 @@ function UsageChartHint({ sourceKind, buckets, range }: {
     <p className="us-chart-hint" role="note">
       <strong>Token key</strong>
       <span>
-        {breakdownAvailable
+        {breakdownComplete
           ? "Cached input is a subset of input, so it is shown as its own color and is not added a second time."
           : "This router snapshot did not report an input/cache/output split for the selected range."}
       </span>
@@ -993,14 +1070,24 @@ function tokenParts(bucket: UsageBucketWithRequests): TokenPart[] | null {
   ];
 }
 
-function ChartTooltip({ bucket, parts, sourceKind }: {
+// A range-level mix can claim the selected scope only when every day carrying
+// tokens has a split. Padded zero days need no split, but one account-total or
+// fallback-only partial bucket makes an aggregate input/cache/output sum
+// incomplete and therefore unsafe to label as the whole range.
+function hasCompleteTokenBreakdown(buckets: UsageBucketWithRequests[]): boolean {
+  const tokenBuckets = buckets.filter((bucket) => bucket.tokens > 0);
+  return tokenBuckets.length > 0
+    && tokenBuckets.every((bucket) => tokenParts(bucket) !== null);
+}
+
+function ChartTooltip({ bucket, parts, sourceKind, t }: {
   bucket: UsageBucketWithRequests;
   parts: TokenPart[] | null;
   sourceKind: UsageSource["kind"];
+  t: Translate;
 }) {
   const visibleParts = parts?.filter((part) => part.tokens > 0) ?? [];
-  const hasRequests = bucket.requests !== undefined;
-  const hasRows = visibleParts.length > 0 || hasRequests;
+  const hasRows = visibleParts.length > 0;
   return (
     <span className="us-chart-tooltip" aria-hidden="true">
       <span className="us-chart-tooltip-date">{formatBucketDate(bucket.startDate)}</span>
@@ -1015,21 +1102,19 @@ function ChartTooltip({ bucket, parts, sourceKind }: {
               <strong>{exactNumber(part.tokens)}</strong>
             </span>
           ))}
-          {hasRequests ? (
-            <span className="us-chart-tooltip-row is-requests">
-              <i aria-hidden="true" />
-              <span>Requests</span>
-              <strong>{exactNumber(bucket.requests)}</strong>
-            </span>
-          ) : null}
         </span>
-      ) : (
+      ) : bucket.displaySource !== "router-fallback" ? (
         <span className="us-chart-tooltip-note">
           {sourceKind === "subscription"
             ? "The account API reports a daily total for this day; input, cached input, and output are not available."
             : "Input and output details were not reported for this day."}
         </span>
-      )}
+      ) : null}
+      {bucket.displaySource === "router-fallback" ? (
+        <span className="us-chart-tooltip-note is-router-fallback">
+          {t("usage.fallback.tooltip")}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -1108,10 +1193,11 @@ function metricResetAt(metric: UsageMetric): number | undefined {
   return Number.isFinite(reset) ? reset : undefined;
 }
 
-function SourceRow({ source, selected, onSelect }: {
+function SourceRow({ source, selected, onSelect, t }: {
   source: UsageSource;
   selected: boolean;
   onSelect: () => void;
+  t: Translate;
 }) {
   const primary = source.metrics[0];
   const isSubscription = source.kind === "subscription";
@@ -1124,8 +1210,11 @@ function SourceRow({ source, selected, onSelect }: {
       ? bucketsForRange(source.buckets, 7).reduce((sum, bucket) => sum + bucket.tokens, 0)
       : null
     : source.totalTokens ?? source.last24hTokens;
+  const subscriptionUsesFallback = isSubscription
+    && bucketsForRange(source.buckets, 7)
+      .some((bucket) => bucket.displaySource === "router-fallback");
   const windowLabel = isSubscription
-    ? "Last 7 days · OpenAI"
+    ? subscriptionUsesFallback ? t("usage.fallback.lastSeven") : "Last 7 days · OpenAI"
     : source.totalTokens == null ? "Last 24 hours · router" : source.scopeLabel || `Last ${LEDGER_DAYS} days · router`;
   const recentRouterTokens = !isSubscription && source.last24hTokens != null
     ? `${compactNumber(source.last24hTokens)} tok · last 24h`
@@ -1222,12 +1311,15 @@ function mergeBuckets(groups: UsageBucketWithRequests[][]): UsageBucketWithReque
 }
 
 function bucketsForRange(buckets: UsageBucketWithRequests[], days: number): UsageBucketWithRequests[] {
-  const dates = bucketRange(buckets, days);
+  const dates = bucketRange(buckets, days) as UsageBucketWithRequests[];
   const requests = new Map(buckets.map((bucket) => [bucket.startDate, bucket.requests]));
   const hasRequestData = buckets.some((bucket) => bucket.requests !== undefined);
+  const hasDisplaySources = buckets.some((bucket) => bucket.displaySource !== undefined);
   return dates.map((bucket) => ({
     ...bucket,
-    ...(hasRequestData ? { requests: Number(requests.get(bucket.startDate)) || 0 } : {}),
+    ...(hasRequestData && (!hasDisplaySources || bucket.displaySource === "router-fallback")
+      ? { requests: Number(requests.get(bucket.startDate)) || 0 }
+      : {}),
   }));
 }
 

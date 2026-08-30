@@ -23,6 +23,12 @@ test("both dispatchers accept the stop command", () => {
   assert.match(windows, /"stop"\s*\{\s*Invoke-RouterNode "src\\service\.mjs" @\("stop"\)/);
 });
 
+test("doctor labels automatic failover counts as models rather than providers", () => {
+  const doctor = readFileSync(path.join(root, "src", "doctor.mjs"), "utf8");
+  assert.match(doctor, /failoverCounts\.subscription\} model\(s\) on your own providers/);
+  assert.doesNotMatch(doctor, /failoverCounts\.subscription\} of your own providers/);
+});
+
 test("both dispatchers expose reviewed external skill management", () => {
   const posix = readFileSync(path.join(root, "bin", "model-router"), "utf8");
   assert.match(posix, /\|chatgpt-session\|skills\|/);
@@ -102,3 +108,17 @@ for (const args of [["--version"], ["codex", "--version"]]) {
     },
   );
 }
+
+
+test("both dispatchers expose caller capability rotation", () => {
+  const posix = readFileSync(path.join(root, "bin", "model-router"), "utf8");
+  assert.match(posix, /\|caller-key\|/);
+  assert.match(readFileSync(path.join(root, "bin", "caller-key"), "utf8"), /caller-key\.mjs/);
+
+  const windows = readFileSync(path.join(root, "codex-router.ps1"), "utf8");
+  assert.match(windows, /"caller-key"/);
+  assert.match(
+    windows,
+    /"caller-key"\s*\{\s*Invoke-RouterNode "src\\caller-key\.mjs" \$Arguments/,
+  );
+});

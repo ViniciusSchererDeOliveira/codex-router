@@ -1,6 +1,19 @@
 import Foundation
 import WidgetKit
 
+// The current widget schema has no provenance field and labels the default
+// source as Codex account usage. Until the schema and widget presentation can
+// disclose provenance together, publish an absent account date as zero rather
+// than misrepresenting this Mac's router-only fallback as global account use.
+func routerWidgetDailyPoints(_ points: [DailyUsagePoint]) -> [RouterWidgetDailyPoint] {
+  points.map {
+    RouterWidgetDailyPoint(
+      date: $0.date,
+      tokens: $0.isRouterFallback ? 0 : RouterWidgetTokenCount.from($0.tokens)
+    )
+  }
+}
+
 @MainActor
 extension RouterStore {
   func widgetSnapshot(now: Date = Date()) -> RouterWidgetSnapshot {
@@ -12,12 +25,7 @@ extension RouterStore {
       availableProviders.insert(codex, at: 0)
     }
     let usageSources = availableProviders.map { provider in
-      let daily = dailyUsage(for: provider.id, days: 7).map {
-        RouterWidgetDailyPoint(
-          date: $0.date,
-          tokens: RouterWidgetTokenCount.from($0.tokens)
-        )
-      }
+      let daily = routerWidgetDailyPoints(dailyUsage(for: provider.id, days: 7))
       return RouterWidgetUsageSource(
         id: provider.id,
         name: provider.id == RouterWidgetSnapshot.defaultUsageSourceID
@@ -27,6 +35,7 @@ extension RouterStore {
         daily: daily
       )
     }
+    let selectedDaily = routerWidgetDailyPoints(dailyUsage(days: 7))
     return RouterWidgetSnapshot(
       schemaVersion: RouterWidgetSnapshot.schemaVersion,
       generatedAt: now,
@@ -34,13 +43,8 @@ extension RouterStore {
       activeChatCount: activeChatCount,
       selectedProviderID: selectedUsageProviderID,
       selectedProviderName: selectedUsageProvider.shortName,
-      todayTokens: RouterWidgetTokenCount.from(selectedTodayTokens),
-      daily: dailyUsage(days: 7).map {
-        RouterWidgetDailyPoint(
-          date: $0.date,
-          tokens: RouterWidgetTokenCount.from($0.tokens)
-        )
-      },
+      todayTokens: selectedDaily.last?.tokens ?? 0,
+      daily: selectedDaily,
       quotas: desktopQuotaRows.map {
         RouterWidgetQuota(
           id: $0.id,

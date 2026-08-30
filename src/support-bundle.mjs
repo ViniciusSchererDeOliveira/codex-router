@@ -31,7 +31,12 @@ import {
   runOperationProcessTree,
 } from "./process-tree.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
-import { PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
+import {
+  PROVIDERS,
+  RUNTIME_PROVIDERS,
+  providerNeedsNoKey,
+} from "./model-registry.mjs";
+import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
 import {
   CALLER_SECRET_PATH,
   CONFIG_PATH,
@@ -50,6 +55,8 @@ import {
   readProviderCredentialStore,
   redactCredentialText,
 } from "./provider-credential-store.mjs";
+import { providerApiKeyPoolsSupportSnapshot } from "./provider-api-key-pool.mjs";
+import { resolveStoredCredential } from "./provider-api-key-routing.mjs";
 
 const ANTIGRAVITY_RECORD_KEYS = new Set([
   "version",
@@ -287,6 +294,17 @@ export function createSupportBundle(options = {}) {
       ? { configured: true, source: status.source, persistent: status.persistent }
       : { configured: false };
   }
+  for (const provider of RUNTIME_PROVIDERS.values()) {
+    if (provider.generic !== true) continue;
+    const configured = genericProviderConfigured(provider.id);
+    credentialSources[provider.id] = configured
+      ? {
+          configured: true,
+          source: provider.credentialRef ? "bound credential reference" : "not required",
+          persistent: Boolean(provider.credentialRef),
+        }
+      : { configured: false };
+  }
   let selection;
   try {
     selection = providerSelectionStatus();
@@ -320,6 +338,12 @@ export function createSupportBundle(options = {}) {
     service: runJson("service.mjs", ["status"]),
     selection,
     credentialSources,
+    apiKeyPools: providerApiKeyPoolsSupportSnapshot({
+      resolveCredential: (providerId, credentialId) => {
+        const provider = PROVIDERS.get(providerId);
+        return provider ? resolveStoredCredential(provider, credentialId) : undefined;
+      },
+    }),
     ownership: detectLegacyInstallations(),
     install: sharableInstallManifest(),
     files: {

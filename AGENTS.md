@@ -486,14 +486,17 @@ upstream was dialled directly, chatgpt.com timed out, and the router answered
 set an opt-in that was already set -- in the LaunchAgent it had just unloaded.
 The service definition still looked correct at every glance.
 
-1. **Both verbs go through `src/service.mjs`.** `bin/start` starts the managed
-   service; `bin/stop` stops it. Never reintroduce a `bin/start` that execs
-   `src/start.mjs`, and never add a lifecycle verb that manages the service on
-   one side and bypasses it on the other.
+1. **Both verbs go through `src/service.mjs`.** `bin/start`, Windows
+   `codex-router.ps1 start`, and their corresponding stop paths manage the same
+   background-service layer. Never add a lifecycle verb that manages the service
+   on one side and bypasses it on the other.
 2. **The foreground supervisor stays reachable, never by accident.**
-   `bin/start --foreground` is the debugging path. It is opt-in because an
-   operator who types it has chosen to run unmanaged; an operator who types
-   `start` has not.
+   `bin/start --foreground` and `codex-router.ps1 start --foreground` are the
+   explicit debugging paths. They enter through `src/foreground-start.mjs`,
+   which holds the shared service-operation lock for the supervisor's lifetime.
+   That keeps caller-capability rotation/recovery from swapping generations
+   underneath an unmanaged foreground router. Direct `src/start.mjs` remains the
+   OS-service payload; do not route the managed service through the lifetime lock.
 3. **A silent environment adopts the recorded proxy.**
    `inheritedProxyEnvironment()` in `src/proxy-environment.mjs` reads the
    install manifest, and `src/start.mjs` applies it to `process.env` before it
@@ -507,10 +510,11 @@ The service definition still looked correct at every glance.
    unproxied. Do not widen the trigger to "no proxy reachable" or similar
    inference; the manifest records a decision, not a guess.
 5. **Coverage.** `test/proxy-environment.test.mjs` holds the restore contract
-   and `test/service-lifecycle.test.mjs` holds the dispatch: that `bin/start`
-   reaches the service layer, that `--foreground` reaches the supervisor, and
-   that a supervisor booted with a silent environment comes up carrying the
-   manifest's proxy.
+   and `test/service-lifecycle.test.mjs` holds the dispatch/ownership boundary:
+   normal start reaches the managed service layer, Windows matches POSIX, and
+   explicit foreground startup cannot boot while another service lifecycle
+   operation owns the shared lock. The same file keeps the silent-environment
+   proxy restore regression.
 
 ## The gateway is restarted in place; the router is not taken down with it
 
@@ -595,7 +599,19 @@ and every client saw a bare "Connection error" naming nothing.
    live probe is the regression oracle: no `OutputTextDelta without active
    item` warnings and the message occupies the next output index after
    reasoning.
-10. **Do not answer a gateway crash by moving the litellm pin.** The pin is a
+10. **LiteLLM custom-tool streaming uses a mixed lifecycle.** LiteLLM 1.96
+   converts Responses `type: "custom"` tools into Chat Completions functions
+   whose one required string property is `content`. On the return stream it can
+   already restore `response.output_item.added` / `done` as native
+   `custom_tool_call` items while still emitting legacy
+   `response.function_call_arguments.delta` / `done` events whose JSON wrapper
+   is `{ "content": "..." }`. `NamespaceToolCallTransform` may decode that
+   wrapper only when the source opening itself was already a native custom call;
+   the router's own custom-function bridge keeps its `{ "input": "..." }`
+   contract. Keep the streamed-input fingerprint check and fail closed when the
+   delta, terminal arguments, or output-item close disagree. The focused
+   namespace-relay test and Z.ai router fixture hold both sides of this boundary.
+11. **Do not answer a gateway crash by moving the litellm pin.** The pin is a
    security floor and a wheel-availability decision (see the lock section
    above), any change to it has to be proven by booting the proxy rather than by
    a successful resolve, and a router that survives its gateway is worth having

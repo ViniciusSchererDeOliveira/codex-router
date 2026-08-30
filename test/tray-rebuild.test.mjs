@@ -1400,6 +1400,27 @@ test("menu bar provider marks reuse ProviderIcon instead of a second map", () =>
   assert.doesNotMatch(view, /NSImage\(contentsOfFile:/);
 });
 
+test("the macOS tray bundles NanoGPT's official provider mark", () => {
+  const icon = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "Resources", "ProviderIcons", "nano-gpt.svg"),
+    "utf8",
+  );
+  const providerIcon = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "IslandOverlay.swift"),
+    "utf8",
+  );
+  const sources = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Resources", "PROVIDER-ICON-SOURCES.md"),
+    "utf8",
+  );
+
+  assert.match(icon, /aria-label="NanoGPT"/);
+  assert.match(icon, /data:image\/png;base64,/);
+  assert.match(providerIcon, /providerID == "nano-gpt" \{ return "nano-gpt" \}/);
+  assert.match(providerIcon, /providerID == "nano-gpt" \{ return "NanoGPT" \}/);
+  assert.match(sources, /https:\/\/nano-gpt\.com\/favicon\.ico/);
+});
+
 test("the status item keeps native square geometry in icon-only mode", () => {
   const source = readFileSync(
     path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
@@ -1416,6 +1437,22 @@ test("the status item keeps native square geometry in icon-only mode", () => {
     /\.frame\(width: store\.menuBarShowModelName \? Self\.reservedWidth : nil/,
   );
   assert.doesNotMatch(source, /\.frame\(minWidth: 18\)/);
+});
+
+test("the tray panel uses the status item's actual screen", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  const repositionStart = source.indexOf("private func reposition()");
+  assert.ok(repositionStart > 0, "TrayMenuController still owns panel placement");
+  const reposition = source.slice(
+    repositionStart,
+    source.indexOf("private func installMonitors()", repositionStart),
+  );
+  assert.match(reposition, /buttonWindow\.screen\?\.visibleFrame/);
+  assert.doesNotMatch(reposition, /NSScreen\.screens\.map\(\\\.visibleFrame\)/);
+  assert.doesNotMatch(reposition, /TrayPanelPlacement\.visibleFrame/);
 });
 
 test("the active router status is baked into one SVG template image", () => {

@@ -3,14 +3,23 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { validCallerSecret } from "./caller-auth.mjs";
-import { codexAuthStatus, findCodexBinary, runCodex } from "./codex-binary.mjs";
+import { codexAuthStatus, codexVersion, findCodexBinary, runCodex } from "./codex-binary.mjs";
 import { commandOnPath, spawnableCommand } from "./spawnable-command.mjs";
 import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
 import { privateFileIsProtected } from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { routedCatalogConfigured } from "./catalog.mjs";
-import { MODEL_BY_SLUG, PROVIDERS } from "./model-registry.mjs";
+import { nativeCatalogVersionDrift } from "./native-catalog-freshness.mjs";
+import { readNativeCatalogSource } from "./native-catalog-source.mjs";
+import {
+  MODEL_BY_SLUG,
+  MODELS,
+  PROVIDERS,
+  providerNeedsNoKey,
+  RUNTIME_PROVIDERS,
+  RUNTIME_PROVIDER_WARNINGS,
+} from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import {
   antigravityOAuthHealth,
@@ -37,7 +46,9 @@ import {
   INTERNAL_SECRET_PATH,
   LITELLM_CONFIG_PATH,
   MERGED_CATALOG_PATH,
+  NATIVE_CATALOG_PATH,
   PORTS,
+  SEARCH_SIDECARS_PATH,
   SOURCE_ROOT,
   TARGET,
 } from "./paths.mjs";
@@ -47,14 +58,24 @@ import {
   skillRequiredFields,
 } from "./skills-install.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
-import { credentialLabel, credentialStatus } from "./provider-credentials.mjs";
+import { credentialLabel } from "./provider-credentials.mjs";
+import { providerApiKeyPoolsSnapshot } from "./provider-api-key-pool.mjs";
+import {
+  effectiveProviderCredentialStatus,
+  resolveStoredCredential,
+} from "./provider-api-key-routing.mjs";
+import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
+import { trustedSearchProviderDescriptor } from "./search-sidecar-policy.mjs";
+import { readSearchSidecarState } from "./search-sidecar-state.mjs";
 import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import { stateOwnershipStatus } from "./state-owner.mjs";
 import {
+  canonicalProviderId,
   providerSelectionStatus,
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
 import { resolveVisionEngine } from "./vision-bridge.mjs";
+import { installedNativeVisionEngines } from "./vision-engines.mjs";
 import {
   readVisionBridgeSettings,
   visionBridgeConfigured,
@@ -450,22 +471,44 @@ const catalogOk =
     ? requiredModels.size > 0 &&
       [...requiredModels].every((slug) => catalogModels.some((model) => model.slug === slug))
     : !catalogModels.some((model) => MODEL_BY_SLUG.has(String(model.slug))));
+let nativeCaptureDrift;
+if (codexTarget && codex && existsSync(NATIVE_CATALOG_PATH)) {
+  let adopted = false;
+  try {
+    adopted = Boolean(readNativeCatalogSource());
+  } catch {
+    // Invalid source state is not adoption proof; keep checking the router-owned capture.
+  }
+  try {
+    nativeCaptureDrift = nativeCatalogVersionDrift(
+      JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8")),
+      codexVersion(),
+      { adopted },
+    );
+  } catch {
+    // The merged-catalog check below remains authoritative for unreadable files.
+  }
+}
 // The merged catalog is the file Codex reads. A harness install has no
 // equivalent: its offer is the settings route, checked by "Harness routing
 // config" below. An idle install deliberately publishes no routed models, so
 // its catalog is held to the same standard as inactive transport: nothing
 // routable may be offered.
 if (codexTarget) add(
-  catalogOk ? "ok" : "fail",
+  !catalogOk ? "fail" : nativeCaptureDrift ? "warn" : "ok",
   "Merged catalog",
-  catalogOk
-    ? idleInstall
-      ? "idle install; no routed models"
-      : routedTransportActive
-        ? `${requiredModels.size} routed models`
-        : "native-only; routed transport is inactive"
-    : MERGED_CATALOG_PATH,
-  "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
+  !catalogOk
+    ? MERGED_CATALOG_PATH
+    : nativeCaptureDrift
+      ? `native catalog captured by ${nativeCaptureDrift.captured}; installed ${nativeCaptureDrift.current}`
+      : idleInstall
+        ? "idle install; no routed models"
+        : routedTransportActive
+          ? `${requiredModels.size} routed models`
+          : "native-only; routed transport is inactive",
+  nativeCaptureDrift
+    ? "Run ./bin/refresh-catalog, then fully quit and reopen Codex."
+    : "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
 );
 // The catalog tells Codex which models to offer; the gateway config decides
 // which it can actually route. When a second checkout writes one of them the
@@ -522,21 +565,24 @@ add(
 // DeepSeek-only install for a feature nobody switched on. It still reports what
 // is true, just at the severity the situation has.
 //
-// This check sees routed models only, so a native (ChatGPT-plan) engine is
-// invisible to it and a signed-in install may well read images fine while this
-// says nothing resolves.
+// Codex may spend a signed-in native vision engine on the caller's behalf.
+// The same installed-native gate used by catalog/control keeps this diagnostic
+// aligned with what the running Codex route can actually resolve.
 const visionSettings = readVisionBridgeSettings();
-const visionEngine = resolveVisionEngine(() => requiredRoutedModels, visionSettings);
+const visionCandidates = codexTarget && codexAuth?.authenticated === true
+  ? [...requiredRoutedModels, ...installedNativeVisionEngines({ hidden: readHiddenModels() })]
+  : requiredRoutedModels;
+const visionEngine = resolveVisionEngine(() => visionCandidates, visionSettings);
 if (visionSettings.enabled && !visionEngine) {
   const asked = visionBridgeConfigured();
   add(
     asked ? "warn" : "ok",
     "Vision bridge",
-    visionSettings.engine
+    visionSettings.engine && !visionSettings.defaulted
       ? `pinned engine ${visionSettings.engine} is not an enabled model that reads images`
       : asked
-        ? "enabled, but no enabled provider offers a model that reads images"
-        : "on by default, but no enabled provider offers a model that reads images yet",
+        ? "enabled, but no enabled vision engine is available"
+        : "on by default, but no enabled vision engine is available yet",
     "Enable a provider with a vision model, sign in to ChatGPT, or run ./bin/model-router codex control vision-bridge setup for a local reader.",
   );
 } else if (visionEngine?.local) {
@@ -597,8 +643,8 @@ if (!failoverSettings.enabled) {
     "ok",
     "Model failover",
     failoverCounts.free
-      ? `on, ${failoverCounts.free} free model(s) first then ${failoverCounts.subscription} of your own`
-      : `on, ${failoverCounts.subscription} of your own providers -- no free model is curated, so nothing cheaper is tried first`,
+      ? `on, ${failoverCounts.free} free model(s) first then ${failoverCounts.subscription} model(s) on your own providers`
+      : `on, ${failoverCounts.subscription} model(s) on your own providers -- no free model is curated, so nothing cheaper is tried first`,
     failoverCounts.free
       ? "Run ./bin/model-router codex control failover chain <model-slug,...> to choose the order yourself."
       : "Free catalogs change without notice so none are checked in. Run ./bin/model-router codex curate-models opencode-free to give failover a free first stop.",
@@ -844,10 +890,154 @@ if (!credentialDiscoveryOff) {
   );
 }
 
+const apiKeyPools = providerApiKeyPoolsSnapshot(credentialDiscoveryOff
+  ? {}
+  : {
+      resolveCredential: (providerId, credentialId) => {
+        const provider = PROVIDERS.get(providerId);
+        return provider ? resolveStoredCredential(provider, credentialId) : undefined;
+      },
+    });
+if (apiKeyPools.configured) {
+  const poolCount = Object.keys(apiKeyPools.providers).length;
+  const credentialCount = Object.values(apiKeyPools.providers)
+    .reduce((total, pool) => total + pool.credentials.length, 0);
+  const unusable = Object.entries(apiKeyPools.providers)
+    .filter(([, pool]) => pool.readiness?.usable !== true)
+    .map(([providerId, pool]) => ({
+      providerId,
+      detail: `${providerId} (${pool.readiness?.reason || "invalid_pool_state"})`,
+    }));
+  const selectedApiProviders = new Set(
+    selection.providers
+      .map((providerId) => PROVIDERS.get(providerId))
+      .filter((provider) =>
+        provider?.kind === "openai-compatible" && !providerNeedsNoKey(provider))
+      .map((provider) => canonicalProviderId(provider.id)),
+  );
+  const selectedUnusable = unusable.filter(({ providerId }) =>
+    selectedApiProviders.has(providerId),
+  );
+  const summarize = (entries) => {
+    const details = entries.map(({ detail }) => detail);
+    return details.length > 8
+      ? `${details.slice(0, 8).join(", ")}, and ${details.length - 8} more`
+      : details.join(", ");
+  };
+  let poolStatus;
+  let poolDetail;
+  if (credentialDiscoveryOff) {
+    poolStatus = "warn";
+    poolDetail = apiKeyPools.valid
+      ? `${poolCount} authoritative pool(s) not evaluated while credential discovery is disabled`
+      : "authoritative pool state is invalid but is advisory while credential discovery is disabled";
+  } else if (!apiKeyPools.valid) {
+    poolStatus = selectedApiProviders.size ? "fail" : "warn";
+    poolDetail = "authoritative pool state is invalid; provider fallback is disabled";
+  } else if (selectedUnusable.length) {
+    poolStatus = "fail";
+    poolDetail = `selected authoritative pool unavailable: ${summarize(selectedUnusable)}; provider fallback is disabled`;
+  } else if (unusable.length) {
+    poolStatus = "warn";
+    poolDetail = `unselected authoritative pool unavailable: ${summarize(unusable)}; selected providers are unaffected`;
+  } else {
+    poolStatus = "ok";
+    poolDetail = `${poolCount} pool(s), ${credentialCount} credential reference(s)`;
+  }
+  add(
+    poolStatus,
+    "Provider API-key pools",
+    poolDetail,
+    "Restore an eligible resolvable credential, or delete the pool to return to the legacy single-key path.",
+  );
+}
+const poolAuthoritySnapshot = {
+  configured: apiKeyPools.configured,
+  valid: apiKeyPools.valid,
+  providers: Object.fromEntries(
+    Object.entries(apiKeyPools.providers).map(([providerId, pool]) => [
+      providerId,
+      {
+        configured: true,
+        valid: true,
+        readiness: pool.readiness,
+      },
+    ]),
+  ),
+};
+
+for (const warning of RUNTIME_PROVIDER_WARNINGS) {
+  add(
+    "fail",
+    "Generic provider registry",
+    warning,
+    "Repair or remove the malformed generic provider descriptor, then rerun the doctor.",
+  );
+}
+
+for (const provider of RUNTIME_PROVIDERS.values()) {
+  if (provider.generic !== true) continue;
+  const configured = genericProviderConfigured(provider.id);
+  const curated = MODELS.filter((model) => model.provider === provider.id).length;
+  add(
+    configured ? "ok" : "fail",
+    `${provider.displayName} generic provider`,
+    configured
+      ? `${provider.credentialRef ? "bound credential is available" : "no credential required"}; ${curated} curated model route(s)`
+      : "the bound credential is unavailable",
+    configured
+      ? `Run ./bin/curate-models ${provider.id} to review its routed models.`
+      : "Repair the provider-bound credential reference, then rerun the doctor.",
+  );
+  if (configured && curated === 0) {
+    add(
+      "warn",
+      `${provider.displayName} models`,
+      "provider is registered but has no curated model routes",
+      `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
+    );
+  }
+}
+
+if (TARGET === "codex" && existsSync(SEARCH_SIDECARS_PATH)) {
+  try {
+    for (const binding of readSearchSidecarState().bindings) {
+      const model = MODEL_BY_SLUG.get(binding.model);
+      const provider = RUNTIME_PROVIDERS.get(binding.providerId);
+      const ready = binding.enabled &&
+        Boolean(model) &&
+        model.searchTool === undefined &&
+        Boolean(provider) &&
+        trustedSearchProviderDescriptor(provider, { requireGeneric: true }) &&
+        genericProviderConfigured(binding.providerId);
+      add(
+        ready ? "ok" : binding.enabled ? "fail" : "warn",
+        `Search sidecar ${binding.model}`,
+        ready
+          ? `ready through ${binding.providerId}`
+          : binding.enabled
+            ? "binding, model eligibility, trusted provider, or credential is unavailable"
+            : "disabled",
+        `Run ./bin/model-router codex search-sidecar status ${binding.model}.`,
+      );
+    }
+  } catch (error) {
+    add(
+      "fail",
+      "Search sidecar state",
+      error instanceof Error ? error.message : String(error),
+      `Repair or remove ${SEARCH_SIDECARS_PATH}, then rerun the doctor.`,
+    );
+  }
+}
+
 for (const provider of PROVIDERS.values()) {
   if (provider.kind !== "openai-compatible") continue;
   if (credentialDiscoveryOff) continue;
-  const status = credentialStatus(provider, { persistent: true });
+  const status = effectiveProviderCredentialStatus(provider, {
+    persistent: true,
+    poolAuthoritySnapshot,
+  });
   const credentialType = credentialLabel(provider);
   const credentialNoun = credentialType === "API key" ? "key" : credentialType.toLowerCase();
   // A keyless provider has no key to name, so calling its row a "key" and

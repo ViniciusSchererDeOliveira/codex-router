@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { cooldownUntil, parseRateLimitHeaders, resetAt } = await import(
+const {
+  cooldownUntil,
+  parseRateLimitHeaders,
+  requestQuotaFromRateLimitHeaders,
+  resetAt,
+} = await import(
   "../src/rate-limit-headers.mjs"
 );
 
@@ -64,6 +69,47 @@ test("anthropic's prefixed headers parse through the same path", () => {
     resetAt: "2026-07-25T12:01:00.000Z",
   });
   assert.equal(snapshot.tokens, undefined);
+});
+
+test("only a complete request window becomes per-credential quota", () => {
+  assert.deepEqual(
+    requestQuotaFromRateLimitHeaders(
+      new Headers({
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "37",
+        "x-ratelimit-reset-requests": "60",
+        "x-ratelimit-limit-tokens": "9000",
+        "x-ratelimit-remaining-tokens": "1",
+      }),
+      { now: NOW },
+    ),
+    {
+      unit: "requests",
+      limit: 100,
+      remaining: 37,
+      resetAt: new Date(NOW + 60_000).toISOString(),
+      observedAt: new Date(NOW).toISOString(),
+    },
+  );
+  assert.equal(
+    requestQuotaFromRateLimitHeaders(
+      new Headers({ "x-ratelimit-limit-requests": "100" }),
+      { now: NOW },
+    ),
+    undefined,
+    "a partial window must not overwrite a complete observation",
+  );
+  assert.equal(
+    requestQuotaFromRateLimitHeaders(
+      new Headers({
+        "x-ratelimit-limit-tokens": "9000",
+        "x-ratelimit-remaining-tokens": "8000",
+      }),
+      { now: NOW },
+    ),
+    undefined,
+    "token headers are not attributed to a pooled key",
+  );
 });
 
 test("a provider that reports nothing yields no snapshot", () => {

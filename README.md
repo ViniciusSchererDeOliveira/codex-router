@@ -1,30 +1,55 @@
 # Codex Router
 
-Use Anthropic, Kimi, DeepSeek, xAI, GitHub Copilot, opencode Go, Command Code,
-and future external models inside the Codex App and CLI — or inside
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) or
-[Gemini CLI](https://github.com/google-gemini/gemini-cli) — through
-one local, credential-isolating router.
-The integration speaks the Responses API and merges external entries into
-Codex's native model catalog, so routed models appear in the normal picker
-next to the native GPT models. The same routed models publish into the
-harness as one provider route, so they appear in its Models page too, and into
-Gemini CLI through a Gemini-shaped endpoint the router serves for it.
+## Install everything (recommended)
 
-Every client shares one installation: one background service, one gateway, one
-set of provider credentials, one provider selection. Installing a second or
-third integration does not ask for a single key again.
+This is the default setup: **guided provider setup + Electron Control Center +
+tray/menu-bar app + macOS desktop widget**.
 
-The router is also the source of truth for routed model policy. Provider/model
-selection and external picker visibility are stored locally in the router state
-directory (`model-picker.json` is an explicit allowlist: only router models you
-show or select during curation are published), then republished to every
-installed client. A signed-in Codex
-installation keeps its native GPT catalog and native visibility client-owned;
-the router never lets an external overlay erase that original picker. Codex's
-active task remains in Codex configuration. Its default model does too unless
-you explicitly opt into a router-owned routed default; that choice is saved
-locally, survives rebuilds, and can be restored to the prior Codex default.
+### macOS or Linux
+
+Copy and paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh \
+  | sh -s -- --target codex --guided --with-tray
+```
+
+### Windows
+
+Copy and paste this into PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP "codex-router-install.ps1"
+Invoke-WebRequest https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.ps1 -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Target codex -Guided -WithTray
+```
+
+That is the complete installation. It asks which providers you want and keeps
+credential entry in private local prompts.
+
+When it finishes:
+
+1. Fully quit and reopen Codex.
+2. Start a new task and choose a routed model.
+3. Open **Codex Router** to use the Control Center.
+
+On macOS, open **Codex Router** from Spotlight or `~/Applications`; its icon
+stays in the menu bar when the Control Center is closed. The desktop widget is
+already included: choose **Settings → Dynamic Island → Desktop** from the
+menu-bar app to show it. It is a movable Codex Router panel rather than an item
+in macOS's **Edit Widgets** gallery.
+
+macOS does not have a public `.dmg` yet; the command above builds and installs
+the app locally. If it asks for the Xcode Command Line Tools, run
+`xcode-select --install` and repeat the command.
+
+## What Codex Router does
+
+Use Anthropic, Kimi, DeepSeek, xAI, GitHub Copilot, and other external models
+inside the Codex App and CLI. One local installation can also serve
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and
+[Gemini CLI](https://github.com/google-gemini/gemini-cli). Your provider
+credentials stay on your computer.
 
 Codex Router is an independent community project. It is not affiliated with or
 endorsed by OpenAI, GitHub, Anthropic, Moonshot AI, DeepSeek, OpenRouter,
@@ -48,11 +73,12 @@ If compatible authentication already exists, an agent can finish everything
 except the final app restart. Provider credentials are entered only through a
 hidden local terminal prompt.
 
-## Install
+## Other installation methods
 
-### Homebrew
+### Homebrew (macOS or Linux)
 
-If you already use Homebrew, install Codex Router from this repository's tap:
+Codex Router is not in `homebrew/core` yet, so `brew install codex-router` by
+itself does not work. For now, add this repository as a tap once:
 
 ```sh
 brew tap duolahypercho/codex-router https://github.com/duolahypercho/codex-router
@@ -65,6 +91,11 @@ Python, and build dependencies; `codex-router setup --guided` performs the
 one-time provider selection, credential-safe authentication, background
 service installation, and Codex integration. When setup finishes, fully quit
 and reopen Codex, create a new task, and choose a routed model from the picker.
+
+Homebrew is the **router/CLI-only** installation. It deliberately does not
+build or download the Electron Control Center, tray/menu-bar app, or macOS
+desktop widget during setup. If you want those, use the recommended installer
+at the top of this README instead.
 
 Upgrade an existing Homebrew installation with:
 
@@ -114,6 +145,13 @@ source. The release workflow generates `Formula/codex-router.rb` from
 
 Maintainers preparing the eventual `homebrew/core` submission should follow
 [`docs/HOMEBREW_CORE.md`](docs/HOMEBREW_CORE.md).
+
+### npm
+
+This project does not publish an npm-installable CLI yet. Do not use
+`npm install codex-router` for this project. Use the recommended installer or
+Homebrew above; a future npm package should use the scoped name
+`@duolahypercho/codex-router` so it cannot be confused with existing packages.
 
 ### Guided installer
 
@@ -194,6 +232,12 @@ Linux installations support the Codex CLI.
 | Muse Spark 1.2 (Meta) | `meta/muse-spark-1.2` | Meta Model API key |
 | Muse Spark 1.2 Contributor (Meta) | `meta/muse-spark-1.2-contributor` | Meta Model API key |
 | Muse Spark 1.1 (Meta) | `meta/muse-spark-1.1` | Meta Model API key |
+| Hy4 Preview (ClinePass) | `clinepass/tencent/hy4-preview` | ClinePass API key |
+| Hy4 Preview (Command Code) | `commandcode/hy4-preview` | Command Code API key |
+| Hy4 Preview (NanoGPT) | `nano-gpt/tencent/hy4-preview` | NanoGPT API key |
+| Hy4 Preview (Nous Research) | `nousresearch/tencent/hy4-preview` | Nous Portal API key |
+| Hy4 Preview (opencode Go) | `opencode-go/hy4-preview` | opencode Go/Zen API key |
+| Hy4 Preview (OpenRouter) | `openrouter/tencent/hy4-preview` | OpenRouter API key |
 | GLM-5.2 (ClinePass) | `clinepass/glm-5.2` | ClinePass API key |
 | Kimi K3 (ClinePass) | `clinepass/kimi-k3` | ClinePass API key |
 | Kimi K2.7 Code (ClinePass) | `clinepass/kimi-k2.7-code` | ClinePass API key |
@@ -250,15 +294,59 @@ from an OpenAI-compatible endpoint. A model is advertised only after its
 provider path has been verified to preserve Codex search-result items and
 tool-call history.
 
+For a routed model that has no verified standalone or provider-hosted search,
+Codex can instead use an explicit Perplexity Search sidecar. This is not a
+global fallback: the binding names one exact routed model, uses a separately
+stored Perplexity API key, and is refused for a model that already owns a
+search capability. The adapter implements Perplexity's raw
+[`POST /search`](https://docs.perplexity.ai/api-reference/search-post) API and
+accepts only Codex `search_query` commands; unsupported filters or other web
+commands fail by name.
+
+Create the trusted provider descriptor, enter the key at the hidden terminal
+prompt, and bind the model:
+
+```sh
+./bin/model-router codex providers generic add perplexity-search \
+  --name "Perplexity Search" \
+  --base-url https://api.perplexity.ai \
+  --adapter openai-chat
+./bin/model-router codex providers generic credential perplexity-search set
+./bin/model-router codex search-sidecar set PROVIDER/MODEL perplexity-search
+./bin/model-router codex search-sidecar status PROVIDER/MODEL
+```
+
+The credential command never accepts the key as an argument. The descriptor,
+credential reference, and per-model binding are private, atomic state; the key
+remains in the generic-provider protected credential file. Search requests use
+the generic-provider DNS-pinned, redirect-refusing transport. Result URLs must
+resolve publicly, credential-bearing citations are rejected, the whole
+operation shares one timeout across retry and backoff, and cache entries are
+scoped by caller account, model, provider, and credential reference. Removing
+the generic provider also removes its credential and every dependent sidecar
+binding. Fully quit and reopen Codex after changing a binding so its model
+catalog refreshes.
+
+On Windows, the same commands are available through `codex-router.ps1`:
+
+```powershell
+.\codex-router.ps1 providers generic add perplexity-search --name "Perplexity Search" --base-url https://api.perplexity.ai --adapter openai-chat
+.\codex-router.ps1 providers generic credential perplexity-search set
+.\codex-router.ps1 search-sidecar set PROVIDER/MODEL perplexity-search
+```
+
 ```sh
 npm install -g @xai-official/grok
 grok login --oauth
 ```
 
-Antigravity OAuth uses the router's own browser sign-in and the Google AI
-Pro/Ultra entitlement on the signed-in account. It needs neither a Gemini API
-key nor a separate Antigravity CLI. Signing in and enabling are separate so a
-re-authentication never replaces the rest of the provider selection:
+> [!WARNING]
+> **Antigravity OAuth is not a self-service provider in public builds today.**
+> It requires the client secret paired with the integration's OAuth client ID.
+> This project does not distribute that secret, and a Google AI Pro/Ultra
+> subscription, Gemini API key, Google account, or existing `agy` CLI login
+> does not provide a way to retrieve it. Do not use the old
+> `your-integration-client-secret` placeholder: it cannot work.
 
 Create a Google OAuth **Desktop app** client in a Google Cloud project you own:
 
@@ -442,6 +530,36 @@ enable the family:
 ./bin/model-router codex providers enable opencode-go
 ```
 
+An optional API-key pool can rotate between the two registry-declared
+OpenCode environment sources without copying either secret into pool or
+credential metadata. Export the values in an interactive shell (never put a
+key in a command argument or chat). If the managed router is already running,
+stop it before adding a new environment-backed entry: a running service cannot
+inherit a newly named shell variable, and the command refuses to publish a
+route the service could not authenticate.
+
+```sh
+codex-router key-pool opencode-go add-env OPENCODE_API_KEY
+codex-router key-pool opencode-go add-env OPENCODE_GO_API_KEY
+codex-router key-pool opencode-go policy round-robin
+codex-router key-pool opencode-go status
+```
+
+Then rerun the installer from that same shell with `--providers configured`
+(and the same target you installed originally). The installer copies only the
+allowlisted variables referenced by the pool into the owner-only service
+definition and starts it. A plain service restart is not enough because it
+replays the old definition. Rerun the installer after removing or deleting an
+environment-backed entry as well, so its old value is removed from the service
+definition.
+
+`pause <credential-id>` and `resume <credential-id>` change one entry without
+deleting its credential metadata. Once a pool exists it is authoritative: an
+empty, invalid, or unresolvable pool fails closed instead of silently spending
+the legacy single key. A pre-response `429` can rebind the request to another
+healthy entry; failover stops once response headers or body bytes have been
+committed.
+
 The desktop panel and macOS tray Settings tab provide both per-model controls
 and provider-level Select all / Unselect all actions for which registry-proven
 v2 models can run as subagents and which models appear in installed client
@@ -473,6 +591,7 @@ the operator explicitly selects them.
 | MiMo-V2.5 (opencode Go) | `opencode-go/mimo-v2.5` |
 | MiMo-V2.5-Pro (opencode Go) | `opencode-go/mimo-v2.5-pro` |
 | Hy3 (opencode Go) | `opencode-go/hy3` |
+| Hy4 Preview (opencode Go) | `opencode-go/hy4-preview` |
 | MiniMax M3 (opencode Go) | `opencode-go-messages/minimax-m3` |
 | MiniMax M2.7 (opencode Go) | `opencode-go-messages/minimax-m2.7` |
 | MiniMax M2.5 (opencode Go) | `opencode-go-messages/minimax-m2.5` |
@@ -536,6 +655,10 @@ the router refuses paid IDs and shows traffic-only usage when no quota header
 has been observed. Kilo's general SDK setup guide still asks external SDK
 users for an API key; this entry intentionally covers only the gateway's
 documented anonymous `:free` path.
+
+Kilo's catalog also advertises `tencent/hy4-preview`, but that ID is paid: it
+does not end in `:free`. The Kilo Free route deliberately filters it out rather
+than presenting HY4 as an anonymous model.
 
 ### Custom: one provider, many endpoints
 
@@ -635,6 +758,7 @@ CLI session.
 | GPT 5.5 (Command Code) | `commandcode/gpt-5.5` |
 | Gemini 3.5 Flash (Command Code) | `commandcode/gemini-3.5-flash` |
 | Hy3 (Command Code) | `commandcode/hy3-paid` |
+| Hy4 Preview (Command Code) | `commandcode/hy4-preview` |
 | Step 3.7 Flash (Command Code) | `commandcode/step-3.7-flash` |
 | Claude Sonnet 5 (Command Code) | `commandcode-messages/claude-sonnet-5` |
 | Claude Opus 4.8 (Command Code) | `commandcode-messages/claude-opus-4.8` |
@@ -748,20 +872,20 @@ often for the repository to pin and live-verify individual entries:
 | GitHub Copilot | `github-copilot` | Account-specific GitHub Copilot endpoint |
 | Chutes | `chutes` | `https://llm.chutes.ai/v1` |
 | OrcaRouter | `orca` | `https://api.orcarouter.ai/v1` |
-| NanoGPT | `nano-gpt` | `https://nano-gpt.com/api/v1` |
 
 `devin-cli` is the OAuth exception to this API-key table. After `devin auth
 login`, the Control Center and `./bin/curate-models devin-cli` read the model
 configuration available to that account through the installed Devin CLI; the
 provider still ships no preselected models.
 
-OpenRouter, Venice, and Nous Research are ordinary API-key providers with
+OpenRouter, NanoGPT, Venice, and Nous Research are ordinary API-key providers with
 live-reviewed checked-in routes in the model table. Use `bin/curate-models` for
 anything else their current account catalogs expose:
 
 | Provider | Provider ID | Base URL | Key from |
 | --- | --- | --- | --- |
 | OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| NanoGPT | `nano-gpt` | `https://nano-gpt.com/api/v1` | [nano-gpt.com](https://nano-gpt.com) |
 | Venice | `venice` | `https://api.venice.ai/api/v1` | [venice.ai/settings/api](https://venice.ai/settings/api) |
 | Nous Research (Hermes) | `nousresearch` | `https://inference-api.nousresearch.com/v1` | [portal.nousresearch.com](https://portal.nousresearch.com) |
 
@@ -997,7 +1121,23 @@ wire_api = "responses"
 ```
 
 The generated path is local caller authentication. Do not paste the complete
-managed URL into an issue.
+managed URL into an issue. If that capability may have been exposed, rotate it
+through the supported transaction instead of deleting state files by hand:
+
+```sh
+./bin/model-router codex caller-key rotate
+```
+
+On Windows use `./codex-router.ps1 caller-key rotate`. Rotation acquires the
+router's mutation locks, refuses partial managed client state, and refreshes only
+the caller URL/key fields of integrations that are already installed. A running
+router is stopped before the key swap, restarted afterward, and accepted only
+after the new capability returns a valid model list while the old one returns
+exactly `401`. An installed-but-stopped service stays stopped. A protected phase
+journal and rollback generation make an interrupted rotation recoverable without
+printing either key. Fully quit and reopen Codex (and restart a running Gemini
+CLI session) after success so cached client configuration cannot keep using the
+previous route.
 
 ### Run GPT-5.6 Sol at its documented 1M context window
 
@@ -1168,11 +1308,11 @@ For reading images only — cannot code:
   moondream            1.7 GB  captions-only
 ```
 
-The tray's **View more** panel also exposes the full 201-tag snapshot captured
-from the official Ollama pages for Gemma 4, Qwen 3.5/3.6/3.8, Nemotron 3 Super,
-Ornith, Nemotron 3, and Muse Glimmer, including quantized and MLX variants.
-Cloud aliases are listed for completeness but marked cloud-only and cannot be
-downloaded as local weights.
+The tray's **View more** panel also exposes the full 213-tag snapshot: official
+Ollama tags for Gemma 4, Qwen 3.5/3.6/3.8, Nemotron 3 Super, Ornith, Nemotron 3,
+and Muse Glimmer, plus the Ollama-compatible Unsloth GGUF variants of GLM-5.3
+and GLM-5.3-Flash. Cloud aliases are listed for completeness but marked
+cloud-only and cannot be downloaded as local weights.
 
 A tool template is a floor, not a prediction — it has been wrong in both
 directions here. What settles it is running the real client:
@@ -1716,9 +1856,10 @@ and rebuild notes.
 The app can also place a Dynamic-Island-style overlay at the top center of the
 active display. It follows the provider handling the latest request, reveals
 usage on hover, and expands on click. It is off on a new install; enable it
-under **Dynamic Island** in the tray Settings. The menu-bar panel is the
+under **Dynamic Island** in the tray Settings. Choose **Desktop** there instead
+for the movable quota-and-activity desktop widget. The menu-bar panel is the
 primary surface for the all-provider overview and configuration, and stays
-available whether or not the overlay is on.
+available whether or not either optional surface is on.
 
 ## Unified desktop app
 
@@ -1743,8 +1884,9 @@ the window.
 .\codex-router.ps1 tray install
 ```
 
-Tagged releases provide unsigned Windows and Linux tester packages for this
-unified application family: `model-router-<version>-windows-x64.exe` and
+[Download the latest Windows or Linux desktop package](https://github.com/duolahypercho/codex-router/releases/latest).
+Tagged releases provide unsigned tester packages for this unified application
+family: `model-router-<version>-windows-x64.exe` and
 `model-router-<version>-linux-x64.tar.gz` (containing the executable AppImage).
 They are frontends, so install the matching Codex Router version first. The
 universal macOS bundle remains an ad-hoc-signed CI artifact until Developer ID

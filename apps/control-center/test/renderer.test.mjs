@@ -14,7 +14,34 @@ const bridgeSource = String.raw`
 (() => {
   const calls = [];
   let navigationListener;
-  let usageDelayMs = 0;
+  const searchParams = new URLSearchParams(location.search);
+  let usageDelayMs = Number(searchParams.get("usageDelayMs")) || 0;
+  const snapshotDelayMs = Number(searchParams.get("snapshotDelayMs")) || 0;
+  const providerDelayMs = Number(searchParams.get("providerDelayMs")) || 0;
+  const accountDelay = searchParams.has("accountDelayMs")
+    ? Number(searchParams.get("accountDelayMs")) || 0
+    : null;
+  const providerUsageDelay = searchParams.has("providerUsageDelayMs")
+    ? Number(searchParams.get("providerUsageDelayMs")) || 0
+    : null;
+  const rejectAccountUsageRead = Number(searchParams.get("rejectAccountUsageRead")) || 0;
+  const staleAccountFailure = searchParams.get("staleAccountFailure") === "1";
+  const staleProviderUsage = searchParams.get("staleProviderUsage") === "1";
+  const fallbackUsage = searchParams.get("fallbackUsage") === "1";
+  const pollOnceMs = Number(searchParams.get("pollOnceMs")) || 0;
+  const healthPollOnceMs = Number(searchParams.get("healthPollOnceMs")) || 0;
+  const staleHealth = searchParams.get("staleHealth") === "1";
+  let accountUsageReads = 0;
+  let providerUsageReads = 0;
+  let healthReads = 0;
+  if (pollOnceMs > 0 || healthPollOnceMs > 0) {
+    const nativeSetInterval = window.setInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) => {
+      if (delay === 5 * 60_000 && pollOnceMs > 0) return window.setTimeout(callback, pollOnceMs, ...args);
+      if (delay === 1_000 && healthPollOnceMs > 0) return window.setTimeout(callback, healthPollOnceMs, ...args);
+      return nativeSetInterval(callback, delay, ...args);
+    };
+  }
   const subagents = { mode: "all", enabled: [], disabled: [], efforts: {}, proofs: {} };
   const selectedModel = {
     slug: "deepseek/deepseek-chat",
@@ -23,8 +50,8 @@ const bridgeSource = String.raw`
     provider: "deepseek",
     enabled: true,
     visible: true,
-    multiAgentVersion: "v1",
-    subagentCertification: "v1",
+    multiAgentVersion: "v2",
+    subagentCertification: "v2",
     reasoningLevels: ["low", "medium", "high"],
     contextWindow: 128000,
     inputModalities: ["text"],
@@ -67,7 +94,35 @@ const bridgeSource = String.raw`
     modelSettings: {
       subagents,
       picker: { hidden: [], visible: [selectedModel.slug], hasExplicitVisibility: true },
-      localModels: {},
+      localModels: {
+        available: [],
+        availableVision: [],
+        availableExplore: [{
+          tag: "hf.co/unsloth/GLM-5.3-Flash-GGUF:UD-IQ1_S",
+          family: "hf.co/unsloth/GLM-5.3-Flash-GGUF",
+          variant: "UD-IQ1_S",
+          displayName: "GLM-5.3-Flash · UD-IQ1_S",
+          sizeGb: 93.1,
+          context: 1048576,
+          fit: "too-large",
+          diskFit: "fits",
+          downloadable: true,
+          researchStatus: "Unsloth GGUF · 7 local quants",
+          researchCapabilities: ["vision", "tools", "thinking"],
+          researchNote: "Community quantization; capability and Codex checks run after pull.",
+        }],
+        families: [{
+          family: "hf.co/unsloth/GLM-5.3-Flash-GGUF",
+          displayName: "GLM-5.3-Flash",
+          variants: ["UD-IQ1_S"],
+        }],
+        installed: 0,
+        enabled: 0,
+        models: [],
+        totalGb: 0,
+        machine: "16 GB unified memory",
+        runtime: { installed: true, running: true, managed: true, version: "test" },
+      },
       visionBridge: { enabled: false },
     },
   };
@@ -142,12 +197,33 @@ const bridgeSource = String.raw`
 
   window.routerControl = Object.freeze({
     platform: navigator.platform.toLowerCase().includes("mac") ? "darwin" : "linux",
-    getSnapshot: async () => snapshot,
-    getProviders: async () => providers,
+    getSnapshot: async () => {
+      await new Promise((resolve) => setTimeout(resolve, snapshotDelayMs));
+      return snapshot;
+    },
+    getProviders: async () => {
+      await new Promise((resolve) => setTimeout(resolve, providerDelayMs));
+      return providers;
+    },
     getPresence: async () => ({ mode: "always" }),
-    getHealth: async () => ({ ok: true, activity: { state: "idle", active: [], activeCount: 0 } }),
+    getHealth: async () => {
+      healthReads += 1;
+      const read = healthReads;
+      await new Promise((resolve) => setTimeout(resolve, staleHealth && read === 1 ? 400 : 0));
+      return staleHealth && read === 1
+        ? { ok: false, error: "Stale health response", activity: { state: "offline", active: [], activeCount: 0 } }
+        : { ok: true, version: "health-" + read, activity: { state: "idle", active: [], activeCount: 0 } };
+    },
     getAccountUsage: async () => {
-      await new Promise((resolve) => setTimeout(resolve, usageDelayMs));
+      accountUsageReads += 1;
+      const read = accountUsageReads;
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        staleAccountFailure && read > 1 ? 0 : accountDelay ?? usageDelayMs,
+      ));
+      if ((staleAccountFailure && read === 1) || rejectAccountUsageRead === read) {
+        throw new Error("Account usage poll failed");
+      }
       return {
         fetchedAt: "2026-08-27T08:00:00.000Z",
         planType: "pro",
@@ -162,36 +238,63 @@ const bridgeSource = String.raw`
       };
     },
     getProviderUsage: async () => {
-      await new Promise((resolve) => setTimeout(resolve, usageDelayMs));
+      providerUsageReads += 1;
+      const read = providerUsageReads;
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        staleProviderUsage && read > 1 ? 0 : providerUsageDelay ?? usageDelayMs,
+      ));
+      const totalTokens = staleProviderUsage && read > 1 ? 24000 : 12000;
       return {
         fetchedAt: "2026-08-27T08:00:00.000Z",
-        providers: [{
-          id: "deepseek",
-          displayName: "DeepSeek",
-          credentialType: "api",
-          totalTokens: 12000,
-          requests: 8,
-          dailyUsageBuckets: [{ startDate: "2026-08-27", tokens: 12000, requests: 8 }],
-          account: {
-            status: "available",
-            metrics: [
-              {
-                kind: "quota",
-                label: "Monthly credits",
-                usedPercent: 25,
-                remainingPercent: 75,
-                resetAt: 1800000000,
-              },
-              {
-                kind: "quota",
-                label: "Rolling window",
-                usedPercent: 40,
-                remainingPercent: 60,
-                resetAt: 1790000000,
-              },
-            ],
+        providers: [
+          ...(fallbackUsage ? [{
+            id: "openai",
+            displayName: "OpenAI",
+            credentialType: "oauth",
+            totalTokens: 31_000,
+            requests: 3,
+            last24hTokens: 31_000,
+            last24hRequests: 3,
+            dailyUsageBuckets: [{
+              startDate: "2026-08-28",
+              tokens: 31_000,
+              requests: 3,
+              inputTokens: 25_000,
+              cachedInputTokens: 7_000,
+              outputTokens: 6_000,
+            }],
+          }] : []),
+          {
+            id: "deepseek",
+            displayName: "DeepSeek",
+            credentialType: "api",
+            totalTokens,
+            requests: 8,
+            last24hTokens: totalTokens,
+            last24hRequests: 8,
+            dailyUsageBuckets: [{ startDate: "2026-08-27", tokens: totalTokens, requests: 8 }],
+            account: {
+              status: "available",
+              metrics: [
+                {
+                  kind: "quota",
+                  label: "Monthly credits",
+                  usedPercent: 25,
+                  remainingPercent: 75,
+                  resetAt: 1800000000,
+                },
+                {
+                  kind: "quota",
+                  label: "Rolling window",
+                  usedPercent: 40,
+                  remainingPercent: 60,
+                  resetAt: 1790000000,
+                },
+              ],
+            },
           },
-        }],
+        ],
       };
     },
     discoverProviderModels: async (providerId) => catalog(providerId),
@@ -222,6 +325,8 @@ const bridgeSource = String.raw`
       return true;
     },
     setUsageDelay: (milliseconds) => { usageDelayMs = milliseconds; },
+    usageReads: () => ({ account: accountUsageReads, provider: providerUsageReads }),
+    healthReads: () => healthReads,
   });
 })();
 `;
@@ -363,6 +468,31 @@ test("the production renderer exposes model discovery and picker actions", { tim
     assert.equal(await connectMenu.getByRole("menuitem").count(), 5);
     await page.keyboard.press("Escape");
 
+    // A single-route model's thinking menu opens below its definition-list
+    // cell. The menu used to be clipped by that cell's generic text-overflow
+    // rule, leaving only its top edge visible.
+    const selectedFamily = page.locator(".pm-family-row").filter({ hasText: "DeepSeek Chat" });
+    await selectedFamily.locator(".pm-family-open").click();
+    const thinkingTrigger = selectedFamily.getByRole("button", {
+      name: "DeepSeek Chat DeepSeek subagent thinking effort",
+    });
+    await thinkingTrigger.click();
+    const thinkingMenu = selectedFamily.locator(".pm-effort-menu");
+    await thinkingMenu.waitFor();
+    const detailsCell = selectedFamily.locator(".pm-model-details-controls");
+    assert.equal(await detailsCell.evaluate((element) => getComputedStyle(element).overflow), "visible");
+    const [cellBox, menuBox] = await Promise.all([detailsCell.boundingBox(), thinkingMenu.boundingBox()]);
+    assert.ok(cellBox && menuBox);
+    assert.ok(menuBox.y + menuBox.height > cellBox.y + cellBox.height);
+    assert.equal(await page.evaluate(({ x, y }) => (
+      Boolean(document.elementFromPoint(x, y)?.closest(".pm-effort-menu"))
+    ), {
+      x: menuBox.x + menuBox.width / 2,
+      y: menuBox.y + menuBox.height - 2,
+    }), true);
+    await page.keyboard.press("Escape");
+    await selectedFamily.locator(".pm-family-open").click();
+
     // A route that is only known to the registry still has to be findable, and
     // has to say which connection it is waiting for.
     const modelSearch = page.locator('input[placeholder="Search models"]');
@@ -433,6 +563,238 @@ test("the production renderer exposes model discovery and picker actions", { tim
       ["catalog-addable"],
     ]);
     assert.equal(calls.some((call) => call.name === "setPickerModels" && call.args[0] === true), true);
+
+    // Huge community GGUFs stay guarded, but the explicit oversized-model
+    // acknowledgement must make their exact Ollama tag selectable. Otherwise
+    // the catalog advertises GLM while forcing the operator to retype it.
+    await page.getByRole("button", { name: "Local", exact: true }).click();
+    await page.getByRole("heading", { name: "Local", exact: true }).waitFor();
+    const glmFamily = page.locator(".lhc-catalog-family").filter({ hasText: "GLM-5.3-Flash" });
+    await glmFamily.locator(".lhc-catalog-family-trigger").click();
+    const glmRow = glmFamily.locator(".lhc-catalog-model").filter({ hasText: "UD-IQ1_S" });
+    const glmSelect = glmRow.getByRole("button", { name: "Select", exact: true });
+    assert.equal(await glmSelect.isDisabled(), true);
+    await page.getByRole("checkbox", { name: "Allow a model larger than the router recommends for this machine" }).check();
+    assert.equal(await glmSelect.isEnabled(), true);
+    await glmSelect.click();
+    assert.equal(
+      await page.getByRole("textbox", { name: "Model tag or Ollama URL" }).inputValue(),
+      "hf.co/unsloth/GLM-5.3-Flash-GGUF:UD-IQ1_S",
+    );
+    assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("fallback-only splits do not claim account breakdown or a complete range mix", { timeout: 120_000 }, async () => {
+  assert.equal(existsSync(path.join(dist, "index.html")), true, "npm test must build the renderer first");
+  assert.ok(chromiumPath, "No Chromium executable is available for the Control Center renderer test.");
+
+  const { url, close } = await serveRenderer();
+  const browser = await chromium.launch({
+    executablePath: chromiumPath,
+    headless: true,
+    args: process.platform === "linux" ? ["--no-sandbox"] : [],
+  });
+  const pageErrors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    page.setDefaultTimeout(10_000);
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+
+    await page.goto(`${url}?fallbackUsage=1`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForFunction(() => window.routerControlTest.navigationReady());
+    assert.equal(
+      await page.evaluate(() => window.routerControlTest.navigate({ destination: "usage", sourceId: "openai" })),
+      true,
+    );
+    await page.getByRole("heading", { name: "Usage", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('select[aria-label="Usage source"]')?.value === "chatgpt-subscription");
+    await page.locator(".us-chart-token-bars rect.router-fallback").first().waitFor();
+    await page.getByText(/1 date uses local router fallback\.$/).waitFor();
+    await page.getByText(/1 date is filled from this router's local ChatGPT meter/).waitFor();
+    assert.equal(
+      await page.locator(".us-chart-wrap").getAttribute("aria-label"),
+      "Daily account token usage with local router fallback on 1 date",
+    );
+    assert.doesNotMatch(await page.locator("body").innerText(), /\b1 dates\b/i);
+
+    assert.equal(
+      await page.getByText("The account API supplied the input/cache/output split for this 30-day range.", { exact: true }).count(),
+      0,
+    );
+    await page.getByText(
+      "OpenAI supplies daily account totals only here; use “This router · all providers” for regular input, cached input, and output.",
+      { exact: true },
+    ).waitFor();
+    assert.equal(await page.locator('.us-token-mix[aria-label="Token mix for selected 30-day range"]').count(), 0);
+    assert.equal(await page.locator(".us-token-mix").count(), 0);
+    assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("independent control-center reads reveal each ready page region", { timeout: 120_000 }, async () => {
+  assert.equal(existsSync(path.join(dist, "index.html")), true, "npm test must build the renderer first");
+  assert.ok(chromiumPath, "No Chromium executable is available for the Control Center renderer test.");
+
+  const { url, close } = await serveRenderer();
+  const browser = await chromium.launch({
+    executablePath: chromiumPath,
+    headless: true,
+    args: process.platform === "linux" ? ["--no-sandbox"] : [],
+  });
+  const pageErrors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    page.setDefaultTimeout(10_000);
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+
+    await page.goto(`${url}?snapshotDelayMs=3000&accountDelayMs=4000`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    // Only the responsiveness checks use the tight budget. A cold browser
+    // navigation includes process and module startup and needs a normal timeout.
+    page.setDefaultTimeout(1_500);
+    await page.getByRole("heading", { name: "Dashboard", exact: true }).waitFor();
+    await page.locator(".service-health-strip").waitFor();
+    await page.locator('.db-breakdown-list[aria-label="Providers usage breakdown"]')
+      .getByText("DeepSeek", { exact: true })
+      .waitFor();
+    assert.equal(await page.locator(".db-breakdown-panel .panel-skeleton").count(), 0);
+
+    await page.getByRole("button", { name: "Models", exact: true }).click();
+    await page.getByRole("heading", { name: "Models", exact: true }).waitFor();
+    const connections = page.locator(".pm-connections:not(.pm-connections-loading)");
+    await connections.waitFor();
+    assert.match(await connections.innerText(), /DeepSeek/);
+    await page.locator(".pm-models-loading").waitFor();
+
+    page.setDefaultTimeout(7_000);
+    await page.locator(".pm-family-row").filter({ hasText: "DeepSeek Chat" }).waitFor();
+    assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("usage polling surfaces current rejections, recovers, and ignores older results", { timeout: 120_000 }, async () => {
+  assert.equal(existsSync(path.join(dist, "index.html")), true, "npm test must build the renderer first");
+  assert.ok(chromiumPath, "No Chromium executable is available for the Control Center renderer test.");
+
+  const { url, close } = await serveRenderer();
+  const browser = await chromium.launch({
+    executablePath: chromiumPath,
+    headless: true,
+    args: process.platform === "linux" ? ["--no-sandbox"] : [],
+  });
+  const pageErrors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    page.setDefaultTimeout(10_000);
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+
+    await page.goto(`${url}?providerUsageDelayMs=400&staleProviderUsage=1&rejectAccountUsageRead=2&pollOnceMs=50`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => {
+      const reads = window.routerControlTest.usageReads();
+      return reads.account >= 2 && reads.provider >= 2;
+    });
+    await page.getByText("Account usage poll failed", { exact: true }).waitFor();
+    await page.waitForTimeout(450);
+    assert.equal(
+      await page.locator('.db-breakdown-list[aria-label="Providers usage breakdown"] .db-breakdown-value').innerText(),
+      "24k",
+    );
+    await page.getByRole("button", { name: "Refresh all data", exact: true }).click();
+    await page.getByText("Account usage poll failed", { exact: true }).waitFor({ state: "detached" });
+    assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("an older rejected usage read cannot replace a newer success with a warning", { timeout: 120_000 }, async () => {
+  assert.equal(existsSync(path.join(dist, "index.html")), true, "npm test must build the renderer first");
+  assert.ok(chromiumPath, "No Chromium executable is available for the Control Center renderer test.");
+
+  const { url, close } = await serveRenderer();
+  const browser = await chromium.launch({
+    executablePath: chromiumPath,
+    headless: true,
+    args: process.platform === "linux" ? ["--no-sandbox"] : [],
+  });
+  const pageErrors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    page.setDefaultTimeout(10_000);
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+
+    await page.goto(`${url}?accountDelayMs=400&staleAccountFailure=1&pollOnceMs=50`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => window.routerControlTest.usageReads().account >= 2);
+    await page.waitForTimeout(450);
+    assert.equal(await page.getByText("Account usage poll failed", { exact: true }).count(), 0);
+    assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
+  } finally {
+    await browser.close();
+    await close();
+  }
+});
+
+test("health polling and core refresh share latest-wins ordering", { timeout: 120_000 }, async () => {
+  assert.equal(existsSync(path.join(dist, "index.html")), true, "npm test must build the renderer first");
+  assert.ok(chromiumPath, "No Chromium executable is available for the Control Center renderer test.");
+
+  const { url, close } = await serveRenderer();
+  const browser = await chromium.launch({
+    executablePath: chromiumPath,
+    headless: true,
+    args: process.platform === "linux" ? ["--no-sandbox"] : [],
+  });
+  const pageErrors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    page.setDefaultTimeout(10_000);
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+
+    await page.goto(`${url}?staleHealth=1&healthPollOnceMs=50`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => window.routerControlTest.healthReads() >= 2);
+    await page.waitForTimeout(450);
+    assert.match(await page.locator(".service-health-strip").innerText(), /ALL CLEAR/);
+    assert.match(
+      await page.getByRole("listitem", { name: /^Router state:/ }).getAttribute("aria-label"),
+      /version health-2/,
+    );
     assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
   } finally {
     await browser.close();

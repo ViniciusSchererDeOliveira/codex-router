@@ -6,6 +6,7 @@ import { STATE_DIR } from "./paths.mjs";
 import { upstreamFailureKind } from "./error-translation.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { canonicalProviderId } from "./provider-selection.mjs";
+import { hasProviderTransportError } from "./transport-failure.mjs";
 
 // Keeping a turn alive when the provider it was routed to has no usage left.
 //
@@ -81,7 +82,15 @@ function isoOrUndefined(value) {
 // operator an incident they would want to see.
 export function classifyRoutedFailure({ status, bodyText, retryAfterSeconds, now } = {}) {
   const code = Number(status);
-  if (!Number.isFinite(code) || code < 400 || code >= 500) return { swap: false };
+  if (!Number.isFinite(code) || code < 400) return { swap: false };
+  // The local provider forwarder writes this reserved marker only before it
+  // has committed a response. A generic provider 5xx remains an application
+  // failure and is never switched away silently.
+  if (code >= 500) {
+    return hasProviderTransportError(bodyText)
+      ? { swap: true, reason: "transport" }
+      : { swap: false };
+  }
   const at = nowMs(now);
   const retryAfter = Number(retryAfterSeconds);
   const kind = upstreamFailureKind({ status: code, bodyText });

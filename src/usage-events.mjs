@@ -156,6 +156,12 @@ export function recordUsageEvent({
   // who simply changed models, which is the difference between "your provider
   // is empty" and "you switched".
   failoverFrom,
+  // Codex standalone search normally spends the caller's native ChatGPT
+  // session. These fields distinguish an explicitly configured external
+  // sidecar request and whether it was served from its account-scoped cache.
+  searchSidecar,
+  searchCacheHit,
+  searchResults,
   at = Date.now(),
 }) {
   const event = {
@@ -189,6 +195,13 @@ export function recordUsageEvent({
     ...(safeRetryCount(retries) !== undefined ? { retries: safeRetryCount(retries) } : {}),
     ...(typeof failoverFrom === "string" && failoverFrom.trim()
       ? { failoverFrom: safeText(failoverFrom, "unknown") }
+      : {}),
+    ...(searchSidecar === true ? { searchSidecar: true } : {}),
+    ...(searchSidecar === true && typeof searchCacheHit === "boolean"
+      ? { searchCacheHit }
+      : {}),
+    ...(searchSidecar === true && safeTokenCount(searchResults) !== undefined
+      ? { searchResults: safeTokenCount(searchResults) }
       : {}),
     ...(safeTokenCount(inputTokens) !== undefined
       ? { inputTokens: safeTokenCount(inputTokens) }
@@ -448,6 +461,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
         const toolResultBytesAfter = safeTokenCount(event.toolResultBytesAfter);
         const toolResultBytesSaved = safeTokenCount(event.toolResultBytesSaved);
         const toolResultShapeBytesSaved = safeTokenCount(event.toolResultShapeBytesSaved);
+        const searchResults = safeTokenCount(event.searchResults);
         return {
           ...(event.meteringVersion === 1 ? { meteringVersion: 1 } : {}),
           at: event.at,
@@ -483,6 +497,13 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
             ? { emptyCompletionPreludeLimit: event.emptyCompletionPreludeLimit }
             : {}),
           ...(retries !== undefined ? { retries } : {}),
+          ...(event.searchSidecar === true ? { searchSidecar: true } : {}),
+          ...(event.searchSidecar === true && typeof event.searchCacheHit === "boolean"
+            ? { searchCacheHit: event.searchCacheHit }
+            : {}),
+          ...(event.searchSidecar === true && searchResults !== undefined
+            ? { searchResults }
+            : {}),
           ...(inputTokens !== undefined ? { inputTokens } : {}),
           ...(billedInputTokens !== undefined ? { billedInputTokens } : {}),
           ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),

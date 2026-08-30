@@ -63,12 +63,21 @@ import {
   PORTS,
   loopback,
 } from "./paths.mjs";
-import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs";
+import {
+  MODEL_BY_SLUG,
+  RUNTIME_PROVIDERS,
+  providerForModel,
+} from "./model-registry.mjs";
 import { createHealthCache } from "./health-cache.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
 import { nativeContextVariantBase } from "./native-context-variants.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
+import {
+  executeSearchSidecar,
+  SearchSidecarError,
+} from "./search-sidecar.mjs";
+import { searchSidecarBindingForModel } from "./search-sidecar-state.mjs";
 import {
   canonicalProviderId,
   readProviderSelection,
@@ -121,6 +130,11 @@ import {
 } from "./subagent-proofs.mjs";
 import { forgetChildSpawn, observeChildTurn } from "./subagent-turns.mjs";
 import { subagentEffort } from "./multi-agent-state.mjs";
+import {
+  rankSubagentCandidates,
+  subagentEligibility,
+  subagentFallbackPlan,
+} from "./subagent-routing.mjs";
 import {
   activityMetadataFromHeaders,
   threadIdFromHeaders,
@@ -1045,8 +1059,10 @@ async function probeService(url) {
 
 async function healthPayload() {
   const enabled = new Set(readProviderSelection());
-  const apiEnabled = [...PROVIDERS.values()].some(
-    (provider) => enabled.has(provider.id) && provider.kind === "openai-compatible",
+  const apiEnabled = [...RUNTIME_PROVIDERS.values()].some(
+    (provider) => provider.kind === "openai-compatible" && (
+      provider.generic === true || enabled.has(provider.id)
+    ),
   );
   const [oauth, api, grokOauth, gateway] = await Promise.all([
     enabled.has("kimi-oauth")
@@ -1088,6 +1104,17 @@ async function healthPayload() {
     grokOauth,
     gateway,
   };
+}
+
+// Generic providers are enabled by their own explicit descriptor and never
+// enter the built-in provider-selection document. The runtime registry
+// contains only descriptors whose enabled flag is true, so presence there is
+// the generic equivalent of a selected built-in provider. Credential
+// readiness remains the API forwarder's boundary, where an unavailable bound
+// reference produces the promised 503 instead of being mislabeled as hidden.
+function routeProviderEnabled(providerId) {
+  const provider = RUNTIME_PROVIDERS.get(providerId);
+  return provider?.generic === true || readProviderSelection().includes(providerId);
 }
 
 function messageItem(text) {
@@ -1730,7 +1757,10 @@ function carryReasoningThroughInput(input, { nativeThinking = false } = {}) {
 // endpoint has proved that it rejects a prefilled model turn.
 function requiresTrailingUserTurn(route) {
   const provider = providerForModel(route);
-  if (provider?.id === "gemini-api" || provider?.ownedBy?.toLowerCase?.() === "google") {
+  if (
+    provider?.generic !== true &&
+    (provider?.id === "gemini-api" || provider?.ownedBy?.toLowerCase?.() === "google")
+  ) {
     return true;
   }
   return route?.requiresTrailingUserTurn === true;
@@ -2955,6 +2985,34 @@ function failoverCandidates({ route, agedInput, flattenedNamespaces, chain }) {
   );
 }
 
+// Transport failover for a child turn is stricter than the general quota path:
+// every destination must be the exact checked-in v2 route Codex was allowed to
+// spawn as an agent. Runtime health may remove a route, but it cannot certify
+// one or change its provider identity.
+function subagentTransportFailoverCandidates({ request, route, agedInput, chain }) {
+  if (!request.headers["x-openai-subagent"]) return [];
+  // The header describes the caller's turn; it is not certification evidence.
+  // Require the failed route itself to carry the repository's exact v2 proof
+  // before that metadata can select this stricter recovery path.
+  if (subagentEligibility(route)) return [];
+  const hidden = readHiddenModels();
+  const ranked = rankSubagentCandidates(
+    selectedConfiguredListedModels().filter((model) => !hidden.has(model.slug)),
+    {
+      chain,
+      requiredCapabilities: [
+        "tools",
+        ...(inputHasImage(agedInput) ? ["vision"] : []),
+      ],
+    },
+  );
+  return subagentFallbackPlan(ranked, {
+    failureKind: "transport",
+    failedTarget: route,
+    maxAttempts: MAX_FAILOVER_HOPS,
+  })?.attempts || [];
+}
+
 function routedRequestFits(route, body) {
   const estimatedTokens = estimateInputTokens(body);
   return (
@@ -3003,12 +3061,20 @@ async function attemptModelFailover({
 }) {
   const settings = readFailoverSettings();
   if (!settings.enabled) return undefined;
-  const candidates = failoverCandidates({
-    route,
-    agedInput,
-    flattenedNamespaces,
-    chain: settings.chain,
-  }).slice(0, MAX_FAILOVER_HOPS);
+  const transportFallback = verdict.reason === "transport";
+  const candidates = transportFallback
+    ? subagentTransportFailoverCandidates({
+        request,
+        route,
+        agedInput,
+        chain: settings.chain,
+      })
+    : failoverCandidates({
+        route,
+        agedInput,
+        flattenedNamespaces,
+        chain: settings.chain,
+      }).slice(0, MAX_FAILOVER_HOPS);
   if (!candidates.length) {
     logFailover(route, undefined, verdict.reason, status, "no-candidate");
     return undefined;
@@ -3055,11 +3121,23 @@ async function attemptModelFailover({
     // The candidate failed too. If it failed the same way, believe it and take
     // it out of the running for the next turn as well; anything else is that
     // model's own problem and not evidence about the operator's chosen one.
+    const hopBodyText = await boundedResponseText(
+      upstream,
+      MAX_BUFFERED_RESPONSE_BYTES,
+      signal,
+    );
     const hopVerdict = classifyRoutedFailure({
       status: upstream.status,
-      bodyText: await boundedResponseText(upstream, MAX_BUFFERED_RESPONSE_BYTES, signal),
+      bodyText: hopBodyText,
       retryAfterSeconds: Number(upstream.headers.get("retry-after")),
     });
+    // A transport retry stops as soon as another provider gives any real HTTP
+    // answer. Walking onward would turn an application failure into a silent
+    // cross-provider retry, outside the authority this path was given.
+    if (transportFallback && hopVerdict.reason !== "transport") {
+      logFailover(route, model, verdict.reason, status, upstream.status);
+      return { route: model, built, upstream, failedBodyText: hopBodyText };
+    }
     if (hopVerdict.swap) recordProviderCooldown(model.provider, hopVerdict);
     logFailover(route, model, verdict.reason, status, upstream.status);
   }
@@ -3141,11 +3219,11 @@ async function handleResponses(request, response, requestUrl) {
     // failure for a routing error.
     if (!registeredRoute && requestedModel) {
       const redirect = MODEL_BY_SLUG.get(readNativeRedirect());
-      if (redirect && readProviderSelection().includes(redirect.provider)) {
+      if (redirect && routeProviderEnabled(redirect.provider)) {
         registeredRoute = redirect;
       }
     }
-    route = registeredRoute && readProviderSelection().includes(registeredRoute.provider)
+    route = registeredRoute && routeProviderEnabled(registeredRoute.provider)
       ? registeredRoute
       : undefined;
     if (registeredRoute && !route) {
@@ -3456,7 +3534,7 @@ async function handleResponses(request, response, requestUrl) {
           adoptRoute(moved.route, moved.built);
           upstream = moved.upstream;
           upstreamStatus = upstream.status;
-          failedBodyText = undefined;
+          failedBodyText = moved.failedBodyText;
         }
       }
     }
@@ -4083,14 +4161,84 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
   const activity = beginRequestActivity({ request, response, controller });
   let clientGone = false;
   let requestedModel = defaultModel;
+  let servingProvider = "openai";
   bindClientAbort(request, response, () => {
     clientGone = true;
     controller.abort();
   });
   try {
     if (!requireCodexTransport(request, response)) return;
-    // Image and web-search turns are native-only; an idle install refuses
-    // them locally rather than forwarding to chatgpt.com.
+    let body;
+    let payload;
+    const searchRequest = defaultModel === "web-search";
+    // A search binding is selected by the exact routed slug inside Codex's
+    // authenticated search request. Parse it before asking for a native
+    // session; otherwise a deliberately external sidecar would still require
+    // and leak the request to ChatGPT. Image requests keep their old ordering.
+    if (searchRequest) {
+      const encoded = await readRequestBody(request, { signal: controller.signal });
+      body = decodeBody(encoded, request.headers["content-encoding"]);
+      payload = await parseBodyAsync(body);
+      requestedModel = typeof payload.model === "string" ? payload.model : defaultModel;
+      const binding = searchSidecarBindingForModel(requestedModel);
+      if (binding) {
+        servingProvider = `search:${binding.providerId}`;
+        activity.setRoute({
+          provider: servingProvider,
+          model: requestedModel,
+          ...activityMetadataFromHeaders(request.headers),
+        });
+        const routedModel = MODEL_BY_SLUG.get(requestedModel);
+        if (
+          !routedModel ||
+          !routeProviderEnabled(routedModel.provider) ||
+          routedModel.searchTool !== undefined
+        ) {
+          throw new SearchSidecarError(
+            "The selected model is not eligible for its configured search sidecar.",
+            { code: "search_sidecar_model_ineligible", status: 409 },
+          );
+        }
+        const accountId = String(request.headers["chatgpt-account-id"] || "");
+        const installationId = String(request.headers["x-codex-installation-id"] || "");
+        // The local caller capability proves authorization, not account
+        // identity. If Codex supplies no account id, use a one-request nonce
+        // so the cache cannot cross an account switch on the same install.
+        const accountScope = createHash("sha256")
+          .update(String(request.headers.authorization || ""))
+          .update("\0")
+          .update(accountId || randomUUID())
+          .update("\0")
+          .update(installationId)
+          .digest("base64url");
+        const sidecar = await executeSearchSidecar({
+          binding,
+          payload,
+          accountScope,
+          signal: controller.signal,
+        });
+        writeJson(response, 200, sidecar.response);
+        recordUsageEvent({
+          model: requestedModel,
+          provider: servingProvider,
+          status: 200,
+          durationMs: Date.now() - startedAt,
+          retries: Math.max(0, (sidecar.telemetry?.attempts || 1) - 1),
+          searchSidecar: true,
+          searchCacheHit: sidecar.telemetry?.cacheHit === true,
+          searchResults: sidecar.telemetry?.results,
+        });
+        if (!QUIET) {
+          console.error(
+            `[codex-router] model=${requestedModel} provider=${servingProvider} status=200 attempts=${sidecar.telemetry?.attempts || 0} cache_hit=${sidecar.telemetry?.cacheHit === true}`,
+          );
+        }
+        return;
+      }
+    }
+
+    // Image requests and unbound web-search turns remain native-only; an idle
+    // install refuses them locally rather than forwarding to chatgpt.com.
     if (discoveryDisabled()) {
       writeIdleNoProviderError(response);
       return;
@@ -4105,9 +4253,11 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
       });
       return;
     }
-    const encoded = await readRequestBody(request, { signal: controller.signal });
-    const body = decodeBody(encoded, request.headers["content-encoding"]);
-    const payload = await parseBodyAsync(body);
+    if (!payload) {
+      const encoded = await readRequestBody(request, { signal: controller.signal });
+      body = decodeBody(encoded, request.headers["content-encoding"]);
+      payload = await parseBodyAsync(body);
+    }
     controller.signal.throwIfAborted();
     requestedModel =
       typeof payload.model === "string" ? payload.model : defaultModel;
@@ -4182,7 +4332,7 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
       }
       recordUsageEvent({
         model: requestedModel,
-        provider: "openai",
+        provider: servingProvider,
         status,
         durationMs: Date.now() - startedAt,
         ...(response.headersSent ? { streamAborted: true } : {}),
@@ -4198,17 +4348,37 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
     if (clientGone) {
       recordUsageEvent({
         model: requestedModel,
-        provider: "openai",
+        provider: servingProvider,
         status: 0,
         durationMs: Date.now() - startedAt,
       });
       activity.finish(0);
       return;
     }
+    if (error instanceof SearchSidecarError && !response.headersSent) {
+      const status = error.status;
+      writeJson(response, status, {
+        error: {
+          type: error.code,
+          message: error.message,
+        },
+      });
+      recordUsageEvent({
+        model: requestedModel,
+        provider: servingProvider,
+        status,
+        durationMs: Date.now() - startedAt,
+        retries: Math.max(0, (error.telemetry?.attempts || 1) - 1),
+        searchSidecar: true,
+        searchCacheHit: false,
+      });
+      activity.finish(status);
+      return;
+    }
     const status = response.headersSent ? 502 : httpErrorStatus(error);
     recordUsageEvent({
       model: requestedModel,
-      provider: "openai",
+      provider: servingProvider,
       status,
       durationMs: Date.now() - startedAt,
       ...(response.headersSent ? { streamAborted: true } : {}),

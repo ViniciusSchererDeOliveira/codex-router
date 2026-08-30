@@ -3723,6 +3723,108 @@ test("one-byte fragmented SSE preserves escaped and multibyte custom input", asy
   assert.match(output, /event: response\.custom_tool_call_input\.done/);
 });
 
+test("native custom-tool streams accept LiteLLM content-wrapped legacy argument events", async () => {
+  const input = "console.log(6 * 7);\n";
+  const argumentsText = JSON.stringify({ content: input });
+  const events = [
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: {
+        type: "custom_tool_call",
+        id: "call_native_custom",
+        call_id: "call_native_custom",
+        name: "exec",
+        status: "in_progress",
+        input: "",
+      },
+    },
+    ...[...argumentsText].map((delta) => ({
+      type: "response.function_call_arguments.delta",
+      item_id: "call_native_custom",
+      output_index: 0,
+      delta,
+    })),
+    {
+      type: "response.function_call_arguments.done",
+      item_id: "call_native_custom",
+      output_index: 0,
+      arguments: argumentsText,
+    },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "custom_tool_call",
+        id: "call_native_custom",
+        call_id: "call_native_custom",
+        name: "exec",
+        status: "completed",
+        input,
+      },
+    },
+  ];
+  const source = events
+    .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("");
+  const transform = new NamespaceToolCallTransform(new Map(), "text/event-stream");
+  const output = await collect(Readable.from([source]).pipe(transform));
+  const payloads = output.split(/\n\n/).filter(Boolean).map((block) => {
+    const data = block.split("\n").find((line) => line.startsWith("data: "));
+    return JSON.parse(data.slice(6));
+  });
+  assert.equal(payloads[0].item.type, "custom_tool_call");
+  assert.equal(
+    payloads.filter((event) => event.type === "response.custom_tool_call_input.delta")
+      .map((event) => event.delta).join(""),
+    input,
+  );
+  assert.equal(
+    payloads.find((event) => event.type === "response.custom_tool_call_input.done")?.input,
+    input,
+  );
+  assert.equal(payloads.at(-1).item.input, input);
+  assert.doesNotMatch(output, /response\.function_call_arguments/u);
+});
+
+test("native custom-tool legacy arguments still fail closed when streamed input changes", async () => {
+  const opening = {
+    type: "response.output_item.added",
+    output_index: 0,
+    item: {
+      type: "custom_tool_call",
+      id: "call_native_mismatch",
+      call_id: "call_native_mismatch",
+      name: "exec",
+      status: "in_progress",
+      input: "",
+    },
+  };
+  const streamed = JSON.stringify({ content: "first" });
+  const completed = JSON.stringify({ content: "second" });
+  const frames = [
+    opening,
+    {
+      type: "response.function_call_arguments.delta",
+      item_id: "call_native_mismatch",
+      output_index: 0,
+      delta: streamed,
+    },
+    {
+      type: "response.function_call_arguments.done",
+      item_id: "call_native_mismatch",
+      output_index: 0,
+      arguments: completed,
+    },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`);
+  const { error } = await collectUntilPipelineError(
+    frames,
+    new NamespaceToolCallTransform(new Map(), "text/event-stream"),
+  );
+  assert.equal(error.code, "ERR_NAMESPACE_RELAY_COMMITTED_STREAM");
+  assert.match(error.message, /custom tool argument deltas disagree with completed input/u);
+});
+
 test("a bridged custom tool without a grammar carries only what it was given", () => {
   const namespaces = new Map();
   const described = bridgeCustomTools(

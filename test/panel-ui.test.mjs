@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  accountBucketsWithRouterFallback,
   buildQuotaCards,
   chartGeometry,
   commandRefused,
@@ -16,6 +17,7 @@ import {
   quotaWindow,
   readOnlyCapabilities,
   serviceHealthRows,
+  sourceOptions,
   toolResultAgingChecked,
   visibleLocalDownload,
 } from "../apps/panel/model.mjs";
@@ -54,6 +56,54 @@ test("desktop usage series fills missing local calendar days", () => {
       { key: "2026-07-21", tokens: 8_100 },
     ],
   );
+});
+
+test("panel account usage fills only dates missing from OpenAI account data", () => {
+  const merged = accountBucketsWithRouterFallback(
+    [
+      { startDate: "2026-08-26", tokens: 260 },
+      { startDate: "2026-08-28", tokens: 280 },
+    ],
+    [
+      { startDate: "2026-08-27", tokens: 27_000 },
+      { startDate: "2026-08-28", tokens: 99_999 },
+    ],
+  );
+
+  assert.deepEqual(
+    merged.map(({ startDate, tokens, displaySource }) => ({ startDate, tokens, displaySource })),
+    [
+      { startDate: "2026-08-26", tokens: 260, displaySource: "account" },
+      { startDate: "2026-08-27", tokens: 27_000, displaySource: "router-fallback" },
+      { startDate: "2026-08-28", tokens: 280, displaySource: "account" },
+    ],
+  );
+});
+
+test("an explicit zero account bucket wins over local OpenAI traffic", () => {
+  assert.deepEqual(
+    accountBucketsWithRouterFallback(
+      [{ startDate: "2026-08-27", tokens: 0 }],
+      [{ startDate: "2026-08-27", tokens: 27_000 }],
+    ),
+    [{ startDate: "2026-08-27", tokens: 0, displaySource: "account" }],
+  );
+});
+
+test("the panel source names and preserves OpenAI fallback provenance", () => {
+  const [source] = sourceOptions({
+    account: { dailyUsageBuckets: [{ startDate: "2026-08-28", tokens: 280 }] },
+    providerUsage: {
+      providers: [{
+        id: "openai",
+        displayName: "OpenAI",
+        dailyUsageBuckets: [{ startDate: "2026-08-27", tokens: 27_000 }],
+      }],
+    },
+  });
+  assert.equal(source.name, "ChatGPT · OpenAI + local fallback");
+  assert.equal(source.fallbackDays, 1);
+  assert.equal(source.buckets[0].displaySource, "router-fallback");
 });
 
 test("quota windows use one weekly label and a distinct five-hour label", () => {
@@ -389,7 +439,17 @@ test("browser panel exposes translations with matching keys for every language",
   // Stated separately from the parity check above, which would also pass if a
   // new string were left out of all six.
   for (const language of Object.keys(keys)) {
-    for (const key of ["general.readOnlySurface", "general.readOnlyControl"]) {
+    for (const key of [
+      "general.readOnlySurface",
+      "general.readOnlyControl",
+      "usage.chatgptWithFallback",
+      "usage.localFallbackNotice",
+      "usage.localFallbackNoticeOne",
+      "usage.localFallbackDates",
+      "usage.localFallbackDatesOne",
+      "usage.localFallbackPoint",
+      "usage.localFallbackShort",
+    ]) {
       assert.ok([...keys[language]].includes(key), `${key} is missing from ${language}`);
     }
   }
@@ -405,6 +465,14 @@ test("browser panel exposes translations with matching keys for every language",
       setLanguage(language);
       assert.equal(getLanguage(), language);
       assert.equal(t("nav.usage"), navUsage);
+      assert.notEqual(
+        t("usage.localFallbackNotice", { count: 2 }),
+        "OpenAI supplied no account bucket for 2 dates; local router traffic fills the gap. These are not global account totals.",
+      );
+      assert.notEqual(
+        t("usage.localFallbackNoticeOne"),
+        "OpenAI supplied no account bucket for 1 date; local router traffic fills the gap. This is not a global account total.",
+      );
     }
     setLanguage("zh-CN");
     assert.equal(t("usage.resetsToday", { time: "10:30" }), "今天 10:30 重置");

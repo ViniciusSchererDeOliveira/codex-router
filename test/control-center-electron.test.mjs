@@ -971,6 +971,10 @@ test("background usage polling is conservative while manual refresh stays immedi
   assert.doesNotMatch(source, /usageTimer = window\.setInterval\(\(\) => void refreshUsage\(\), 30_000\)/);
   assert.match(source, /Promise\.allSettled\(\[refreshCore\(\), refreshUsage\(\)\]\)/);
   assert.match(source, /Promise\.allSettled\(\[[\s\S]*api\.getSnapshot\(\)[\s\S]*api\.getHealth\(\)/);
+  assert.match(source, /settleRead\("snapshot", api\.getSnapshot\(\), setSnapshot\)/);
+  assert.match(source, /settleRead\("providers", api\.getProviders\(\), setProviders\)/);
+  assert.match(source, /settleRead\("providerUsage", api\.getProviderUsage\(\), setProviderUsage\)/);
+  assert.doesNotMatch(source, /loading \? <LoadingState \/> : page/);
   assert.match(source, /downloadPollInFlight\.current/);
   assert.match(source, /healthPollInFlight\.current/);
   assert.match(source, /document\.visibilityState !== "visible"/);
@@ -1355,6 +1359,11 @@ test("the model directory combines provider setup with de-duplicated model-famil
   assert.doesNotMatch(models, /<select[\s\S]{0,200}subagent thinking effort/);
   assert.match(models, /<dt>Model id<\/dt>/);
   assert.match(providerModelsCss, /\.pm-model-details\s*\{/);
+  assert.match(models, /<dd className="pm-model-details-controls">/);
+  assert.match(
+    providerModelsCss,
+    /\.pm-model-details dd\.pm-model-details-controls\s*\{[^}]*overflow:\s*visible/,
+  );
 
   // Adding republishes the whole catalog to every installed client and is the
   // slowest thing this page starts. Placeholder rows carrying the chosen slugs
@@ -1458,7 +1467,7 @@ test("the model directory combines provider setup with de-duplicated model-famil
   }
   assert.match(branding, /"lmstudio": "lmstudio"/);
   assert.match(branding, /ornith[^\n]+BRANDS\.deepreinforce/);
-  assert.match(branding, /hy3[^\n]+BRANDS\.tencent/);
+  assert.match(branding, /hy\(\?:3\|4\)[^\n]+BRANDS\.tencent/);
   assert.match(branding, /laguna[^\n]+BRANDS\.poolside/);
   assert.match(branding, /export function brandForLocalModel/);
   const sources = await readFile(new URL("../apps/control-center/src/assets/providers/SOURCES.md", import.meta.url), "utf8");
@@ -1470,6 +1479,8 @@ test("the model directory combines provider setup with de-duplicated model-famil
   assert.doesNotMatch(sources, /avatars\.githubusercontent\.com/);
   assert.match(branding, /cognition:[^\n]+name: "Devin"/);
   assert.match(branding, /deepreinforce:[^\n]+name: "Ornith"/);
+  assert.match(branding, /nanogpt:[^\n]+name: "NanoGPT"/);
+  assert.match(branding, /tencent:[^\n]+name: "Tencent"/);
   const local = await readFile(new URL("../apps/control-center/src/pages/LocalPage.tsx", import.meta.url), "utf8");
   assert.match(local, /brandForLocalModel/);
   assert.match(local, /<BrandLogo brand=\{brandForLocalModel\(model\)\}/);

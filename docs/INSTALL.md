@@ -48,7 +48,8 @@ definition stores the checkout's absolute path.
 macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh | sh -s -- --guided
+curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh \
+  | sh -s -- --target codex --guided --with-tray
 ```
 
 Windows PowerShell:
@@ -56,7 +57,7 @@ Windows PowerShell:
 ```powershell
 $installer = Join-Path $env:TEMP "codex-router-install.ps1"
 Invoke-WebRequest https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.ps1 -OutFile $installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Guided
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Target codex -Guided -WithTray
 ```
 
 Clone-and-review installation is also supported:
@@ -64,19 +65,20 @@ Clone-and-review installation is also supported:
 ```sh
 git clone https://github.com/duolahypercho/codex-router.git
 cd codex-router
-./install.sh --guided
+./install.sh --target codex --guided --with-tray
 ```
 
 ```powershell
 git clone https://github.com/duolahypercho/codex-router.git
 Set-Location codex-router
-./install.ps1 -Guided
+./install.ps1 -Target codex -Guided -WithTray
 ```
 
-Guided setup also offers to build and launch the desktop companion (the macOS
-menu bar app, or the Windows/Linux tray). `--with-tray` installs it without
-asking, `--no-tray` never offers it, and automatic mode skips it. On Windows
-the same choice is `-WithTray` / `-NoTray`.
+The recommended commands install the complete desktop experience without an
+extra question: the macOS menu-bar app with its Electron Control Center and
+desktop widget, or the Windows/Linux Electron Control Center and tray.
+`--no-tray` omits it; leaving out both tray flags makes guided setup ask. On
+Windows the matching options are `-WithTray` and `-NoTray`.
 
 On macOS one `Codex Router.app` bundle is placed in `~/Applications`. It keeps
 the Swift-native menu-bar tray and embeds the Electron Control Center, so the
@@ -541,6 +543,12 @@ Windows). Homebrew owns the dependency tree in its formula prefix: its normal
 doctor repair regenerates config and services without mutating that tree, and a
 missing or broken package file must be repaired with `brew reinstall
 codex-router`.
+
+Homebrew packages only the router and CLI. Guided setup does not offer the
+Electron Control Center, tray/menu-bar app, or macOS desktop widget, and an
+explicit `--with-tray` is refused with guidance back to the complete source
+installer. This keeps setup from downloading or compiling desktop application
+code inside a Homebrew-managed installation.
 
 When upgrading from a release without caller capabilities, the installer
 generates one, replaces only the marked managed URL, tightens config permissions,

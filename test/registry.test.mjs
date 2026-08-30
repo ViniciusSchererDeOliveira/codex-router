@@ -42,6 +42,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "clinepass/deepseek-v4-flash",
       "clinepass/deepseek-v4-pro",
       "clinepass/glm-5.2",
+      "clinepass/tencent/hy4-preview",
       "clinepass/kimi-k2.6",
       "clinepass/kimi-k2.7-code",
       "clinepass/kimi-k3",
@@ -66,6 +67,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "commandcode/grok-4.5",
       "commandcode/grok-4.6",
       "commandcode/hy3-paid",
+      "commandcode/hy4-preview",
       "commandcode/inkling-small",
       "commandcode/inkling",
       "commandcode/kimi-k2.7-code-highspeed",
@@ -104,6 +106,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "meta/muse-spark-1.2-contributor",
       "meta/muse-spark-1.2",
       "minimax-token-plan/minimax-m3",
+      "nano-gpt/tencent/hy4-preview",
       "nousresearch/claude-fable-5",
       "nousresearch/claude-opus-5",
       "nousresearch/claude-sonnet-5",
@@ -117,6 +120,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "nousresearch/hermes-4-405b",
       "nousresearch/hermes-4-70b",
       "nousresearch/hy3-free",
+      "nousresearch/tencent/hy4-preview",
       "nousresearch/kat-coder-pro-v2.5",
       "nousresearch/kimi-k2.7-code",
       "nousresearch/kimi-k3",
@@ -147,6 +151,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/glm-5.3",
       "opencode-go/glm-5",
       "opencode-go/hy3",
+      "opencode-go/hy4-preview",
       "opencode-go/kimi-k2.5",
       "opencode-go/kimi-k2.6",
       "opencode-go/kimi-k2.7-code",
@@ -169,6 +174,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "openrouter/glm-5.3-flash",
       "openrouter/glm-5.3",
       "openrouter/grok-4.6",
+      "openrouter/tencent/hy4-preview",
       "openrouter/qwen3.8-flash",
       "qwen-plan/deepseek-v4-flash-0731",
       "qwen-plan/deepseek-v4-pro-0813",
@@ -328,7 +334,63 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.deepEqual(nanoGpt.credential.environment, ["NANOGPT_API_KEY"]);
   assert.equal(nanoGpt.credential.file, "nano-gpt-api-key.secret");
   assert.deepEqual(nanoGpt.credential.keychainServices, ["codex-router-nano-gpt"]);
-  assert.equal(LISTED_MODELS.some(({ provider }) => provider === "nano-gpt"), false);
+  assert.deepEqual(
+    LISTED_MODELS.filter(({ provider }) => provider === "nano-gpt").map(({ slug }) => slug),
+    ["nano-gpt/tencent/hy4-preview"],
+  );
+  const hy4Routes = [
+    "clinepass/tencent/hy4-preview",
+    "commandcode/hy4-preview",
+    "nano-gpt/tencent/hy4-preview",
+    "nousresearch/tencent/hy4-preview",
+    "opencode-go/hy4-preview",
+    "openrouter/tencent/hy4-preview",
+  ].map((slug) => MODEL_BY_SLUG.get(slug));
+  assert.deepEqual(hy4Routes.map(({ upstreamModel }) => upstreamModel), [
+    "tencent/hy4-preview",
+    "tencent/hy4-preview",
+    "tencent/hy4-preview",
+    "tencent/hy4-preview",
+    "hy4-preview",
+    "tencent/hy4-preview",
+  ]);
+  assert.deepEqual(hy4Routes.map(({ contextWindow }) => contextWindow), [
+    1_048_576,
+    1_048_576,
+    1_048_576,
+    1_048_576,
+    1_024_000,
+    1_048_576,
+  ]);
+  assert.deepEqual(hy4Routes.map(({ autoCompact }) => autoCompact), [
+    940_000,
+    940_000,
+    940_000,
+    940_000,
+    920_000,
+    940_000,
+  ]);
+  for (const model of hy4Routes) {
+    assert.equal(model.defaultEffort, "high", model.slug);
+    assert.deepEqual(model.inputModalities, ["text"], model.slug);
+    assert.notEqual(model.isFree, true, model.slug);
+  }
+  assert.deepEqual(hy4Routes.map(({ reasoningLevels }) => reasoningLevels.map(({ effort }) => effort)), [
+    ["high"],
+    ["high"],
+    ["minimal", "low", "high"],
+    ["minimal", "low", "high"],
+    ["minimal", "high"],
+    ["minimal", "low", "high"],
+  ]);
+  assert.deepEqual(hy4Routes.map(({ requestProfile }) => requestProfile), [
+    "clinepass",
+    undefined,
+    "hy4-reasoning",
+    "hy4-reasoning",
+    "hy4-reasoning",
+    "hy4-reasoning",
+  ]);
   const venice = PROVIDERS.get("venice");
   assert.equal(venice.baseUrl, "https://api.venice.ai/api/v1");
   assert.equal(venice.baseUrlEnv, "VENICE_API_BASE_URL");
@@ -419,6 +481,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "cline-pass/deepseek-v4-flash",
       "cline-pass/deepseek-v4-pro",
       "cline-pass/glm-5.2",
+      "tencent/hy4-preview",
       "cline-pass/kimi-k2.6",
       "cline-pass/kimi-k2.7-code",
       "cline-pass/kimi-k3",
@@ -449,6 +512,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "cline-pass/deepseek-v4-flash": [1_048_576, 900_000],
     "cline-pass/deepseek-v4-pro": [1_048_576, 900_000],
     "cline-pass/glm-5.2": [1_048_576, 900_000],
+    "tencent/hy4-preview": [1_048_576, 940_000],
     "cline-pass/kimi-k2.6": [262_144, 235_000],
     "cline-pass/kimi-k2.7-code": [262_144, 235_000],
     "cline-pass/kimi-k3": [1_048_576, 900_000],
@@ -719,6 +783,28 @@ test("GLM-5.3-Flash replaces OpenCode Go's withdrawn Ox Alpha route", () => {
   assert.equal(MODEL_SLUG_ALIASES.get("opencode-go/ox-alpha"), model.slug);
   assert.equal(MODEL_SLUG_ALIASES.get("opencode-go/ox-alpha-free"), model.slug);
   assert.equal(MODEL_BY_SLUG.get("opencode-go/ox-alpha"), model);
+});
+
+test("OpenCode Go routes retain upstream windows instead of the generic fallback", () => {
+  const expected = new Map([
+    ["opencode-go/mimo-v2.5", [1_000_000, 850_000, "opencode-go-mimo-v2-5-v2"]],
+    ["opencode-go/mimo-v2.5-pro", [1_000_000, 850_000, "opencode-go-mimo-v2-5-pro-v2"]],
+    ["opencode-go/hy3", [262_144, 223_000, "opencode-go-hy3-v2"]],
+    ["opencode-go-messages/minimax-m2.5", [204_800, 174_000, "opencode-go-messages-minimax-m2-5-v2"]],
+    ["opencode-go-messages/minimax-m2.7", [204_800, 174_000, "opencode-go-messages-minimax-m2-7-v2"]],
+  ]);
+
+  for (const [slug, [contextWindow, autoCompact, compHash]] of expected) {
+    const model = MODEL_BY_SLUG.get(slug);
+    assert.equal(model?.contextWindow, contextWindow, slug);
+    assert.equal(model?.autoCompact, autoCompact, slug);
+    assert.equal(model?.compHash, compHash, slug);
+    assert.ok(autoCompact < contextWindow, slug);
+  }
+  assert.match(
+    MODEL_BY_SLUG.get("opencode-go-messages/minimax-m2.7")?.upgradeTo?.markdown,
+    /from 200K to 1M tokens/,
+  );
 });
 
 test("four additional OpenCode Go Chat routes retain their documented limits and conservative controls", () => {

@@ -8,12 +8,6 @@ adopt_native_catalog=false
 force_deps=false
 target=${MODEL_ROUTER_TARGET:-codex}
 
-# Installing is the sanctioned way for a checkout to take over a state
-# directory: generated files are rebuilt here and the new owner is recorded at
-# the end, so the ownership guard must not block this run.
-MODEL_ROUTER_ALLOW_FOREIGN_STATE=1
-export MODEL_ROUTER_ALLOW_FOREIGN_STATE
-
 case "$target" in
   codex|dsh|gemini) ;;
   *) echo "MODEL_ROUTER_TARGET must be codex, dsh, or gemini." >&2; exit 2 ;;
@@ -28,6 +22,18 @@ for argument in "$@"; do
     *) echo "Usage: $0 [--prepare-only] [--migrate-known] [--adopt-native-catalog] [--force-deps]" >&2; exit 2 ;;
   esac
 done
+
+# Installing is the sanctioned way for a checkout to take over a state
+# directory: generated files are rebuilt here and the new owner is recorded at
+# the end, so the ownership guard must not block this run. The override is
+# scoped to that full install, and only after the arguments are known: a
+# --prepare-only run rewrites the same generated state but exits before the
+# manifest record, so letting it past the guard would let a second checkout
+# rebuild foreign-owned state with no ownership transfer ever recorded.
+if [ "$prepare_only" != true ]; then
+  MODEL_ROUTER_ALLOW_FOREIGN_STATE=1
+  export MODEL_ROUTER_ALLOW_FOREIGN_STATE
+fi
 
 if [ "$prepare_only" = true ] && [ "$migrate_known" = true ]; then
   echo "--prepare-only cannot migrate an active older router." >&2
@@ -334,16 +340,19 @@ if [ "$adopt_native_catalog" = true ]; then
 else
   node "$config_manager" "$config_enable_command"
 fi
+# Record before the service starts, not after. The generated state above was
+# written by this checkout, so ownership is already this checkout's in fact;
+# the manifest is provenance for exactly that -- which checkout owns the state,
+# and the proxy environment a later repair must restore -- and the desktop app
+# resolves its source root from the field. The service itself needs the record
+# in place first: start.mjs rewrites the gateway config on every boot and
+# refuses while the manifest still names another checkout, so recording after
+# `service.mjs install` -- a step that contains the health wait -- let an
+# install over a foreign-owned state directory crash-loop for the whole
+# readiness budget while the ownership transfer it needed never ran.
+node src/install-manifest.mjs record >/dev/null
 service_installed=true
 node src/service.mjs install
-# Record before the health wait, not after. The manifest is provenance for the
-# install that just happened -- which checkout owns the state, and the proxy
-# environment a later repair must restore -- and `service.mjs install` has
-# already put that checkout's service in place. Recording it only after a
-# health check that a cold-starting gateway can lose left the manifest naming
-# the previous owner while the running service pointed somewhere else, and the
-# desktop app resolves its source root from that field.
-node src/install-manifest.mjs record >/dev/null
 node src/wait-health.mjs
 # A companion that is never rebuilt drifts behind the router on every update
 # and keeps running its old binary. Rebuild only when one is already installed

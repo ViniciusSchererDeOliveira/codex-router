@@ -3,8 +3,8 @@ class CodexRouter < Formula
 
   desc "Use external coding models inside the Codex App and CLI"
   homepage "https://github.com/duolahypercho/codex-router"
-  url "https://github.com/duolahypercho/codex-router/releases/download/v0.5.0/codex-router-0.5.0.tar.gz"
-  sha256 "89f494a21399c3c2a54f6f25531e10b0d64e7e5a238f17cb8f8f7f2c9222e076"
+  url "https://github.com/duolahypercho/codex-router/releases/download/v0.5.1/codex-router-0.5.1.tar.gz"
+  sha256 "c0bdfbc2573431cb5847c318ffa539d3d2e745876e63944b4713931c4389df15"
   license "MIT"
 
   depends_on "pkgconf" => :build
@@ -16,6 +16,7 @@ class CodexRouter < Formula
   depends_on "libsodium"
   depends_on "libyaml"
   depends_on "node"
+  depends_on "numpy"
   depends_on "python@3.14"
 
   # Optional LiteLLM resources omitted because PyPI publishes no portable source:
@@ -300,11 +301,6 @@ class CodexRouter < Formula
   resource "multidict" do
     url "https://files.pythonhosted.org/packages/1a/c2/c2d94cbe6ac1753f3fc980da97b3d930efe1da3af3c9f5125354436c073d/multidict-6.7.1.tar.gz"
     sha256 "ec6652a1bee61c53a3e5776b6049172c53b6aaba34f18c9ad04f82712bac623d"
-  end
-
-  resource "numpy" do
-    url "https://files.pythonhosted.org/packages/22/fd/89965aa4ac08c74998539fcbf24fa3540f3e15237fbeb6bcf9c908f4aade/numpy-2.5.1.tar.gz"
-    sha256 "a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3"
   end
 
   resource "oauthlib" do
@@ -654,6 +650,11 @@ class CodexRouter < Formula
     <<~EOS
       Finish the one-time Codex integration with:
         codex-router setup --guided
+
+      This formula installs the router and CLI only. It does not build or
+      download the Electron Control Center, tray/menu-bar app, or macOS desktop
+      widget. Use the recommended installer on the project homepage for the
+      complete desktop experience.
 
       List every available command, including `codex-router curate-models`
       for adding a custom provider's models, with:

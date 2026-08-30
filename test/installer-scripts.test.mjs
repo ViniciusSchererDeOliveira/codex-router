@@ -739,7 +739,10 @@ test("installer rollback undoes only what the run created", () => {
 // The manifest names the checkout that owns the generated state, and the
 // desktop app resolves its source root from it. Recording it only after the
 // health wait meant a timeout left the manifest naming the previous owner
-// while the installed service pointed at the new one.
+// while the installed service pointed at the new one. It must also precede
+// the service step itself: the service refuses to boot while the manifest
+// still names another checkout, so a record that runs after the service step
+// -- which contains the health wait -- can never run at all.
 test("both installers record the manifest before waiting on health", () => {
   const posix = readFileSync(path.join(root, "bin", "install"), "utf8");
   const windows = readFileSync(path.join(root, "install.ps1"), "utf8");
@@ -752,4 +755,183 @@ test("both installers record the manifest before waiting on health", () => {
     windows.indexOf("install-manifest.mjs record") < windows.indexOf("wait-health.mjs"),
     "Windows must record the manifest before the health wait",
   );
+  assert.ok(
+    posix.indexOf("install-manifest.mjs record") < posix.indexOf("node src/service.mjs install"),
+    "POSIX must record the manifest before installing the service",
+  );
+  assert.ok(
+    windows.indexOf("install-manifest.mjs record") <
+      windows.indexOf("& node src/service.mjs install"),
+    "Windows must record the manifest before installing the service",
+  );
+});
+
+// The foreign-state override is what lets a checkout rebuild state that
+// another checkout owns. It must be scoped to a full ownership-transferring
+// install and to nothing else: a --prepare-only run rewrites the same
+// generated state but exits before the manifest record, so an override there
+// would let a second checkout rebuild foreign-owned state with no ownership
+// transfer ever recorded. On Windows the same override is what makes a full
+// cross-checkout install possible at all, and because it manipulates the
+// caller's environment it must be restored whatever the run's outcome.
+test("the foreign-state override is scoped to a full ownership-transferring install", () => {
+  const posix = readFileSync(path.join(root, "bin", "install"), "utf8");
+  const windows = readFileSync(path.join(root, "install.ps1"), "utf8");
+  // Snapshot the caller environment before any installer step can fail. A
+  // prepare-only run never sets the override, but its finally still restores
+  // this snapshot, so capturing it only inside the full-install branch would
+  // delete a value the caller already had.
+  const pushIndex = windows.indexOf("Push-Location $ScriptDirectory");
+  const outerTryIndex = windows.indexOf("try {", pushIndex);
+  const hadSnapshotIndex = windows.indexOf(
+    "$HadForeignStateOverride = $null -ne (Get-Item Env:\\MODEL_ROUTER_ALLOW_FOREIGN_STATE",
+  );
+  const valueSnapshotIndex = windows.indexOf(
+    "$SavedForeignStateOverride = $env:MODEL_ROUTER_ALLOW_FOREIGN_STATE",
+  );
+  assert.ok(
+    hadSnapshotIndex !== -1 && hadSnapshotIndex < outerTryIndex,
+    "Windows must snapshot whether the caller had the override before the installer can fail",
+  );
+  assert.ok(
+    valueSnapshotIndex !== -1 && valueSnapshotIndex < outerTryIndex,
+    "Windows must snapshot the caller's override value before the installer can fail",
+  );
+
+  // POSIX: exported only after the arguments are known, and only for a full
+  // install -- a prepare-only run must meet the guard like any other writer.
+  const parseIndex = posix.indexOf("--prepare-only) prepare_only=true ;;");
+  const exportIndex = posix.indexOf("MODEL_ROUTER_ALLOW_FOREIGN_STATE=1");
+  assert.notEqual(parseIndex, -1, "bin/install must parse --prepare-only");
+  assert.notEqual(exportIndex, -1, "bin/install must export the override");
+  assert.ok(
+    exportIndex > parseIndex,
+    "the override must be exported only after --prepare-only is parsed",
+  );
+  assert.match(
+    posix,
+    /if \[ "\$prepare_only" != true \]; then\n  MODEL_ROUTER_ALLOW_FOREIGN_STATE=1\n  export MODEL_ROUTER_ALLOW_FOREIGN_STATE\nfi/,
+    "the override must be guarded on a full install",
+  );
+  if (POSIX_SHELL_AVAILABLE) {
+    const syntax = spawnSync("sh", ["-n", path.join(root, "bin", "install")], {
+      encoding: "utf8",
+    });
+    assert.equal(syntax.status, 0, syntax.stderr);
+  }
+
+  // Windows: set only when -PrepareOnly is off, in place before the generated
+  // state is rebuilt, and restored in the outer finally -- removed when the
+  // caller had none, put back verbatim when they did.
+  assert.match(
+    windows,
+    /if \(-not \$PrepareOnly\) \{[\s\S]{0,600}?\$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"/,
+    "the override must be set only for a full install",
+  );
+  const setIndex = windows.indexOf('$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"');
+  assert.ok(
+    setIndex !== -1 && setIndex < windows.indexOf("src/catalog.mjs"),
+    "the override must be in place before the generated state is rebuilt",
+  );
+  const finallyBody = windows.slice(windows.lastIndexOf("} finally {"));
+  assert.match(
+    finallyBody,
+    /\$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = \$SavedForeignStateOverride/,
+    "a pre-existing override value must be restored",
+  );
+  assert.match(
+    finallyBody,
+    /Remove-Item Env:\\MODEL_ROUTER_ALLOW_FOREIGN_STATE/,
+    "an override the caller never had must be removed",
+  );
+  assert.ok(
+    finallyBody.indexOf("Pop-Location") >
+      finallyBody.indexOf("MODEL_ROUTER_ALLOW_FOREIGN_STATE"),
+    "the environment restore belongs in the same finally as the location restore",
+  );
+});
+
+test("Windows prepare-only restores the caller foreign-state override live", {
+  skip: process.platform !== "win32" && "requires Windows PowerShell",
+}, () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-windows-env-"));
+  try {
+    const shimDir = path.join(testRoot, "shims");
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(
+      path.join(shimDir, "node.cmd"),
+      [
+        "@echo off",
+        'if /I "%~1"=="-p" (',
+        "  echo 24.0.0",
+        "  exit /b 0",
+        ")",
+        'if defined CODEX_ROUTER_TEST_FAIL_LEGACY if /I "%~1"=="src\\legacy-migration.mjs" exit /b 17',
+        'if defined CODEX_ROUTER_TEST_FAIL_LEGACY if /I "%~1"=="src/legacy-migration.mjs" exit /b 17',
+        'if /I "%~1"=="src/install-plan.mjs" if /I "%~2"=="status" (',
+        "  echo skip",
+        "  exit /b 0",
+        ")",
+        "exit /b 0",
+        "",
+      ].join("\r\n"),
+    );
+    writeFileSync(path.join(shimDir, "npm.cmd"), "@echo off\r\nexit /b 0\r\n");
+
+    const harnessPath = path.join(testRoot, "assert-restore.ps1");
+    writeFileSync(
+      harnessPath,
+      [
+        "param([string] $Installer, [string] $FixtureRoot, [string] $ShimDir)",
+        '$env:PATH = "$ShimDir;$env:PATH"',
+        '$env:CODEX_HOME = Join-Path $FixtureRoot "codex-home"',
+        '$env:CODEX_ROUTER_STATE_DIR = Join-Path $FixtureRoot "router-state"',
+        '$env:MODEL_ROUTER_STATE_DIR = Join-Path $FixtureRoot "router-state"',
+        '$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "caller-value"',
+        "& $Installer -CheckoutInstall -PrepareOnly",
+        'if ($env:MODEL_ROUTER_ALLOW_FOREIGN_STATE -ne "caller-value") {',
+        '  throw "prepare-only did not preserve the caller override"',
+        "}",
+        "Remove-Item Env:\\MODEL_ROUTER_ALLOW_FOREIGN_STATE",
+        "& $Installer -CheckoutInstall -PrepareOnly",
+        "if (Test-Path Env:\\MODEL_ROUTER_ALLOW_FOREIGN_STATE) {",
+        '  throw "prepare-only introduced an override the caller did not have"',
+        "}",
+        '$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "early-failure-value"',
+        '$env:CODEX_ROUTER_TEST_FAIL_LEGACY = "1"',
+        "$SawExpectedFailure = $false",
+        "try {",
+        "  & $Installer -CheckoutInstall -PrepareOnly",
+        "} catch {",
+        "  $SawExpectedFailure = $true",
+        "} finally {",
+        "  Remove-Item Env:\\CODEX_ROUTER_TEST_FAIL_LEGACY",
+        "}",
+        'if (-not $SawExpectedFailure) { throw "expected the legacy probe to fail" }',
+        'if ($env:MODEL_ROUTER_ALLOW_FOREIGN_STATE -ne "early-failure-value") {',
+        '  throw "early failure did not restore the caller override"',
+        "}",
+        "",
+      ].join("\r\n"),
+    );
+
+    const result = spawnSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        harnessPath,
+        path.join(root, "install.ps1"),
+        testRoot,
+        shimDir,
+      ],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
 });

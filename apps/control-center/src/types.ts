@@ -10,6 +10,17 @@ export type ViewId =
 
 export type ModelViewFocus = "providers" | "models";
 
+/** Startup reads settle independently so a slow ledger or provider probe does
+ * not hold every page behind one application-wide loading state. */
+export interface RouterDataReady {
+  snapshot: boolean;
+  providers: boolean;
+  presence: boolean;
+  health: boolean;
+  accountUsage: boolean;
+  providerUsage: boolean;
+}
+
 export interface ModelViewFocusRequest {
   region: ModelViewFocus;
   id: number;

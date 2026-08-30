@@ -11,7 +11,7 @@ import { ensureNodeDependencies, isNodeDependencyFailure } from "./node-dependen
 import { effectiveVisibleModels, setModelSelection } from "./model-picker-state.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { SOURCE_ROOT, TARGET } from "./paths.mjs";
-import { credentialStatus } from "./provider-credentials.mjs";
+import { effectiveProviderCredentialStatus } from "./provider-api-key-routing.mjs";
 import {
   installOauthCli,
   oauthCliPath,
@@ -32,7 +32,7 @@ import {
   writeProviderSelection,
 } from "./provider-selection.mjs";
 import { writeDiscoveryMode } from "./discovery-mode.mjs";
-import { trayDecision } from "./tray-install.mjs";
+import { trayDecision, traySetupError } from "./tray-install.mjs";
 import { resolveVisionEngine } from "./vision-bridge.mjs";
 import {
   readVisionBridgeSettings,
@@ -110,6 +110,13 @@ if (!setupArgumentError && TARGET !== "codex" && (migrateKnown || adoptNativeCat
     migrateKnown ? "--migrate-known" : "--adopt-native-catalog"
   } applies only to the Codex target.`;
 }
+if (!setupArgumentError) {
+  setupArgumentError = traySetupError({
+    packageManager: process.env.CODEX_ROUTER_PACKAGE_MANAGER,
+    withTray,
+    noTray,
+  });
+}
 
 function option(name) {
   const index = args.indexOf(name);
@@ -145,7 +152,7 @@ Options:
   --adopt-native-catalog  Use an existing user-owned native Codex catalog as the merge base
   --smoke-test         Make one small live request per enabled provider
   --selection-only     Save provider selection without installing (development)
-  --with-tray          Also build and launch the desktop companion app
+  --with-tray          Also build and launch the desktop companion app (source installs only)
   --no-tray            Never offer the desktop companion app
   --no-provider        Install idle, with no provider selected or configured
   --no-discovery       With --no-provider: never read credentials, the
@@ -216,7 +223,7 @@ function providerConfigured(provider) {
   }
   return providerNeedsNoKey(provider)
     ? true
-    : credentialStatus(provider, { persistent: true }).configured;
+    : effectiveProviderCredentialStatus(provider, { persistent: true }).configured;
 }
 
 const colorEnabled = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
@@ -654,7 +661,13 @@ async function main() {
     throw error;
   }
 
-  const trayStep = trayDecision({ platform: process.platform, withTray, noTray, guided });
+  const trayStep = trayDecision({
+    platform: process.platform,
+    withTray,
+    noTray,
+    guided,
+    packageManager: process.env.CODEX_ROUTER_PACKAGE_MANAGER,
+  });
   if (trayStep !== "skip") {
     const wanted =
       trayStep === "install" ||

@@ -215,6 +215,32 @@ stay off until verified -- including GLM-5.3 on the opencode Go relay, which
 is a different transport from the Z.ai route the capability was proven on. User-model curation can opt in locally without changing the
 shared registry.
 
+### Per-model search sidecar
+
+A model without `searchTool` can be opted into the Perplexity Search sidecar.
+The model catalog advertises search only while the exact binding, trusted
+generic-provider descriptor, and protected credential are all ready. Codex's
+authenticated `/alpha/search` request is then handled locally and never falls
+through to the native ChatGPT search backend. Unbound requests retain the
+native behavior above.
+
+The sidecar does not accept an arbitrary destination. Its provider must be an
+enabled, public-only generic `openai-chat` descriptor whose base URL is exactly
+`https://api.perplexity.ai`, and the request path is fixed to `/search`. The
+generic-provider transport resolves and pins the destination, refuses private
+addresses and redirects, and attaches the credential inside that boundary.
+Returned citations receive their own public-DNS and credential checks before
+they become model-visible data.
+
+The accepted wire subset is deliberately smaller than a general browser:
+one through four `search_query` entries, each containing only `q`. Results,
+body size, text length, retry count, timeout, backoff, and cache size/TTL are
+bounded by the versioned per-model policy. One operation deadline covers the
+adapter, response read, result DNS checks, retries, and backoff. Cancellation
+propagates from the Codex request. Usage records contain status, duration,
+attempt/cache/result counts, model, and provider id, never query text,
+citations, endpoints, or credentials.
+
 ## Transport and compaction
 
 Current Codex builds first attempt a Responses WebSocket. The router responds

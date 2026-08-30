@@ -55,6 +55,38 @@ function render(script, platform, testRoot, target = "codex", sourceRoot = root)
   return serviceCommand(script, platform, testRoot, "render", target, sourceRoot);
 }
 
+function writePoolEnvironmentFixture(testRoot) {
+  const stateDir = path.join(testRoot, "codex router state");
+  const credentialId = "cred_ServiceEnvironment1234";
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, "provider-credentials.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    credentials: [{
+      id: credentialId,
+      providerId: "opencode-go",
+      kind: "api_key",
+      state: "active",
+      secretRef: {
+        type: "environment",
+        providerId: "opencode-go",
+        target: "codex",
+        name: "OPENCODE_API_KEY",
+      },
+    }],
+  })}\n`, { mode: 0o600 });
+  writeFileSync(path.join(stateDir, "provider-api-key-pools.json"), `${JSON.stringify({
+    version: 1,
+    providers: {
+      "opencode-go": {
+        providerId: "opencode-go",
+        credentials: {
+          [credentialId]: { id: credentialId, providerId: "opencode-go" },
+        },
+      },
+    },
+  })}\n`, { mode: 0o600 });
+}
+
 // Mirrors src/service-windows.mjs: MODEL_ROUTER_STATE_DIR wins over every other
 // state-directory source, and the fixture name deliberately carries a space.
 function windowsStateDir(testRoot) {
@@ -132,6 +164,37 @@ test("background services never copy the Antigravity client secret", () => {
       { ANTIGRAVITY_CLIENT_SECRET: secret },
     );
     assert.doesNotMatch(windows, /ANTIGRAVITY_CLIENT_SECRET|test-antigravity-client-secret/);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("background services preserve only environment credentials referenced by a pool", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-pool-environment-service-"));
+  const secret = "test-pooled-opencode-secret";
+  try {
+    writePoolEnvironmentFixture(testRoot);
+    const environment = {
+      OPENCODE_API_KEY: secret,
+      OPENCODE_GO_API_KEY: "unreferenced-secret-must-not-appear",
+    };
+    const launchd = serviceCommand(
+      "service-macos.mjs", "darwin", testRoot, "render", "codex", root, environment,
+    );
+    assert.match(launchd, new RegExp(`<key>OPENCODE_API_KEY</key>\\s*<string>${secret}</string>`));
+    assert.doesNotMatch(launchd, /unreferenced-secret-must-not-appear|OPENCODE_GO_API_KEY/);
+
+    const systemd = serviceCommand(
+      "service-linux.mjs", "linux", testRoot, "render", "codex", root, environment,
+    );
+    assert.match(systemd, new RegExp(`Environment="OPENCODE_API_KEY=${secret}"`));
+    assert.doesNotMatch(systemd, /unreferenced-secret-must-not-appear|OPENCODE_GO_API_KEY/);
+
+    const windows = serviceCommand(
+      "service-windows.mjs", "win32", testRoot, "render", "codex", root, environment,
+    );
+    assert.match(windows, new RegExp(`set "OPENCODE_API_KEY=${secret}"`));
+    assert.doesNotMatch(windows, /unreferenced-secret-must-not-appear|OPENCODE_GO_API_KEY/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

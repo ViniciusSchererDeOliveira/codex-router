@@ -65,6 +65,20 @@ test("classifyRoutedFailure swaps on OpenCode FreeUsageLimitError", () => {
   assert.deepEqual(verdict, { swap: true, reason: "out_of_usage" });
 });
 
+test("classifyRoutedFailure swaps only a marked provider transport 5xx", () => {
+  assert.deepEqual(
+    classifyRoutedFailure({
+      status: 502,
+      bodyText: JSON.stringify({ error: { type: "provider_transport_error" } }),
+    }),
+    { swap: true, reason: "transport" },
+  );
+  assert.deepEqual(
+    classifyRoutedFailure({ status: 502, bodyText: "provider unavailable" }),
+    { swap: false },
+  );
+});
+
 test("classifyRoutedFailure recognizes the observed Z.ai five-hour window message", () => {
   const verdict = classifyRoutedFailure({
     status: 429,

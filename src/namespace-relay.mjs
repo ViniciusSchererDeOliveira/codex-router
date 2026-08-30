@@ -1845,16 +1845,18 @@ function rewriteToolSearchFunctionCallItem(item, lookups, allowPlaceholder) {
   };
 }
 
-function customToolInput(value, allowPlaceholder = false) {
+function customToolInput(
+  value,
+  allowPlaceholder = false,
+  property = CUSTOM_TOOL_INPUT_PROPERTY,
+) {
   if (allowPlaceholder && (value === undefined || value === "")) return "";
   const argumentsText = coerceFunctionCallArguments(value);
   if (typeof argumentsText !== "string") return undefined;
   if (!jsonArgumentsAreUnambiguous(argumentsText)) return undefined;
   try {
     const parsed = JSON.parse(argumentsText);
-    return typeof parsed?.[CUSTOM_TOOL_INPUT_PROPERTY] === "string"
-      ? parsed[CUSTOM_TOOL_INPUT_PROPERTY]
-      : undefined;
+    return typeof parsed?.[property] === "string" ? parsed[property] : undefined;
   } catch {
     return undefined;
   }
@@ -2051,6 +2053,11 @@ function appendInterruptCallsToOutput(output, pending, interrupted) {
 }
 
 const CUSTOM_TOOL_OPENING_LIMIT = 1024;
+const LITELLM_CUSTOM_TOOL_INPUT_PROPERTY = "content";
+const CUSTOM_TOOL_OPENING_PATTERNS = Object.freeze({
+  [CUSTOM_TOOL_INPUT_PROPERTY]: /^\s*\{\s*"input"\s*:\s*"/,
+  [LITELLM_CUSTOM_TOOL_INPUT_PROPERTY]: /^\s*\{\s*"content"\s*:\s*"/,
+});
 const JSON_ESCAPES = Object.freeze({
   '"': '"',
   "\\": "\\",
@@ -2067,12 +2074,22 @@ const JSON_ESCAPES = Object.freeze({
 // once. Only an incomplete escape (at most six characters) is retained between
 // calls, avoiding the quadratic full-patch rescans that large streamed patches
 // would otherwise trigger.
-function customToolInputDelta(state, fragment) {
+function customToolInputDelta(
+  state,
+  fragment,
+  property = CUSTOM_TOOL_INPUT_PROPERTY,
+) {
   if (typeof fragment !== "string" || state.invalid || state.closed) return undefined;
   let encoded = fragment;
   if (!state.opened) {
     state.opening += encoded;
-    const opening = state.opening.match(/^\s*\{\s*"input"\s*:\s*"/);
+    const openingPattern = CUSTOM_TOOL_OPENING_PATTERNS[property];
+    if (!openingPattern) {
+      state.opening = "";
+      state.invalid = true;
+      return undefined;
+    }
+    const opening = state.opening.match(openingPattern);
     if (!opening) {
       if (state.opening.length > CUSTOM_TOOL_OPENING_LIMIT) {
         state.opening = "";
@@ -3301,7 +3318,15 @@ export class NamespaceToolCallTransform extends Transform {
             return [];
           }
           matched.state.sawArgumentDelta = true;
-          const delta = customToolInputDelta(matched.state.deltaState, event.delta);
+          const argumentProperty =
+            matched.state.sourceType === "custom_tool_call"
+              ? LITELLM_CUSTOM_TOOL_INPUT_PROPERTY
+              : CUSTOM_TOOL_INPUT_PROPERTY;
+          const delta = customToolInputDelta(
+            matched.state.deltaState,
+            event.delta,
+            argumentProperty,
+          );
           if (delta === undefined) {
             this.#commitSemanticMutation();
             return [];
@@ -3338,7 +3363,11 @@ export class NamespaceToolCallTransform extends Transform {
             this.#commitSemanticMutation();
             return [];
           }
-          const input = customToolInput(event.arguments);
+          const argumentProperty =
+            matched.state.sourceType === "custom_tool_call"
+              ? LITELLM_CUSTOM_TOOL_INPUT_PROPERTY
+              : CUSTOM_TOOL_INPUT_PROPERTY;
+          const input = customToolInput(event.arguments, false, argumentProperty);
           if (input === undefined) {
             return this.#unsafeSseFrame(frame, "invalid custom tool arguments done");
           }

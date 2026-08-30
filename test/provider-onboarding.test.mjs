@@ -7,8 +7,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { oauthLoginArgs } from "../src/provider-onboarding.mjs";
+import { freePort } from "./port-pool.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const inactiveRouterPort = await freePort();
 
 test("Grok tray sign-in explicitly starts the OAuth flow", () => {
   assert.deepEqual(oauthLoginArgs("grok-oauth"), ["login", "--oauth"]);
@@ -36,6 +38,10 @@ function isolatedEnvironment(testRoot) {
     npm_config_prefix: path.join(testRoot, "npm-global"),
     MODEL_ROUTER_TARGET: "codex",
     MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
+    MODEL_ROUTER_PORT: String(inactiveRouterPort),
+    CODEX_ROUTER_PORT: String(inactiveRouterPort),
+    CODEX_ROUTER_SERVICE_PLATFORM: "darwin",
+    MODEL_ROUTER_LAUNCH_AGENTS_DIR: path.join(testRoot, "launch-agents"),
     KIMI_CODE_HOME: path.join(testRoot, "kimi"),
     GROK_HOME: path.join(testRoot, "grok-home"),
     GROK_AUTH_PATH: path.join(testRoot, "grok", "auth.json"),
@@ -126,6 +132,53 @@ test("provider onboarding reports install, login, and API key actions without se
     assert.equal(byId.custom.credentialLabel, "Per-model endpoints");
     assert.match(byId.custom.perModelNote, /own endpoint/);
     assert.equal("source" in byId["kimi-api"], false);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("provider onboarding follows authoritative pool readiness instead of a legacy key", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "provider-pool-onboarding-"));
+  const readyEnvironment = {
+    ...isolatedEnvironment(testRoot),
+    OPENCODE_API_KEY: "TEST_ONBOARDING_POOL_KEY",
+  };
+  try {
+    const added = spawnSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "key-pool", "opencode-go", "add-env", "OPENCODE_API_KEY"],
+      { cwd: root, encoding: "utf8", env: readyEnvironment },
+    );
+    assert.equal(added.status, 0, added.stderr);
+    const ready = JSON.parse(execFileSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "providers", "--json"],
+      { cwd: root, encoding: "utf8", env: readyEnvironment },
+    ));
+    assert.equal(ready.providers.find((provider) => provider.id === "opencode-go").configured, true);
+
+    const unusableEnvironment = { ...readyEnvironment, OPENCODE_API_KEY: "" };
+    const savedLegacy = spawnSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "credential", "opencode-go"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: unusableEnvironment,
+        input: "TEST_LEGACY_KEY_MUST_NOT_MASK_POOL\n",
+      },
+    );
+    assert.equal(savedLegacy.status, 0, savedLegacy.stderr);
+    const unavailable = JSON.parse(execFileSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "providers", "--json"],
+      { cwd: root, encoding: "utf8", env: unusableEnvironment },
+    ));
+    assert.equal(unavailable.providers.find((provider) => provider.id === "opencode-go").configured, false);
+    assert.doesNotMatch(
+      JSON.stringify(unavailable),
+      /TEST_ONBOARDING_POOL_KEY|TEST_LEGACY_KEY_MUST_NOT_MASK_POOL/,
+    );
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

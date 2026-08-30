@@ -34,6 +34,7 @@ const {
 } = await import("../src/provider-selection.mjs");
 const { PROVIDER_SELECTION_PATH } = await import("../src/paths.mjs");
 const { privateFileIsProtected } = await import("../src/file-security.mjs");
+const { addEnvironmentCredentialToPool } = await import("../src/provider-api-key-control.mjs");
 
 // Write the selection file behind the API so a test can stage the exact state a
 // newer checkout, or a corrupt write, leaves behind for an older running build.
@@ -203,6 +204,45 @@ test("Command Code protocol variants follow their parent as one family", () => {
         .includes("commandcode-messages/claude-sonnet-5"),
     );
   } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("an authoritative ready pool publishes its family and an unusable pool masks a legacy key", async () => {
+  try {
+    rmSync(testRoot, { recursive: true, force: true });
+    process.env.OPENCODE_API_KEY = "TEST_POOL_ENVIRONMENT_KEY";
+    await addEnvironmentCredentialToPool("opencode-go", "OPENCODE_API_KEY");
+    writeProviderSelection(["opencode-go"]);
+
+    const ready = new Set(configuredProviderIds());
+    for (const providerId of [
+      "opencode-go",
+      "opencode-go-messages",
+      "opencode-go-responses",
+      "opencode-zen",
+    ]) {
+      assert.equal(ready.has(providerId), true, `${providerId} should follow the ready canonical pool`);
+    }
+    assert.ok(
+      selectedConfiguredListedModels().some((model) => model.provider === "opencode-go-responses"),
+      "a ready referenced environment key must publish models without a legacy key file",
+    );
+
+    delete process.env.OPENCODE_API_KEY;
+    writeProviderCredential("opencode-go", "TEST_LEGACY_KEY_MUST_NOT_BYPASS_POOL");
+    const unavailable = new Set(configuredProviderIds());
+    for (const providerId of [
+      "opencode-go",
+      "opencode-go-messages",
+      "opencode-go-responses",
+      "opencode-zen",
+    ]) {
+      assert.equal(unavailable.has(providerId), false, `${providerId} must obey the unusable canonical pool`);
+    }
+    assert.deepEqual(selectedConfiguredListedModels(), []);
+  } finally {
+    delete process.env.OPENCODE_API_KEY;
     rmSync(testRoot, { recursive: true, force: true });
   }
 });

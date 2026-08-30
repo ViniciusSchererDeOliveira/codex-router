@@ -591,6 +591,12 @@ async function handleChatCompletions(request, response) {
     });
   };
 
+  // Shape before touching OAuth state or an upstream. Unsupported forced tools
+  // are caller errors, and must remain a named local 400 even when the account
+  // is signed out or its cached session needs a network refresh.
+  const requestId = `agent-${randomUUID()}`;
+  let shapedBody = toAntigravityRequest(chat, { requestId });
+
   let context;
   try {
     context = await sessionAndProject();
@@ -610,8 +616,6 @@ async function handleChatCompletions(request, response) {
     return;
   }
 
-  const requestId = `agent-${randomUUID()}`;
-  let shapedBody;
   const makeUpstreamRequest = async (current) => {
     const active = assertAntigravityRouteCurrent(
       current.session,
@@ -662,8 +666,8 @@ async function handleChatCompletions(request, response) {
       assertAntigravityRouteCurrent(context.session, requestActivationGeneration);
       assertAntigravityProjectRevisionCurrent(context.session);
       context = await sessionAndProject({ force: true });
-      // A forced refresh may load a different account snapshot. Rebuild both
-      // access token and project in one body while retaining the request id.
+      // A forced refresh may load a different account snapshot. Refresh both
+      // access token and project while retaining the validated request id.
       upstream = await makeUpstreamRequest(context);
     } catch (error) {
       const status = httpErrorStatus(error, 401);

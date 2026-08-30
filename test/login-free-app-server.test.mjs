@@ -173,9 +173,19 @@ function runAppServerTurn(binary, env, model, modelProvider) {
       settled = true;
       clearTimeout(timer);
       lines.close();
+      const complete = () => {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        if (error) reject(error);
+        else resolve(value);
+      };
+      if (child.exitCode !== null || child.signalCode !== null) {
+        complete();
+        return;
+      }
+      child.once("exit", complete);
       child.kill();
-      if (error) reject(error);
-      else resolve(value);
     };
     const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
     const timer = setTimeout(
@@ -316,7 +326,7 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
     assert.match(JSON.stringify(notifications), new RegExp(MARKER));
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(codexHome, { recursive: true, force: true });
+    rmSync(codexHome, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 }
 

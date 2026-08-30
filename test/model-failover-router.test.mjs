@@ -20,6 +20,9 @@ const CALLER_KEY = "test-router-caller-capability-with-sufficient-length";
 // credentials for.
 const PRIMARY = { slug: "deepseek/deepseek-v4-pro", gatewayModel: "deepseek-v4-pro" };
 const FALLBACK = { slug: "zai-api/glm-5.2", gatewayModel: "zai-api-glm-5-2" };
+const V2_PRIMARY = { slug: "grok-api/grok-4.5", gatewayModel: "grok-api-grok-4-5" };
+const V2_FALLBACK = { slug: "kimi-api/kimi-k3", gatewayModel: "kimi-api-k3" };
+const V2_THIRD = { slug: "zai-coding/glm-5.3", gatewayModel: "zai-coding-glm-5-3" };
 const GROQ_CANDIDATE = {
   slug: "groq/tool-limit-failover-fixture",
   gatewayModel: "groq-tool-limit-failover-fixture",
@@ -85,6 +88,14 @@ const BAD_KEY_BODY = JSON.stringify({
   error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "401" },
 });
 
+const TRANSPORT_BODY = JSON.stringify({
+  error: {
+    type: "provider_transport_error",
+    code: "ECONNRESET",
+    message: "The provider connection failed before a response was available.",
+  },
+});
+
 async function mockServer(handler) {
   const server = http.createServer(handler);
   await new Promise((resolve, reject) => {
@@ -131,6 +142,7 @@ function run(
     cooldowns,
     toolResultAging = false,
     userModels,
+    v2Credentials = false,
   } = {},
 ) {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "model-failover-router-state-"));
@@ -190,6 +202,18 @@ function run(
       encoding: "utf8",
       mode: 0o600,
     });
+  }
+  if (v2Credentials) {
+    for (const [file, key] of [
+      ["xai-api-key.secret", "test-xai-key"],
+      ["kimi-api-key.secret", "test-kimi-key"],
+      ["zai-coding-api-key.secret", "test-zai-coding-key"],
+    ]) {
+      writeFileSync(path.join(stateDir, file), `${key}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }
   }
   const child = spawn(process.execPath, [path.join(root, "src", "router.mjs")], {
     cwd: root,
@@ -371,6 +395,143 @@ test("a turn whose provider is out of usage is served by the next model", async 
     assert.match(child.testErrors(), /failover model=deepseek\/deepseek-v4-pro/);
     assert.match(child.testErrors(), /reason=out_of_usage/);
     assert.match(child.testErrors(), /-> zai-api\/glm-5\.2 outcome=200/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a marked provider transport failure moves a subagent to a checked-in v2 route", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    const body = await bodyJson(request);
+    seen.push(body);
+    if (body.model === V2_PRIMARY.gatewayModel) {
+      response.writeHead(502, { "Content-Type": "application/json" });
+      response.end(TRANSPORT_BODY);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("subagent-transport-fallback"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(
+      routerPort,
+      { ...TURN_BODY, model: V2_PRIMARY.slug },
+      { headers: { "x-openai-subagent": "review-child" } },
+    );
+
+    assert.deepEqual(seen.map((body) => body.model), [
+      V2_PRIMARY.gatewayModel,
+      V2_FALLBACK.gatewayModel,
+    ]);
+    assert.equal(result.status, 200);
+    assert.match(result.body, /answered-by-subagent-transport-fallback/);
+    assert.doesNotMatch(result.body, /provider_transport_error/);
+    assert.match(child.testErrors(), /reason=transport/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a marked provider transport failure does not move an ordinary turn", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    seen.push(await bodyJson(request));
+    response.writeHead(502, { "Content-Type": "application/json" });
+    response.end(TRANSPORT_BODY);
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(routerPort, { ...TURN_BODY, model: V2_PRIMARY.slug });
+
+    assert.deepEqual(seen.map((body) => body.model), [V2_PRIMARY.gatewayModel]);
+    assert.equal(result.status, 502);
+    assert.match(child.testErrors(), /reason=transport -> none outcome=no-candidate/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a subagent header cannot grant fallback authority to an unverified route", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    seen.push(await bodyJson(request));
+    response.writeHead(502, { "Content-Type": "application/json" });
+    response.end(TRANSPORT_BODY);
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(
+      routerPort,
+      TURN_BODY,
+      { headers: { "x-openai-subagent": "caller-claimed-child" } },
+    );
+
+    assert.deepEqual(seen.map((body) => body.model), [PRIMARY.gatewayModel]);
+    assert.equal(result.status, 502);
+    assert.match(child.testErrors(), /reason=transport -> none outcome=no-candidate/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("subagent transport failover stops on the first application response", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    const body = await bodyJson(request);
+    seen.push(body);
+    if (body.model === V2_PRIMARY.gatewayModel) {
+      response.writeHead(502, { "Content-Type": "application/json" });
+      response.end(TRANSPORT_BODY);
+      return;
+    }
+    if (body.model === V2_FALLBACK.gatewayModel) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "bad request" } }));
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("must-not-run"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug, V2_THIRD.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(
+      routerPort,
+      { ...TURN_BODY, model: V2_PRIMARY.slug },
+      { headers: { "x-openai-subagent": "review-child" } },
+    );
+
+    assert.deepEqual(seen.map((body) => body.model), [
+      V2_PRIMARY.gatewayModel,
+      V2_FALLBACK.gatewayModel,
+    ]);
+    assert.equal(result.status, 400);
+    assert.doesNotMatch(result.body, /must-not-run/);
   } finally {
     await stopChild(child);
     await closeServer(gw.server);

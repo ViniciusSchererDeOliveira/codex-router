@@ -432,6 +432,13 @@ test("a curated model can opt into the auto tool-choice profile", () => {
   assert.equal(parseRequestProfile("auto-tool-choice"), "auto-tool-choice");
 });
 
+test("a curated model can opt into the narrow encrypted-schema profile", () => {
+  assert.equal(
+    parseRequestProfile("codex-encrypted-schema"),
+    "codex-encrypted-schema",
+  );
+});
+
 test("an unknown request profile is rejected by name", () => {
   // Nothing validates requestProfile downstream — the forwarder just runs no
   // branch — so a typo would store a model that silently keeps failing.

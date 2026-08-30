@@ -9,6 +9,7 @@ import {
   installGracefulShutdown,
   pipeResponse,
   readRequestBody,
+  readResponseBody,
   reportListenFailure,
   requireInternalAuth,
   writeJson,
@@ -18,11 +19,16 @@ import {
   API_MODELS,
   MODEL_BY_GATEWAY_ID,
   PROVIDERS,
+  RUNTIME_PROVIDERS,
   providerForModel,
   endpointForModel,
   resolveProviderBaseUrl,
 } from "./model-registry.mjs";
-import { cooldownUntil, parseRateLimitHeaders } from "./rate-limit-headers.mjs";
+import {
+  cooldownUntil,
+  parseRateLimitHeaders,
+  requestQuotaFromRateLimitHeaders,
+} from "./rate-limit-headers.mjs";
 import { recordRateLimitSnapshot } from "./rate-limit-state.mjs";
 import { recordProviderCooldown } from "./model-failover.mjs";
 import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
@@ -30,7 +36,6 @@ import { stripImages, supportsImageInput } from "./vision-bridge.mjs";
 import {
   credentialLabel,
   credentialStatus,
-  resolveProviderCredential,
 } from "./provider-credentials.mjs";
 import {
   ensureFreshGitHubCopilotSession,
@@ -50,6 +55,21 @@ import {
   createResponsesStreamTransform,
   normalizeOpenAIRequest,
 } from "./openai-adapters.mjs";
+import { threadIdFromHeaders } from "./codex-session-names.mjs";
+import {
+  effectiveProviderCredentialStatus,
+  providerApiKeyAuthoritySnapshot,
+  recordProviderApiKeyRequestOutcome,
+  resolveProviderApiKeyForRequest,
+  resolveStoredCredential,
+} from "./provider-api-key-routing.mjs";
+import {
+  runProviderApiKeyAttempts,
+} from "./provider-api-key-pool.mjs";
+import { stripCodexEncryptedSchemaAnnotation } from "./tool-schema-root.mjs";
+import { requestGenericProvider } from "./generic-providers.mjs";
+import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
+import { providerTransportError } from "./transport-failure.mjs";
 
 installStableFetchTransport();
 
@@ -121,6 +141,21 @@ function ollamaCloudEffort(value) {
   if (value === "medium") return "medium";
   if (["xhigh", "max", "ultra"].includes(value)) return "max";
   return "high";
+}
+
+// HY4 itself documents two native modes: high and no_think. OpenAI-compatible
+// relays expose the off switch as `none`; the relays that offer an intermediate
+// tier add `low`. Codex's picker has no `none` rung, so these checked-in routes
+// advertise `minimal` as the no-thinking choice and translate it here. Do not
+// borrow the rest of Codex's ladder: medium and above collapse to HY4's native
+// high mode, while low is forwarded only when the route explicitly publishes it.
+function hy4Effort(value, levels) {
+  if (["none", "minimal"].includes(value)) return "none";
+  if (value === "low" && levels.includes("low")) return "low";
+  if (["low", "medium", "high", "xhigh", "max", "ultra"].includes(value)) {
+    return "high";
+  }
+  return undefined;
 }
 
 // Some upstreams document reasoning_effort per model rather than per vendor:
@@ -304,6 +339,7 @@ function ensureToolResultsForCalls(messages) {
 const GEMINI_THOUGHT_SIGNATURE_SENTINEL = "skip_thought_signature_validator";
 
 function isGeminiProvider(provider, model) {
+  if (provider?.generic === true) return false;
   if (provider?.id === "gemini-api" || provider?.ownedBy?.toLowerCase?.() === "google") {
     return true;
   }
@@ -318,14 +354,39 @@ function isGeminiProvider(provider, model) {
   ].some((value) => typeof value === "string" && value.toLowerCase().includes("gemini"));
 }
 
+function stripEncryptedToolSchemaAnnotations(payload, protocol) {
+  if (!Array.isArray(payload.tools)) return;
+  let changed = false;
+  const tools = payload.tools.map((tool) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool) || tool.type !== "function") {
+      return tool;
+    }
+    if (protocol === "openai-responses") {
+      const repaired = stripCodexEncryptedSchemaAnnotation(tool.parameters);
+      if (repaired === tool.parameters) return tool;
+      changed = true;
+      return { ...tool, parameters: repaired };
+    }
+    const fn = tool.function;
+    if (!fn || typeof fn !== "object" || Array.isArray(fn)) return tool;
+    const repaired = stripCodexEncryptedSchemaAnnotation(fn.parameters);
+    if (repaired === fn.parameters) return tool;
+    changed = true;
+    return { ...tool, function: { ...fn, parameters: repaired } };
+  });
+  if (changed) payload.tools = tools;
+}
+
 // A trailing model turn is a destructive rewrite: it discards part of the
 // caller's conversation. Only Google's own provider gets that behavior from
 // identity. Resellers and custom endpoints must opt in per model after their
 // endpoint has proved that it rejects a prefilled model turn.
 function requiresTrailingUserTurn(provider, model) {
   return (
-    provider?.id === "gemini-api" ||
-    provider?.ownedBy?.toLowerCase?.() === "google" ||
+    (provider?.generic !== true && (
+      provider?.id === "gemini-api" ||
+      provider?.ownedBy?.toLowerCase?.() === "google"
+    )) ||
     model?.requiresTrailingUserTurn === true
   );
 }
@@ -668,6 +729,9 @@ function normalizeBody(buffer, contentType, route) {
       );
     }
   }
+  if (model.requestProfile === "codex-encrypted-schema") {
+    stripEncryptedToolSchemaAnnotations(payload, provider.protocol);
+  }
   if (model.requestProfile === "clinepass") {
     delete payload.reasoning_effort;
     delete payload.thinking;
@@ -715,6 +779,15 @@ function normalizeBody(buffer, contentType, route) {
       payload.tool_choice !== "none"
     ) {
       payload.tool_choice = "auto";
+    }
+  } else if (model.requestProfile === "hy4-reasoning") {
+    if (payload.reasoning_effort !== undefined) {
+      const effort = hy4Effort(
+        payload.reasoning_effort,
+        (model.reasoningLevels || []).map((level) => level.effort),
+      );
+      if (effort) payload.reasoning_effort = effort;
+      else delete payload.reasoning_effort;
     }
   } else if (model.requestProfile === "qwen-plan") {
     // DashScope documents reasoning_effort only for the cross-vendor
@@ -905,10 +978,11 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
     }
     if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
   }
-  if (endpoint.authMode === "anonymous") {
+  if (provider.generic === true || endpoint.authMode === "anonymous") {
     // The upstream explicitly permits anonymous access -- for a reseller's
-    // free-model subset, or for a single allowlisted community endpoint.
-    // Never forward the gateway's internal bearer token to either.
+    // free-model subset, a single allowlisted community endpoint, or the
+    // generic-provider boundary which injects its own confined credential.
+    // Never forward the gateway's internal bearer token to any of them.
   } else if (provider.protocol === "anthropic") {
     headers["x-api-key"] = apiKey;
     headers["anthropic-version"] ||= "2023-06-01";
@@ -922,6 +996,37 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
   // redundant, and the HTTP/1.1 dispatcher rejects the request outright
   // (UND_ERR_INVALID_ARG) when a caller-supplied value accompanies a body.
   return headers;
+}
+
+async function relayUpstreamResponse(
+  normalized,
+  upstream,
+  response,
+  startedAt,
+  telemetryUpstream = upstream,
+) {
+  const upstreamContentType = upstream.headers.get("content-type") || "";
+  const responsesStream = normalized.responseAdapter === "responses" &&
+    upstream.ok && upstreamContentType.toLowerCase().includes("text/event-stream");
+  const responsesJson = normalized.responseAdapter === "responses" &&
+    upstream.ok && upstreamContentType.toLowerCase().includes("application/json");
+  const transform = [
+    responsesStream ? createResponsesStreamTransform() : undefined,
+    responsesJson ? createResponsesJsonTransform() : undefined,
+    zaiCacheUsageTransform(normalized.provider.id, upstreamContentType),
+  ].filter(Boolean);
+  const denylist = transform.length
+    ? new Set([...HOP_BY_HOP_HEADERS, "content-type"])
+    : undefined;
+  if (responsesStream) response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  if (responsesJson) response.setHeader("Content-Type", "application/json; charset=utf-8");
+  await pipeResponse(upstream, response, denylist, transform);
+  recordUpstreamLimits(normalized, telemetryUpstream);
+  if (!QUIET) {
+    console.error(
+      `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} status=${upstream.status} duration_ms=${Date.now() - startedAt}`,
+    );
+  }
 }
 
 async function upstreamSession(provider, credential, payload, options = {}, endpoint = provider) {
@@ -964,20 +1069,54 @@ function recordUpstreamLimits(normalized, upstream) {
   });
 }
 
+function responseRetryAfterSeconds(headers, now = Date.now()) {
+  const retryAt = Date.parse(parseRateLimitHeaders(headers, { now })?.retryAt || "");
+  if (!Number.isFinite(retryAt) || retryAt <= now) return undefined;
+  return Math.max(1, Math.ceil((retryAt - now) / 1_000));
+}
+
 function healthPayload() {
   const providers = {};
+  let ok = true;
   const enabled = new Set(readProviderSelection());
-  for (const provider of PROVIDERS.values()) {
-    if (provider.kind !== "openai-compatible" || !enabled.has(provider.id)) continue;
-    const status = credentialStatus(provider);
+  const poolAuthoritySnapshot = providerApiKeyAuthoritySnapshot();
+  for (const provider of RUNTIME_PROVIDERS.values()) {
+    if (provider.kind !== "openai-compatible") continue;
+    if (provider.generic === true) {
+      const configured = genericProviderConfigured(provider.id);
+      providers[provider.id] = {
+        generic: true,
+        credential_present: configured,
+        credential_source: provider.credentialRef ? "bound credential reference" : "not required",
+      };
+      continue;
+    }
+    if (!enabled.has(provider.id)) continue;
+    const status = effectiveProviderCredentialStatus(provider, {
+      poolAuthoritySnapshot,
+    });
+    if (status.pooled && status.configured !== true) ok = false;
     providers[provider.id] = {
       credential_present: status.configured,
       ...(status.configured
         ? { credential_source: status.source }
         : { setup: status.setup }),
+      ...(status.pooled
+        ? {
+            api_key_pool: {
+              configured: true,
+              valid: poolAuthoritySnapshot.valid,
+              usable: status.poolReadiness?.usable === true,
+              reason: status.poolReadiness?.reason || "invalid_pool_state",
+              credential_count: status.poolReadiness?.credentialCount || 0,
+              eligible_credential_count: status.poolReadiness?.eligibleCredentialCount || 0,
+              resolvable_credential_count: status.poolReadiness?.resolvableCredentialCount || 0,
+            },
+          }
+        : {}),
     };
   }
-  return { ok: true, service: "codex-router-api-forwarder", providers };
+  return { ok, service: "codex-router-api-forwarder", providers };
 }
 
 function localModels(response) {
@@ -999,7 +1138,8 @@ async function handleRequest(request, response) {
   );
   if (!requireInternalAuth(request, response, INTERNAL_KEY)) return;
   if (request.method === "GET" && requestUrl.pathname === "/health") {
-    writeJson(response, 200, healthPayload());
+    const health = healthPayload();
+    writeJson(response, health.ok ? 200 : 503, health);
     return;
   }
 
@@ -1020,12 +1160,57 @@ async function handleRequest(request, response) {
 
   const original = await readRequestBody(request);
   const normalized = normalizeBody(original, request.headers["content-type"], route);
+  const controller = new AbortController();
+  request.once("aborted", () => controller.abort());
+  response.once("close", () => {
+    if (!response.writableEnded) controller.abort();
+  });
+
+  // Generic providers own a stricter request boundary than checked-in routes:
+  // it re-reads the operator descriptor, revalidates DNS, rejects redirects,
+  // and injects only the credential reference bound to that provider. Do not
+  // resolve it through the built-in credential path or construct its URL here;
+  // either would bypass the confinement #404 established.
+  if (normalized.provider.generic === true) {
+    const { response: upstream, dispatcher } = await requestGenericProvider(
+      normalized.provider.id,
+      `${route}${requestUrl.search}`,
+      {
+        method: request.method,
+        headers: upstreamHeaders(
+          request.headers,
+          normalized.body,
+          undefined,
+          normalized.provider,
+        ),
+        body: normalized.body,
+        signal: controller.signal,
+        // A model generation lives as long as its caller. Discovery and the
+        // explicit provider test remain separately bounded.
+        timeoutMs: 0,
+      },
+    );
+    try {
+      await relayUpstreamResponse(normalized, upstream, response, startedAt);
+    } finally {
+      await dispatcher?.close().catch(() => undefined);
+    }
+    return;
+  }
+
   // Resolved against the endpoint, not the provider: a per-model endpoint keeps
   // its credential under its own slug, so two custom models on two hosts never
-  // share a key and one missing key never blocks the other model.
-  const credential = resolveProviderCredential(normalized.endpoint);
+  // share a key and one missing key never blocks the other model. A configured
+  // pool is authoritative; the routing helper deliberately refuses to fall
+  // back to the legacy single key when the pool has no usable entry.
+  const poolRouting = await resolveProviderApiKeyForRequest(normalized.endpoint, {
+    sessionId: threadIdFromHeaders(request.headers),
+  });
+  const credential = poolRouting.credential;
   if (!credential) {
-    const setup = credentialStatus(normalized.endpoint).setup;
+    const setup = poolRouting.pooled
+      ? "Add a usable credential reference to the provider API-key pool."
+      : credentialStatus(normalized.endpoint).setup;
     const credentialType = credentialLabel(normalized.endpoint);
     const label = credentialType === "API key" ? "key" : credentialType.toLowerCase();
     // Name whichever of the two the operator would go and configure. For a
@@ -1036,9 +1221,11 @@ async function handleRequest(request, response) {
       : normalized.provider.displayName;
     writeJson(response, 503, {
       error: {
-        type: credentialType === "API key"
-          ? "provider_api_key_missing"
-          : "provider_credential_missing",
+        type: poolRouting.pooled
+          ? "provider_api_key_pool_unavailable"
+          : credentialType === "API key"
+            ? "provider_api_key_missing"
+            : "provider_credential_missing",
         provider: normalized.provider.id,
         message: `${subject} ${label} is not configured. ${setup}.`,
       },
@@ -1046,45 +1233,54 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const controller = new AbortController();
-  request.once("aborted", () => controller.abort());
-  response.once("close", () => {
-    if (!response.writableEnded) controller.abort();
-  });
   // Command Code's documented API is an entitlement, not a credential: the
   // same key that runs its CLI is refused by /provider/v1 on the plans most of
   // its customers buy. The CLI's own route serves those plans, so an account
   // already known to be refused goes straight there rather than paying a 403
   // for the privilege of finding out again.
-  const commandCode = isCommandCodeProvider(normalized.provider)
+  let routedCredentialValue = credential.value;
+  let commandCode = isCommandCodeProvider(normalized.provider)
     ? (() => {
         const id = canonicalProviderId(normalized.provider.id);
-        return { id, ...commandCodeRoute(id, credential.value) };
+        return { id, ...commandCodeRoute(id, routedCredentialValue) };
       })()
     : undefined;
-  const relayThroughPlan = async () => {
+  const relayThroughPlan = async (
+    apiKey = routedCredentialValue,
+    { recordOutcome = true, deferErrors = false } = {},
+  ) => {
     const outcome = await relayCommandCodeGenerate({
       payload: normalized.payload,
       model: normalized.model,
       provider: normalized.provider,
-      apiKey: credential.value,
+      apiKey,
       baseUrl: providerBaseUrl(normalized.endpoint),
       response,
       signal: controller.signal,
+      deferErrors,
     });
     // The plan route meters the same subscription and answers the same quota
-    // headers, so it reports limits and cooldowns exactly as the documented
-    // one does. Skipping this would leave the router blind to an exhausted
-    // plan on the very accounts this route exists to serve.
-    recordUpstreamLimits(normalized, outcome);
+    // headers. A direct or pool-selected outcome reports those limits here;
+    // intermediate pooled failures defer them until another key wins so one
+    // credential cannot cool the whole provider before failover finishes.
+    if (recordOutcome) {
+      await recordProviderApiKeyRequestOutcome(poolRouting, normalized.endpoint, {
+        status: outcome.status,
+        ok: outcome.ok,
+        committed: true,
+        error: outcome.ok ? undefined : `upstream status ${outcome.status}`,
+      });
+      recordUpstreamLimits(normalized, outcome);
+    }
     if (!QUIET) {
       console.error(
         `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} ` +
           `route=alpha-generate status=${outcome.status} duration_ms=${Date.now() - startedAt}`,
       );
     }
+    return outcome;
   };
-  if (commandCode?.route === "plan") {
+  if (!poolRouting.pooled && commandCode?.route === "plan") {
     await relayThroughPlan();
     return;
   }
@@ -1094,30 +1290,197 @@ async function handleRequest(request, response) {
   const upstreamBody = normalized.provider.authProfile === "github-copilot"
     ? normalized.body.toString("utf8")
     : normalized.body;
-  let session = await upstreamSession(
-    normalized.provider,
-    credential,
-    normalized.payload,
-    {},
-    normalized.endpoint,
-  );
-  let target = `${session.baseUrl}${route}${requestUrl.search}`;
-  let upstream = await fetch(target, {
-    method: request.method,
-    headers: upstreamHeaders(
-      request.headers,
-      upstreamBody,
-      session.apiKey,
+  let session;
+  let target;
+  let upstream;
+  let deferredUpstreamLimits;
+  if (poolRouting.pooled) {
+    const pooled = await runProviderApiKeyAttempts(normalized.endpoint.id, {
+      filePath: undefined,
+      resolveCredential: (credentialId) =>
+        resolveStoredCredential(normalized.endpoint, credentialId),
+      sessionId: threadIdFromHeaders(request.headers),
+      isResponseCommitted: () => response.headersSent || response.writableEnded || response.writableFinished,
+      send: async ({ apiKey, credentialId }) => {
+        const attemptCommandCode = isCommandCodeProvider(normalized.provider)
+          ? (() => {
+              const id = canonicalProviderId(normalized.provider.id);
+              return { id, ...commandCodeRoute(id, apiKey) };
+            })()
+          : undefined;
+        if (attemptCommandCode?.route === "plan") {
+          const outcome = await relayThroughPlan(apiKey, {
+            recordOutcome: false,
+            deferErrors: true,
+          });
+          const upstreamHeaders = outcome.headers;
+          return {
+            ...outcome,
+            headers: outcome.responseHeaders || upstreamHeaders,
+            upstreamHeaders,
+            retryAfterSeconds: responseRetryAfterSeconds(upstreamHeaders),
+            quota: requestQuotaFromRateLimitHeaders(upstreamHeaders),
+            committed: outcome.committed === true,
+            route: "plan",
+            credentialId,
+          };
+        }
+        const attemptCredential = { ...credential, value: apiKey };
+        let attemptSession = await upstreamSession(
+          normalized.provider,
+          attemptCredential,
+          normalized.payload,
+          {},
+          normalized.endpoint,
+        );
+        let attemptTarget = `${attemptSession.baseUrl}${route}${requestUrl.search}`;
+        const sendAttempt = () => fetch(attemptTarget, {
+          method: request.method,
+          headers: upstreamHeaders(
+            request.headers,
+            upstreamBody,
+            attemptSession.apiKey,
+            normalized.provider,
+            attemptSession.headers,
+            normalized.endpoint,
+          ),
+          body: upstreamBody,
+          signal: controller.signal,
+        });
+        let attemptResponse = await sendAttempt();
+        // The source credential can still be valid when Copilot changes the
+        // account's inference endpoint or short-lived routing token. Preserve
+        // the existing same-key force-refresh contract inside each pool
+        // attempt; only a second 401 proves this credential should be cooled
+        // and the next pool entry tried.
+        if (normalized.provider.authProfile === "github-copilot" && attemptResponse.status === 401) {
+          await attemptResponse.body?.cancel().catch(() => undefined);
+          attemptSession = await upstreamSession(
+            normalized.provider,
+            attemptCredential,
+            normalized.payload,
+            { force: true },
+            normalized.endpoint,
+          );
+          attemptTarget = `${attemptSession.baseUrl}${route}${requestUrl.search}`;
+          attemptResponse = await sendAttempt();
+        }
+        if (!attemptResponse.ok) {
+          const bodyText = (await readResponseBody(attemptResponse, {
+            signal: controller.signal,
+          })).toString("utf8");
+          if (attemptCommandCode && attemptResponse.status === 403) {
+            let refusal;
+            try {
+              refusal = JSON.parse(bodyText);
+            } catch {
+              refusal = undefined;
+            }
+            if (isUpgradeRequired(attemptResponse.status, refusal)) {
+              recordCommandCodeRoute(attemptCommandCode.id, apiKey, { providerApi: false });
+              const outcome = await relayThroughPlan(apiKey, {
+                recordOutcome: false,
+                deferErrors: true,
+              });
+              const upstreamHeaders = outcome.headers;
+              return {
+                ...outcome,
+                headers: outcome.responseHeaders || upstreamHeaders,
+                upstreamHeaders,
+                retryAfterSeconds: responseRetryAfterSeconds(upstreamHeaders),
+                quota: requestQuotaFromRateLimitHeaders(upstreamHeaders),
+                committed: outcome.committed === true,
+                route: "plan",
+                credentialId,
+              };
+            }
+          }
+          return {
+            status: attemptResponse.status,
+            ok: false,
+            committed: false,
+            retryAfterSeconds: responseRetryAfterSeconds(attemptResponse.headers),
+            quota: requestQuotaFromRateLimitHeaders(attemptResponse.headers),
+            bodyText,
+            headers: attemptResponse.headers,
+            session: attemptSession,
+            target: attemptTarget,
+          };
+        }
+        return {
+          status: attemptResponse.status,
+          ok: true,
+          committed: false,
+          response: attemptResponse,
+          headers: attemptResponse.headers,
+          quota: requestQuotaFromRateLimitHeaders(attemptResponse.headers),
+          session: attemptSession,
+          target: attemptTarget,
+        };
+      },
+    });
+    const result = pooled.result;
+    if (result?.upstreamHeaders) {
+      // Plan attempts keep their provider headers separate from the safe error
+      // headers relayed to the caller. Only the result the pool selected may
+      // update provider-wide telemetry; rejected intermediate keys already
+      // recorded their quota and cooldown in per-credential pool state.
+      deferredUpstreamLimits = { ...result, headers: result.upstreamHeaders };
+    }
+    if (pooled.committed || result?.committed) {
+      // A committed attempt owns the response even when its relay throws. Let
+      // the server-level error path terminate that existing stream; falling
+      // through would try to create a second JSON response after its head.
+      if (pooled.error) throw pooled.error;
+      if (deferredUpstreamLimits) recordUpstreamLimits(normalized, deferredUpstreamLimits);
+      return;
+    }
+    if (!result || (result.response === undefined && result.bodyText === undefined)) {
+      writeJson(response, 503, {
+        error: {
+          type: "provider_api_key_pool_unavailable",
+          message: "The provider API-key pool could not complete this request before response bytes were committed.",
+        },
+      });
+      return;
+    }
+    session = result.session;
+    target = result.target;
+    if (isCommandCodeProvider(normalized.provider) && pooled.credentialValue) {
+      const id = canonicalProviderId(normalized.provider.id);
+      routedCredentialValue = pooled.credentialValue;
+      commandCode = { id, ...commandCodeRoute(id, routedCredentialValue) };
+    }
+    upstream = result.response || new Response(result.bodyText || "", {
+      status: result.status,
+      headers: result.headers,
+    });
+  } else {
+    session = await upstreamSession(
       normalized.provider,
-      session.headers,
+      credential,
+      normalized.payload,
+      {},
       normalized.endpoint,
-    ),
-    body: upstreamBody,
-    signal: controller.signal,
-  });
+    );
+    target = `${session.baseUrl}${route}${requestUrl.search}`;
+    upstream = await fetch(target, {
+      method: request.method,
+      headers: upstreamHeaders(
+        request.headers,
+        upstreamBody,
+        session.apiKey,
+        normalized.provider,
+        session.headers,
+        normalized.endpoint,
+      ),
+      body: upstreamBody,
+      signal: controller.signal,
+    });
+  }
   // Account routing can change with plan or policy. Re-resolve and replay once
   // before any response byte reaches the caller; every other status is relayed.
-  if (normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
+  if (!poolRouting.pooled && normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
     await upstream.body?.cancel().catch(() => undefined);
     session = await upstreamSession(
       normalized.provider,
@@ -1146,8 +1509,8 @@ async function handleRequest(request, response) {
   // because only its body distinguishes "this plan has no API access" from
   // every other 403 a gateway can send, and a plan refusal must not reach the
   // caller as a failed turn when a working route exists.
-  if (commandCode && upstream.status === 403) {
-    const raw = await upstream.text().catch(() => "");
+  if (commandCode && !poolRouting.pooled && upstream.status === 403) {
+    const raw = (await readResponseBody(upstream, { signal: controller.signal })).toString("utf8");
     let refusal;
     try {
       refusal = JSON.parse(raw);
@@ -1155,7 +1518,7 @@ async function handleRequest(request, response) {
       refusal = undefined;
     }
     if (isUpgradeRequired(upstream.status, refusal)) {
-      recordCommandCodeRoute(commandCode.id, credential.value, { providerApi: false });
+      recordCommandCodeRoute(commandCode.id, routedCredentialValue, { providerApi: false });
       await relayThroughPlan();
       return;
     }
@@ -1175,35 +1538,21 @@ async function handleRequest(request, response) {
   // re-check window came due, so a healthy Provider-plan account never rewrites
   // this state once per turn to repeat what it already said.
   if (commandCode?.recheck && upstream.ok) {
-    recordCommandCodeRoute(commandCode.id, credential.value, { providerApi: true });
+    recordCommandCodeRoute(commandCode.id, routedCredentialValue, { providerApi: true });
   }
-  const upstreamContentType = upstream.headers.get("content-type") || "";
-  const responsesStream = normalized.responseAdapter === "responses" &&
-    upstream.ok && upstreamContentType.toLowerCase().includes("text/event-stream");
-  const responsesJson = normalized.responseAdapter === "responses" &&
-    upstream.ok && upstreamContentType.toLowerCase().includes("application/json");
-  const transform = [
-    responsesStream ? createResponsesStreamTransform() : undefined,
-    responsesJson ? createResponsesJsonTransform() : undefined,
-    zaiCacheUsageTransform(normalized.provider.id, upstreamContentType),
-  ].filter(Boolean);
-  const denylist = transform.length
-    ? new Set([...HOP_BY_HOP_HEADERS, "content-type"])
-    : undefined;
-  if (responsesStream) response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  if (responsesJson) response.setHeader("Content-Type", "application/json; charset=utf-8");
-  await pipeResponse(upstream, response, denylist, transform);
-  recordUpstreamLimits(normalized, upstream);
-  if (!QUIET) {
-    console.error(
-      `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} status=${upstream.status} duration_ms=${Date.now() - startedAt}`,
-    );
-  }
+  await relayUpstreamResponse(
+    normalized,
+    upstream,
+    response,
+    startedAt,
+    deferredUpstreamLimits || upstream,
+  );
 }
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     const status = httpErrorStatus(error);
+    const transport = providerTransportError(error);
     // Names and codes only: a forwarder failure can wrap upstream response
     // text in its message, and bodies never belong in the log. The code chain
     // is what distinguishes a dead socket from a refused connect (#171).
@@ -1212,7 +1561,7 @@ const server = http.createServer((request, response) => {
     );
     if (!response.headersSent) {
       writeJson(response, status, {
-        error: {
+        error: transport || {
           type: "provider_api_proxy_error",
           message: "The API-provider forwarder could not complete the request.",
         },

@@ -35,6 +35,26 @@
   cannot prove any historical tail safe. Bundles retain redacted generated
   diagnostics and log-file metadata without copying arbitrary log contents;
   the former `--include-logs` switch remains accepted as a deprecated no-op.
+- **Reinstalling over a state directory owned by another checkout no longer
+  deadlocks.** The installers recorded the state directory's new owner only
+  after the background service reported healthy, while the service itself
+  refuses to boot for as long as the record still names another checkout
+  (`foreign_state_owner`): an install that followed one from a different
+  checkout crash-looped for the full 300-second readiness budget, rolled
+  back, and repeated on every retry, and deleting the whole state directory
+  -- every stored provider key with it -- was the only escape. The record now
+  precedes the service step it describes, so the service boots against its
+  own ownership. The ownership override the installers run under is scoped
+  to that full, ownership-transferring install on both platforms: a
+  prepare-only run meets the guard like any other writer (and the Windows
+  installer restores the caller's environment when it finishes). Linux
+  readiness also fails fast once the service manager's restart counter shows
+  a crash loop, instead of waiting out the whole budget, and names the
+  journal and the router log in the error; the counter query itself is
+  killed inside a bounded slice of the remaining budget, so a blocked
+  `systemctl` cannot stretch the wait, and a health answer that lands as the
+  threshold is crossed still wins over the crash-loop verdict.
+
 - **OpenCode Go Kimi K2.7 Code now accepts current Codex tool schemas.** Its
   Moonshot-backed validator receives the same bounded decorated-`$defs` repair
   as the first-party Kimi routes. The compatibility gate names only this

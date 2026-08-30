@@ -134,6 +134,9 @@ export const NATIVE_SESSION_CONSENT_PATH = path.join(
 // cache for the curation surfaces, never an authority: what is registered
 // locally is always recomputed from the live registry.
 export const PROVIDER_CATALOG_CACHE_PATH = path.join(STATE_DIR, "provider-catalog-cache.json");
+export const PROVIDER_API_KEY_POOL_PATH =
+  process.env.MODEL_ROUTER_API_KEY_POOL_PATH ||
+  path.join(STATE_DIR, "provider-api-key-pools.json");
 export const INSTALL_MANIFEST_PATH = path.join(STATE_DIR, "install-manifest.json");
 export const SKILL_OWNERSHIP_PATH = path.join(STATE_DIR, "managed-skills.json");
 export const MIGRATIONS_DIR = path.join(STATE_DIR, "migrations");
@@ -151,6 +154,12 @@ export const GENERIC_PROVIDERS_PATH =
   process.env.MODEL_ROUTER_GENERIC_PROVIDERS ||
   path.join(STATE_DIR, "generic-providers.json");
 export const GENERIC_PROVIDER_CREDENTIALS_DIR = path.join(STATE_DIR, "generic-provider-credentials");
+// Explicit Codex-only bindings from a routed model to a separately
+// credentialed search provider. The document contains provider ids and policy
+// bounds only; endpoints and secrets remain owned by generic provider state.
+export const SEARCH_SIDECARS_PATH =
+  process.env.MODEL_ROUTER_SEARCH_SIDECARS ||
+  path.join(STATE_DIR, "search-sidecars.json");
 export const SUPPORT_DIR = path.join(STATE_DIR, "support");
 export const LOG_PATH = path.join(STATE_DIR, "router.log");
 export const SERVICE_PROCESS_STATE_PATH = path.join(STATE_DIR, "service-process.json");
