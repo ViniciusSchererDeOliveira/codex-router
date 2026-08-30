@@ -22,6 +22,7 @@ import {
   requestChatGPTProfileSwitch,
   selectChatGPTProfileAccount,
 } from "../src/chatgpt-profile-switch.mjs";
+import { withCatalogPublicationLock } from "../src/catalog-publication-lock.mjs";
 
 function runModuleChild(source) {
   return new Promise((resolve, reject) => {
@@ -251,6 +252,68 @@ test("a catalog refresh failure restores the previous auth and catalog atomicall
   assert.equal(readFileSync(modelsCachePath, "utf8"), '{"account":"first"}');
   assert.equal(readChatGPTProfileSwitchState(switchPath).active, first.id);
   assert.equal(readChatGPTProfileSwitchState(switchPath).pending, true);
+});
+
+test("a failed profile rollback cannot overwrite a queued catalog publication", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-publication-lock-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const catalog = Object.fromEntries([
+    ["modelsCachePath", path.join(root, "models_cache.json")],
+    ["nativeCatalogPath", path.join(root, "native-models.json")],
+    ["mergedCatalogPath", path.join(root, "merged-models.json")],
+    ["nativeAliasPath", path.join(root, "native-aliases.json")],
+    ["announcedModelsPath", path.join(root, "announced-models.json")],
+  ]);
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  for (const target of Object.values(catalog)) {
+    writeFileSync(target, JSON.stringify({ publisher: "before-switch" }), { mode: 0o600 });
+  }
+
+  let markRefreshStarted;
+  let releaseRefresh;
+  const refreshStarted = new Promise((resolve) => { markRefreshStarted = resolve; });
+  const refreshRelease = new Promise((resolve) => { releaseRefresh = resolve; });
+  const switching = requestChatGPTProfileSwitch(second.id, {
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    catalogLockStateDir: root,
+    platform: "darwin",
+    processList: "",
+    ...catalog,
+    refreshCatalog: async () => {
+      writeFileSync(catalog.mergedCatalogPath, JSON.stringify({ publisher: "switch" }), { mode: 0o600 });
+      markRefreshStarted();
+      await refreshRelease;
+      throw new Error("forced profile publication failure");
+    },
+  });
+  await refreshStarted;
+
+  let queuedPublisherStarted = false;
+  const queuedPublication = withCatalogPublicationLock(async () => {
+    queuedPublisherStarted = true;
+    writeFileSync(catalog.mergedCatalogPath, JSON.stringify({ publisher: "provider" }), { mode: 0o600 });
+  }, { stateDir: root, waitMs: 5_000, retryMs: 20, staleMs: 5_000 });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(queuedPublisherStarted, false, "the provider publisher must wait through profile rollback");
+
+  releaseRefresh();
+  await assert.rejects(switching, /forced profile publication failure/);
+  await queuedPublication;
+  assert.deepEqual(JSON.parse(readFileSync(catalog.mergedCatalogPath, "utf8")), { publisher: "provider" });
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
 });
 
 test("concurrent account switches serialize without producing a torn auth file", async () => {

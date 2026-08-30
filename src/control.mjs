@@ -12,6 +12,7 @@ import {
 } from "./model-overlay-publication.mjs";
 import { withModelOverlayLock } from "./model-overlay-lock.mjs";
 import { withNativeContextVariants } from "./native-context-variants.mjs";
+import { discoveryDisabled } from "./discovery-mode.mjs";
 // The publish marker lives under the shared state directory, which does not
 // vary by target, so reading it here does not disturb the per-target probes
 // below that re-import paths with their own MODEL_ROUTER_TARGET.
@@ -648,6 +649,11 @@ async function runSetApply(provider, desired) {
 }
 
 async function printAccountUsage() {
+  if (discoveryDisabled()) {
+    throw new Error(
+      "ChatGPT account profiles are unavailable while credential discovery is disabled.",
+    );
+  }
   const { readCodexAccountUsage } = await import("./codex-account-usage.mjs");
   const { ensureChatGPTProfileAccounts, selectedChatGPTUsageProfile } = await import("./chatgpt-profile-switch.mjs");
   await ensureChatGPTProfileAccounts();
@@ -2888,6 +2894,15 @@ async function handleChatGptSession(action) {
 }
 
 async function handleChatGptAccountSwitch(action, value) {
+  // Keep this boundary ahead of both dynamic imports. The Control Center polls
+  // `status` automatically, and --no-discovery promises that even a background
+  // read cannot inspect auth files, create first-run pool state, or migrate the
+  // current Codex login into an isolated account home.
+  if (discoveryDisabled()) {
+    throw new Error(
+      "ChatGPT account profiles are unavailable while credential discovery is disabled.",
+    );
+  }
   const {
     chatGPTSubscriptionAccountHome,
     chatGPTSubscriptionAccountPoolSnapshot,

@@ -25,6 +25,7 @@ const bridgeSource = String.raw`
     ? Number(searchParams.get("providerUsageDelayMs")) || 0
     : null;
   const rejectAccountUsageRead = Number(searchParams.get("rejectAccountUsageRead")) || 0;
+  const rejectAccountPool = searchParams.get("rejectAccountPool") === "1";
   const staleAccountFailure = searchParams.get("staleAccountFailure") === "1";
   const staleProviderUsage = searchParams.get("staleProviderUsage") === "1";
   const fallbackUsage = searchParams.get("fallbackUsage") === "1";
@@ -202,17 +203,20 @@ const bridgeSource = String.raw`
       return snapshot;
     },
     getChatGptSession: async () => ({ sharing: "disabled", session: "usable", present: true, email: "primary@example.com" }),
-    getChatGptAccountPool: async () => ({
-      version: 1,
-      policy: { enabled: true, mode: "switch", selectedAccountId: "active" },
-      accounts: {
-        revoked: { id: "revoked", state: "revoked", paused: true, priority: 50, label: "Removed account", health: { state: "healthy" }, turns: 0, requests: 0 },
-        active: { id: "active", state: "active", paused: false, priority: 50, label: "Secondary account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "secondary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
-        current: { id: "current", state: "active", paused: false, priority: 50, label: "Current account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "primary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
-      },
-      sessions: { count: 0 },
-      profile: { desired: "active", active: "active", pending: false, running: false },
-    }),
+    getChatGptAccountPool: async () => {
+      if (rejectAccountPool) throw new Error("The saved ChatGPT account list could not be read as JSON.");
+      return {
+        version: 1,
+        policy: { enabled: true, mode: "switch", selectedAccountId: "active" },
+        accounts: {
+          revoked: { id: "revoked", state: "revoked", paused: true, priority: 50, label: "Removed account", health: { state: "healthy" }, turns: 0, requests: 0 },
+          active: { id: "active", state: "active", paused: false, priority: 50, label: "Secondary account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "secondary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
+          current: { id: "current", state: "active", paused: false, priority: 50, label: "Current account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "primary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
+        },
+        sessions: { count: 0 },
+        profile: { desired: "active", active: "active", pending: false, running: false },
+      };
+    },
     getProviders: async () => {
       await new Promise((resolve) => setTimeout(resolve, providerDelayMs));
       return providers;
@@ -610,6 +614,27 @@ test("the production renderer exposes model discovery and picker actions", { tim
       await page.getByRole("textbox", { name: "Model tag or Ollama URL" }).inputValue(),
       "hf.co/unsloth/GLM-5.3-Flash-GGUF:UD-IQ1_S",
     );
+
+    const corruptPoolPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    const corruptPoolErrors = [];
+    corruptPoolPage.setDefaultTimeout(10_000);
+    corruptPoolPage.on("pageerror", (error) => corruptPoolErrors.push(error.message));
+    await corruptPoolPage.goto(`${url}?rejectAccountPool=1`, { waitUntil: "domcontentloaded" });
+    await corruptPoolPage.getByRole("button", { name: "Settings", exact: true }).click();
+    const accountFailure = corruptPoolPage.getByText("ChatGPT account state unavailable", { exact: true });
+    await accountFailure.waitFor();
+    assert.match(await corruptPoolPage.locator("body").innerText(), /could not be read as JSON/i);
+    assert.equal(
+      await corruptPoolPage.getByText("No saved ChatGPT accounts", { exact: true }).count(),
+      0,
+      "a corrupt protected pool must not be rendered as an empty first-run pool",
+    );
+    assert.equal(
+      await corruptPoolPage.getByRole("button", { name: "Add account", exact: true }).isDisabled(),
+      true,
+    );
+    assert.deepEqual(corruptPoolErrors, []);
+    await corruptPoolPage.close();
     assert.deepEqual(pageErrors, [], `renderer errors: ${pageErrors.join("; ")}`);
   } finally {
     await browser.close();

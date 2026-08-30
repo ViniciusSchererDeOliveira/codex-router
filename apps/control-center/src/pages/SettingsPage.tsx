@@ -25,12 +25,13 @@ function formatBytes(value: number | null | undefined): string {
   return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
 }
 
-export function SettingsPage({ target, health, presence, chatgptSession, accountPool, api, theme, onTheme, language, onLanguage, t, refreshing, onRefresh, runAction }: {
+export function SettingsPage({ target, health, presence, chatgptSession, accountPool, accountPoolError, api, theme, onTheme, language, onLanguage, t, refreshing, onRefresh, runAction }: {
   target?: RouterTarget;
   health?: RouterHealth;
   presence?: PresenceSnapshot;
   chatgptSession?: ChatGptSessionStatus;
   accountPool?: ChatGptAccountPool;
+  accountPoolError?: string;
   api?: RouterControlApi;
   theme: "light" | "dark";
   onTheme: (theme: "light" | "dark") => void;
@@ -100,7 +101,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
   // Revoked records are cleanup tombstones from older router versions. They
   // are not usable accounts and must never reappear as "Account 1/2" rows.
   // Keep paused records visible so a future resume control can explain them.
-  const subscriptionAccounts = Object.values(accountPool?.accounts || {})
+  const subscriptionAccounts = Object.values(accountPoolError ? {} : accountPool?.accounts || {})
     .filter((account) => account.state !== "revoked");
   const usableSubscriptionAccounts = subscriptionAccounts.filter((account) => account.state === "active" && account.subscription?.usable === true);
   const activeAccountId = accountPool?.profile?.active;
@@ -211,7 +212,11 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
               title="ChatGPT accounts"
               description="Save multiple ChatGPT logins and choose which one native Codex chats use. Provider routes keep their own credentials."
             />
-            {accountPool?.profile?.pending ? (
+            {accountPoolError ? (
+              <InlineNotice tone="danger" title="ChatGPT account state unavailable">
+                {accountPoolError} The protected account list was not treated as empty; repair that state before adding, selecting, or removing accounts.
+              </InlineNotice>
+            ) : accountPool?.profile?.pending ? (
               <InlineNotice tone="neutral" title="Account switch pending">
                 Close Codex completely. The selected login will be activated before the next launch.
               </InlineNotice>
@@ -226,7 +231,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
               />
               <Button
                 variant="secondary"
-                disabled={!api}
+                disabled={!api || Boolean(accountPoolError)}
                 onClick={() => {
                   if (!api) return;
                   void runAction("Add ChatGPT subscription account", async () => {
@@ -274,7 +279,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                 );
               })}
             </div>
-            {!subscriptionAccounts.length ? (
+            {!accountPoolError && !subscriptionAccounts.length ? (
               <div className="surface-summary"><ShieldCheck aria-hidden size={20} strokeWidth={1.6} /><div><strong>No saved ChatGPT accounts</strong><small>Add a login to create its isolated account profile.</small></div></div>
             ) : null}
           </section>

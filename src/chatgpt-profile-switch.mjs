@@ -17,6 +17,8 @@ import {
 import path from "node:path";
 
 import { writePrivateJson } from "./file-security.mjs";
+import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
+import { discoveryDisabled } from "./discovery-mode.mjs";
 import {
   CHATGPT_ACCOUNT_HOMES_DIR,
   CHATGPT_ACCOUNT_POOL_PATH,
@@ -27,7 +29,6 @@ import {
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
   ANNOUNCED_MODELS_PATH,
-  SOURCE_ROOT,
 } from "./paths.mjs";
 import {
   chatGPTSubscriptionAccountCatalogDir,
@@ -53,6 +54,28 @@ const CATALOG_ARTIFACTS = Object.freeze([
   ["native-aliases.json", "nativeAliasPath"],
   ["announced-models.json", "announcedModelsPath"],
 ]);
+
+function assertProfileDiscoveryEnabled() {
+  if (discoveryDisabled()) {
+    throw new Error(
+      "ChatGPT account profiles are unavailable while credential discovery is disabled.",
+    );
+  }
+}
+
+function catalogLockOptions(options = {}) {
+  return {
+    stateDir: options.catalogLockStateDir
+      || path.dirname(options.switchPath || CHATGPT_PROFILE_SWITCH_PATH),
+    ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
+    ...(options.retryMs === undefined ? {} : { retryMs: options.retryMs }),
+    ...(options.staleMs === undefined ? {} : { staleMs: options.staleMs }),
+  };
+}
+
+function withProfileCatalogLock(operation, options = {}) {
+  return withCatalogPublicationLock(operation, catalogLockOptions(options));
+}
 
 function transactionDirectory(switchPath = CHATGPT_PROFILE_SWITCH_PATH) {
   return path.join(path.dirname(switchPath), "chatgpt-profile", "switch-transaction");
@@ -307,23 +330,17 @@ function restoreSwitchTransaction(transaction, switchPath, options) {
   }
 }
 
-function refreshActiveCatalog(options = {}) {
+async function refreshActiveCatalog(options = {}) {
   if (options.refreshCatalog === false) return;
   if (typeof options.refreshCatalog === "function") {
-    options.refreshCatalog();
+    await options.refreshCatalog();
     return;
   }
-  execFileSync(
-    process.execPath,
-    [path.join(SOURCE_ROOT, "src", "catalog.mjs"), "--refresh-native"],
-    {
-      cwd: SOURCE_ROOT,
-      env: process.env,
-      encoding: "utf8",
-      timeout: 120_000,
-      stdio: ["ignore", "ignore", "pipe"],
-    },
-  );
+  // The profile transaction already owns the catalog publication lock. Calling
+  // catalog.mjs as a child would try to acquire that same cross-process lock
+  // and deadlock; invoke its exported publication body inside this lease.
+  const { publishCatalog } = await import("./catalog.mjs");
+  publishCatalog({ refreshNative: true, output: false });
 }
 
 function normalizeSelection(value) {
@@ -337,6 +354,7 @@ function defaultState() {
 }
 
 export function readChatGPTProfileSwitchState(filePath = CHATGPT_PROFILE_SWITCH_PATH) {
+  assertProfileDiscoveryEnabled();
   let file;
   try {
     file = lstatSync(filePath);
@@ -561,6 +579,7 @@ function ensureProfileAccountLocked({
 }
 
 export async function ensureChatGPTProfileAccounts(options = {}) {
+  assertProfileDiscoveryEnabled();
   return withChatGPTAccountPoolLock(
     () => ensureProfileAccountLocked(options),
     { filePath: options.filePath || CHATGPT_ACCOUNT_POOL_PATH },
@@ -726,7 +745,7 @@ async function applyLocked(selection, options) {
     atomicPrivateCopy(targetProfile, primary);
     if (catalogsEnabled) {
       restoreAccountCatalog(target, options);
-      refreshActiveCatalog(options);
+      await refreshActiveCatalog(options);
       snapshotAccountCatalog(target, options);
     }
     writeState({ desired: target, active: target, pending: false, phase: "installed" }, switchPath);
@@ -750,13 +769,14 @@ async function applyLocked(selection, options) {
 }
 
 export async function requestChatGPTProfileSwitch(selection, options = {}) {
+  assertProfileDiscoveryEnabled();
   return withChatGPTAccountPoolLock(
-    () => {
+    () => withProfileCatalogLock(async () => {
       recoverInterruptedSwitchLocked(options);
       const migration = ensureProfileAccountLocked(options);
       const normalized = validateSelection(selection, { ...options, currentAccountId: migration.currentAccountId });
       return applyLocked(normalized, options);
-    },
+    }, options),
     {
       filePath: options.filePath || CHATGPT_ACCOUNT_POOL_PATH,
       ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
@@ -795,7 +815,8 @@ async function restoreAccountTransaction({ pool, profile }, options) {
  * policy.selectedAccountId === profile.desired with profile.pending === true.
  */
 export async function selectChatGPTProfileAccount(selection, options = {}) {
-  return withChatGPTAccountPoolLock(async () => {
+  assertProfileDiscoveryEnabled();
+  return withChatGPTAccountPoolLock(() => withProfileCatalogLock(async () => {
     recoverInterruptedSwitchLocked(options);
     const migration = ensureProfileAccountLocked(options);
     const normalized = validateSelection(selection, {
@@ -835,13 +856,14 @@ export async function selectChatGPTProfileAccount(selection, options = {}) {
       }
       throw error;
     }
-  }, accountPoolLockOptions(options));
+  }, options), accountPoolLockOptions(options));
 }
 
 /** Remove an account, including any required profile handoff, under one lock. */
 export async function removeChatGPTProfileAccount(accountId, options = {}) {
+  assertProfileDiscoveryEnabled();
   if (!isChatGPTAccountId(accountId)) throw new Error("Account id is invalid.");
-  return withChatGPTAccountPoolLock(async () => {
+  return withChatGPTAccountPoolLock(() => withProfileCatalogLock(async () => {
     recoverInterruptedSwitchLocked(options);
     ensureProfileAccountLocked(options);
     const filePath = options.filePath || CHATGPT_ACCOUNT_POOL_PATH;
@@ -896,10 +918,11 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
       }
       throw error;
     }
-  }, accountPoolLockOptions(options));
+  }, options), accountPoolLockOptions(options));
 }
 
 export async function reconcileChatGPTProfileSwitch(options = {}) {
+  assertProfileDiscoveryEnabled();
   const state = readChatGPTProfileSwitchState(options.switchPath || CHATGPT_PROFILE_SWITCH_PATH);
   if (!state.pending && state.phase === "idle") return state;
   return requestChatGPTProfileSwitch(state.desired, options);
@@ -911,6 +934,7 @@ export function selectedChatGPTUsageProfile({
   primaryHome = CODEX_HOME,
   switchPath = CHATGPT_PROFILE_SWITCH_PATH,
 } = {}) {
+  assertProfileDiscoveryEnabled();
   const pool = readChatGPTAccountPoolState(filePath);
   const profile = readChatGPTProfileSwitchState(switchPath);
   const selection = pool.policy.selectedAccountId || profile.active;
@@ -926,6 +950,7 @@ export function selectedChatGPTUsageProfile({
 }
 
 export function chatGPTProfileSwitchSnapshot(options = {}) {
+  assertProfileDiscoveryEnabled();
   const state = readChatGPTProfileSwitchState(options.switchPath || CHATGPT_PROFILE_SWITCH_PATH);
   return { ...state, running: codexDesktopRunning(options) };
 }

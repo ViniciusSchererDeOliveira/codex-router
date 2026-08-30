@@ -62,6 +62,7 @@ const INITIAL_DATA_READY: RouterDataReady = {
   presence: false,
   health: false,
   accountUsage: false,
+  accountPool: false,
   providerUsage: false,
 };
 
@@ -199,7 +200,7 @@ export default function App() {
       // expose these reads yet, so their absence must not hold any existing
       // page region in a loading state.
       typeof api.getChatGptAccountPool === "function"
-        ? api.getChatGptAccountPool().then(setAccountPool)
+        ? settleRead("accountPool", api.getChatGptAccountPool(), setAccountPool)
         : Promise.resolve(),
       typeof api.getChatGptSession === "function"
         ? api.getChatGptSession().then(setChatgptSession)
@@ -259,6 +260,7 @@ export default function App() {
         presence: true,
         health: true,
         accountUsage: true,
+        accountPool: true,
         providerUsage: true,
       });
       setLoadError("The Electron bridge is unavailable. Open this UI through the Codex Router desktop app.");
@@ -456,7 +458,7 @@ export default function App() {
       case "local": return <LocalPage {...shared} operation={operation} />;
       case "harness": return <HarnessPage {...shared} />;
       case "context": return <ContextPage {...shared} />;
-      case "settings": return <SettingsPage {...shared} health={health} presence={presence} chatgptSession={chatgptSession ?? snapshot?.chatgptSession} accountPool={accountPool} theme={theme} onTheme={setTheme} language={language} onLanguage={setLanguage} t={t} />;
+      case "settings": return <SettingsPage {...shared} health={health} presence={presence} chatgptSession={chatgptSession ?? snapshot?.chatgptSession} accountPool={accountPool} accountPoolError={readErrors.accountPool} theme={theme} onTheme={setTheme} language={language} onLanguage={setLanguage} t={t} />;
     }
   })();
 

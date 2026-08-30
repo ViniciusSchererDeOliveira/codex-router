@@ -412,7 +412,7 @@ function killChildFallback(child) {
  * mutating the installation after the UI reports failure. Keep the command in
  * its own POSIX process group, and use Windows' supported tree-kill primitive.
  */
-async function terminateProcessTree(child) {
+export async function terminateProcessTree(child) {
   if (!child?.pid) {
     killChildFallback(child);
     return;

@@ -18,6 +18,7 @@ export interface RouterDataReady {
   presence: boolean;
   health: boolean;
   accountUsage: boolean;
+  accountPool: boolean;
   providerUsage: boolean;
 }
 

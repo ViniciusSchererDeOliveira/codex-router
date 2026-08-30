@@ -6,6 +6,7 @@ import path from "node:path";
 import lockfile from "proper-lockfile";
 
 import { writePrivateJson } from "./file-security.mjs";
+import { discoveryDisabled } from "./discovery-mode.mjs";
 import { CHATGPT_ACCOUNT_HOMES_DIR, CHATGPT_ACCOUNT_POOL_PATH } from "./paths.mjs";
 import { findCodexBinary } from "./codex-binary.mjs";
 import { spawnableCommand } from "./spawnable-command.mjs";
@@ -20,6 +21,14 @@ const EXPIRY_SKEW_MS = 120_000;
 const ACCOUNT_REFRESH_MARGIN_MS = 24 * 60 * 60 * 1000;
 const ACCOUNT_REFRESH_RETRY_MS = 5 * 60 * 1000;
 const refreshAttempts = new Map();
+
+function assertAccountDiscoveryEnabled() {
+  if (discoveryDisabled()) {
+    throw new Error(
+      "ChatGPT account profiles are unavailable while credential discovery is disabled.",
+    );
+  }
+}
 
 function text(value) { return typeof value === "string" ? value.trim() : ""; }
 function number(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : undefined; }
@@ -161,6 +170,7 @@ function normalizeState(raw) {
   return result;
 }
 export function readChatGPTAccountPoolState(filePath = CHATGPT_ACCOUNT_POOL_PATH) {
+  assertAccountDiscoveryEnabled();
   let file;
   try {
     file = lstatSync(filePath);
@@ -180,6 +190,7 @@ export function readChatGPTAccountPoolState(filePath = CHATGPT_ACCOUNT_POOL_PATH
   return normalizeState(validatePersistedState(parsed));
 }
 export function writeChatGPTAccountPoolState(state, filePath = CHATGPT_ACCOUNT_POOL_PATH) {
+  assertAccountDiscoveryEnabled();
   const normalized = normalizeState({ ...state, version: CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION });
   writePrivateJson(filePath, normalized, { directoryMode: 0o700 });
   return normalized;
@@ -340,6 +351,7 @@ function readSubscriptionSession(accountValue, { homesDir = CHATGPT_ACCOUNT_HOME
   } catch { return undefined; }
 }
 export function chatGPTSubscriptionAccountStatus(accountValue, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR, now = Date.now() } = {}) {
+  assertAccountDiscoveryEnabled();
   const session = readSubscriptionSession(accountValue, { homesDir, now });
   return {
     authenticated: Boolean(session), usable: Boolean(session) && !session.expired, expired: Boolean(session?.expired), hasAccountId: Boolean(session?.accountId),
@@ -348,6 +360,7 @@ export function chatGPTSubscriptionAccountStatus(accountValue, { homesDir = CHAT
   };
 }
 export function refreshChatGPTSubscriptionAccount(accountValue, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR, force = false, now = Date.now(), binary, execFileImpl = execFile } = {}) {
+  assertAccountDiscoveryEnabled();
   const id = accountId(accountValue);
   const status = chatGPTSubscriptionAccountStatus(id, { homesDir, now });
   const expiresSoon = status.expiresInHours !== undefined && status.expiresInHours * 36e5 <= ACCOUNT_REFRESH_MARGIN_MS;
@@ -361,6 +374,7 @@ export function refreshChatGPTSubscriptionAccount(accountValue, { homesDir = CHA
   return new Promise((resolve) => execFileImpl(target.command, target.args, { ...target.options, env: { ...process.env, CODEX_HOME: chatGPTSubscriptionAccountHome(id, { homesDir }) }, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }, (error) => resolve(!error)));
 }
 export function chatGPTSubscriptionAccountPoolSnapshot({ filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR, now = Date.now() } = {}) {
+  assertAccountDiscoveryEnabled();
   const state = readChatGPTAccountPoolState(filePath);
   const sanitized = sanitizeChatGPTAccountPool(state);
   for (const [id, account] of Object.entries(sanitized.accounts)) {
@@ -386,6 +400,7 @@ export function sanitizeChatGPTAccountPool(state) {
   };
 }
 export async function withChatGPTAccountPoolLock(operation, { filePath = CHATGPT_ACCOUNT_POOL_PATH, waitMs = 120_000, retryMs = 25, staleMs = 10 * 60_000 } = {}) {
+  assertAccountDiscoveryEnabled();
   const lockTarget = `${filePath}.pool-lock`;
   const lockPath = `${lockTarget}.lock`;
   const retries = Math.max(0, Math.ceil(waitMs / retryMs) - 1);

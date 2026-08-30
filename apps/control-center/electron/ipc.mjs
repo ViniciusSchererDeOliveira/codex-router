@@ -25,6 +25,7 @@ import {
   runControlDetached,
   runControlJson,
   runRouterScript,
+  terminateProcessTree,
 } from "./command-runner.mjs";
 
 const spawnableCommandUrl = import.meta.url.includes("/app.asar/")
@@ -295,6 +296,7 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
   let loginOutput = "";
   let finished = false;
   let settled = false;
+  let aborting = false;
   let resolveOpen;
   let rejectOpen;
   const opened = new Promise((resolve, reject) => {
@@ -311,6 +313,22 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
     settled = true;
     clearTimeout(timeout);
     rejectOpen(error instanceof Error ? error : new Error(String(error)));
+  };
+  const abort = async (error) => {
+    if (settled || aborting) return;
+    aborting = true;
+    clearTimeout(timeout);
+    // The detached Codex CLI owns the OAuth callback listener and may have
+    // descendants. If browser hand-off fails, leaving that tree alive keeps
+    // the callback port and the per-account in-flight gate occupied forever.
+    try {
+      await terminateProcessTree(child);
+    } catch {
+      try { child.kill("SIGKILL"); } catch {}
+    } finally {
+      finish();
+      fail(error);
+    }
   };
   const maybeFailAfterExit = () => {
     if (childExited && !urlObserved && !openingBrowser) {
@@ -338,21 +356,19 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
       })
       .catch((error) => {
         openingBrowser = false;
-        fail(new Error(`Could not open the default browser: ${error instanceof Error ? error.message : String(error)}`));
+        void abort(new Error(`Could not open the default browser: ${error instanceof Error ? error.message : String(error)}`));
       });
   };
   child.stdout?.on("data", inspectLoginOutput);
   child.stderr?.on("data", inspectLoginOutput);
   const timeout = setTimeout(() => {
     if (!browserOpened) {
-      try { child.kill("SIGTERM"); } catch { /* process may have exited */ }
-      fail(new Error("Codex login did not provide an OAuth browser URL."));
+      void abort(new Error("Codex login did not provide an OAuth browser URL."));
     }
   }, 15_000);
   child.once("error", (error) => {
     console.error(`Browser login process failed: ${error.message}`);
-    finish();
-    fail(error);
+    void abort(error);
   });
   child.once("close", () => {
     childExited = true;

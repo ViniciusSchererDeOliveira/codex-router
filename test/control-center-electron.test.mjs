@@ -78,6 +78,35 @@ test("ChatGPT browser login waits for the OAuth URL after child close", async ()
   }
 });
 
+test("a rejected browser handoff terminates the detached Codex login", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-reject-"));
+  const script = path.join(directory, "codex-login-fixture.mjs");
+  const pidPath = path.join(directory, "login.pid");
+  let exited = false;
+  try {
+    await writeFile(script, `
+      import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+      process.stdout.write("https://auth.openai.com/oauth/authorize?state=rejected");
+      setInterval(() => {}, 1_000);
+    `);
+    await assert.rejects(
+      openBrowserCommand(process.execPath, [script], process.cwd(), {
+        environment: { PATH: process.env.PATH || "" },
+        openExternal: async () => { throw new Error("browser unavailable"); },
+        onExit: () => { exited = true; },
+      }),
+      /Could not open the default browser: browser unavailable/,
+    );
+    assert.equal(exited, true, "the in-flight account login must be released on handoff failure");
+    const pid = Number(await readFile(pidPath, "utf8"));
+    assert.ok(Number.isInteger(pid) && pid > 0);
+    assert.throws(() => process.kill(pid, 0), /ESRCH|no such process|not found/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Control Center navigation accepts only one fixed widget destination", () => {
   assert.deepEqual(controlCenterDestination(["electron", ".", NAVIGATION_ARGUMENT, "usage"]), {
     destination: "usage",
