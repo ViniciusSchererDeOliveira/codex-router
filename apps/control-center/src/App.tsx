@@ -353,16 +353,11 @@ export default function App() {
             : `${label} opened in the browser. Finish sign-in there.`;
         setToast({ tone: "neutral", message });
         // The detached Codex OAuth process updates the isolated profile after
-        // the browser callback. Reconcile a few times without keeping a
-        // permanent spinner or claiming that OAuth has already finished.
+        // the browser callback. Refresh once; Settings owns the 1.5-second
+        // poll while the backend reports pending and stops it on the backend's
+        // bounded completed/failed projection. Unowned delayed refresh timers
+        // would keep polling after a cancelled login.
         await Promise.allSettled([refreshCore()]);
-        if (actionResult.pending === true && actionResult.alreadyAuthenticated !== true) {
-          for (const delay of [1_000, 3_000, 10_000, 30_000]) {
-            window.setTimeout(() => {
-              void refreshCore().catch((error) => setLoadError(readableError(error)));
-            }, delay);
-          }
-        }
         setOperation({ action: label, status: "completed", message });
         return;
       }

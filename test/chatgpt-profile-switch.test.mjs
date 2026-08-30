@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,13 +11,16 @@ import {
   chatGPTSubscriptionAccountCatalogDir,
   createChatGPTSubscriptionAccount,
   readChatGPTAccountPoolState,
+  withChatGPTAccountPoolLock,
   writeChatGPTAccountPoolState,
 } from "../src/chatgpt-account-pool.mjs";
 import {
+  atomicPrivateCopy,
   codexDesktopRunning,
   chatGPTProfileSwitchSnapshot,
   readChatGPTProfileSwitchState,
   reconcileChatGPTProfileSwitch,
+  reconcileChatGPTProfileSwitchIfReady,
   removeChatGPTProfileAccount,
   requestChatGPTProfileSwitch,
   selectChatGPTProfileAccount,
@@ -68,7 +71,19 @@ test("a selected profile waits for Codex to close and preserves both account pro
   assert.equal(pending.pending, true);
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
 
-  const applied = await reconcileChatGPTProfileSwitch({
+  const stillPending = await reconcileChatGPTProfileSwitchIfReady({
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    refreshCatalog: false,
+  });
+  assert.equal(stillPending.pending, true);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+
+  const applied = await reconcileChatGPTProfileSwitchIfReady({
     filePath,
     homesDir,
     primaryHome,
@@ -126,6 +141,82 @@ test("a selected profile waits for Codex to close and preserves both account pro
   });
   assert.equal(autoApplied.desired, second.id);
   assert.equal(autoApplied.active, second.id);
+});
+
+test("private OAuth profile copies protect the temporary and final replacement", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-private-copy-"));
+  const source = path.join(root, "source-auth.json");
+  const destination = path.join(root, "nested", "auth.json");
+  const protectedPaths = [];
+  writeFileSync(source, JSON.stringify({ tokens: { account_id: "private" } }), { mode: 0o600 });
+  atomicPrivateCopy(source, destination, {
+    protect(target) {
+      protectedPaths.push(target);
+      chmodSync(target, 0o600);
+    },
+  });
+  assert.equal(protectedPaths.length, 2);
+  assert.match(protectedPaths[0], /auth\.json\.tmp-/);
+  assert.equal(protectedPaths[1], destination);
+  assert.equal(readFileSync(destination, "utf8"), readFileSync(source, "utf8"));
+});
+
+test("reconcile revalidates the desired account after waiting for the account lock", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-reconcile-race-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(second.id, { homesDir }), secondAuth, { mode: 0o600 });
+  await requestChatGPTProfileSwitch(second.id, {
+    filePath, homesDir, primaryHome, switchPath,
+    platform: "darwin",
+    processList: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    refreshCatalog: false,
+  });
+
+  let releaseHolder;
+  let markHeld;
+  const held = new Promise((resolve) => { markHeld = resolve; });
+  const release = new Promise((resolve) => { releaseHolder = resolve; });
+  const holder = withChatGPTAccountPoolLock(async () => {
+    markHeld();
+    await release;
+  }, { filePath, waitMs: 5_000, retryMs: 20 });
+  await held;
+  const reconciling = reconcileChatGPTProfileSwitch({
+    filePath, homesDir, primaryHome, switchPath,
+    platform: "darwin",
+    processList: "",
+    refreshCatalog: false,
+    waitMs: 5_000,
+    retryMs: 20,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const pool = readChatGPTAccountPoolState(filePath);
+  writeChatGPTAccountPoolState({
+    ...pool,
+    policy: { ...pool.policy, selectedAccountId: first.id },
+  }, filePath);
+  writeFileSync(
+    switchPath,
+    JSON.stringify({ version: 1, desired: first.id, active: first.id, pending: false, phase: "idle" }),
+    { mode: 0o600 },
+  );
+  releaseHolder();
+  await holder;
+  const reconciled = await reconciling;
+  assert.equal(reconciled.desired, first.id);
+  assert.equal(reconciled.active, first.id);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
 });
 
 test("a saved account identity is bound before a later switch", async () => {

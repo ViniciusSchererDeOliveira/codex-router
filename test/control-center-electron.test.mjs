@@ -42,7 +42,10 @@ import {
   shouldQuitOnLastWindowClosed,
   writeLifecycleState,
 } from "../apps/control-center/electron/lifecycle-state.mjs";
-import { openBrowserCommand } from "../apps/control-center/electron/ipc.mjs";
+import {
+  openBrowserCommand,
+  projectChatGPTSubscriptionLoginAttempts,
+} from "../apps/control-center/electron/ipc.mjs";
 import {
   controlCenterDestination,
   controlCenterNavigationURL,
@@ -50,12 +53,14 @@ import {
   NAVIGATION_SOURCE_ARGUMENT,
 } from "../apps/control-center/electron/navigation.mjs";
 
-test("ChatGPT browser login waits for the OAuth URL after child close", async () => {
+test("ChatGPT browser login reports a terminal retry after child close without auth", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-login-"));
   const windows = process.platform === "win32";
   const executable = path.join(directory, windows ? "codex-test.cmd" : "codex-test");
   const openedUrls = [];
   let exited = false;
+  const accountId = "acct_example_123456";
+  const attempts = new Map([[accountId, { status: "pending", deadlineAt: Date.now() + 60_000 }]]);
   try {
     await writeFile(
       executable,
@@ -67,12 +72,54 @@ test("ChatGPT browser login waits for the OAuth URL after child close", async ()
     const result = await openBrowserCommand(executable, [], process.cwd(), {
       environment: { PATH: windows ? process.env.PATH || "" : "/usr/bin:/bin:/usr/sbin:/sbin" },
       openExternal: async (url) => { openedUrls.push(url); },
-      onExit: () => { exited = true; },
+      onExit: (outcome) => {
+        exited = true;
+        attempts.set(accountId, { ...attempts.get(accountId), ...outcome, status: "finished" });
+      },
     });
     assert.deepEqual(result, { opened: true, surface: "browser" });
     assert.deepEqual(openedUrls, ["https://auth.openai.com/oauth/authorize?state=test"]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(exited, true);
+    const projected = projectChatGPTSubscriptionLoginAttempts({
+      accounts: { [accountId]: { subscription: { usable: false } } },
+    }, attempts);
+    assert.deepEqual(projected.loginAttempts?.[accountId], {
+      status: "failed",
+      error: "Codex login closed before this account became usable.",
+      retryable: true,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ChatGPT browser login has a bounded post-handoff completion deadline", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-deadline-"));
+  const script = path.join(directory, "codex-login-fixture.mjs");
+  const pidPath = path.join(directory, "login.pid");
+  let outcome;
+  try {
+    await writeFile(script, `
+      import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+      process.stdout.write("https://auth.openai.com/oauth/authorize?state=deadline");
+      setInterval(() => {}, 1_000);
+    `);
+    const opened = await openBrowserCommand(process.execPath, [script], process.cwd(), {
+      environment: { PATH: process.env.PATH || "" },
+      openExternal: async () => {},
+      completionTimeoutMs: 40,
+      onExit: (value) => { outcome = value; },
+    });
+    assert.deepEqual(opened, { opened: true, surface: "browser" });
+    const deadline = Date.now() + 2_000;
+    while (!outcome && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.match(outcome?.error || "", /browser sign-in deadline/);
+    const pid = Number(await readFile(pidPath, "utf8"));
+    assert.throws(() => process.kill(pid, 0), /ESRCH|no such process|not found/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

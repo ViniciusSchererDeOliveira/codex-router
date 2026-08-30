@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppWindow, Check, Eye, LogIn, Moon, Plus, RefreshCw, Server, ShieldCheck, Sun, Trash2, UserRound, Wrench } from "lucide-react";
 import { Badge, Button, Dialog, InlineNotice, PageHeader, SectionHeading, Toggle } from "../components";
 import { compactNumber } from "../lib";
@@ -50,6 +50,9 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
   const [newAccountLabel, setNewAccountLabel] = useState("");
   const [removeAccountId, setRemoveAccountId] = useState<string | null>(null);
   const [loginPendingId, setLoginPendingId] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const refreshRef = useRef(onRefresh);
+  refreshRef.current = onRefresh;
   const [trayCapability, setTrayCapability] = useState<{ supported?: boolean; why?: string }>();
   useEffect(() => {
     let active = true;
@@ -69,15 +72,24 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
   const loginPendingUsable = loginPendingId
     ? accountPool?.accounts?.[loginPendingId]?.subscription?.usable === true
     : false;
+  const loginAttempt = loginPendingId
+    ? accountPool?.loginAttempts?.[loginPendingId]
+    : undefined;
   useEffect(() => {
     if (!loginPendingId) return;
     if (loginPendingUsable) {
       setLoginPendingId(null);
+      setLoginError(null);
       return;
     }
-    const timer = window.setInterval(onRefresh, 1_500);
+    if (loginAttempt?.status === "failed") {
+      setLoginPendingId(null);
+      setLoginError(loginAttempt.error || "Codex login did not complete. Try again.");
+      return;
+    }
+    const timer = window.setInterval(() => refreshRef.current(), 1_500);
     return () => window.clearInterval(timer);
-  }, [loginPendingId, loginPendingUsable, onRefresh]);
+  }, [loginAttempt?.error, loginAttempt?.status, loginPendingId, loginPendingUsable]);
   const trayControlsUnavailable = trayCapability?.supported === false;
   const repairFailures = useMemo(
     () => (repairReport?.checks ?? []).filter((check) => check.status === "fail"),
@@ -216,6 +228,10 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
               <InlineNotice tone="danger" title="ChatGPT account state unavailable">
                 {accountPoolError} The protected account list was not treated as empty; repair that state before adding, selecting, or removing accounts.
               </InlineNotice>
+            ) : loginError ? (
+              <InlineNotice tone="danger" title="ChatGPT login did not complete">
+                {loginError} Retry the login when you are ready.
+              </InlineNotice>
             ) : accountPool?.profile?.pending ? (
               <InlineNotice tone="neutral" title="Account switch pending">
                 Close Codex completely. The selected login will be activated before the next launch.
@@ -266,9 +282,10 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                       >{accountSelection === account.id ? <><Check aria-hidden size={13} strokeWidth={1.9} /> Selected</> : <><Check aria-hidden size={13} strokeWidth={1.9} /> Select</>}</Button>
                       <Button
                         variant="ghost"
-                        disabled={!api || account.state !== "active" || account.subscription?.usable === true}
+                        disabled={!api || account.state !== "active" || account.subscription?.usable === true || loginPendingId === account.id}
                         onClick={() => {
                           if (!api) return;
+                          setLoginError(null);
                           setLoginPendingId(account.id);
                           void runAction(`Login ${account.label || "ChatGPT account"}`, () => api.loginChatGptSubscriptionAccount(account.id)).catch(() => setLoginPendingId(null));
                         }}

@@ -94,6 +94,11 @@ export interface ChatGptAccountPool {
     selectedAccountId?: string;
   };
   accounts: Record<string, ChatGptSubscriptionAccount>;
+  loginAttempts?: Record<string, {
+    status: "pending" | "failed";
+    error?: string;
+    retryable?: boolean;
+  }>;
   sessions: { count: number };
   profile?: ChatGptProfileSwitch;
 }

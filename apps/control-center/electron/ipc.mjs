@@ -51,6 +51,7 @@ const MODEL_SLUG = /^[A-Za-z0-9][A-Za-z0-9._/:+-]{0,200}$/;
 const PROVIDER_ID = /^[a-z0-9][a-z0-9-]{0,80}$/;
 const CHATGPT_ACCOUNT_ID = /^acct_[A-Za-z0-9_-]{8,80}$/;
 const CHATGPT_LOGIN_URL = /https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s"'<>]+/;
+const CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS = 10 * 60_000;
 const LOCAL_TAG = /^[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SESSION_UUID_IN_FILENAME = /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
@@ -255,10 +256,18 @@ function openTerminalCommand(executable, args, cwd) {
 // it detached instead of wrapping it in Terminal: the CLI starts its local
 // callback server, opens the system browser, and keeps the isolated
 // CODEX_HOME profile while the user completes sign-in.
-export function openBrowserCommand(executable, args, cwd, { environment = {}, onExit, openExternal } = {}) {
+export function openBrowserCommand(executable, args, cwd, {
+  environment = {},
+  onExit,
+  openExternal,
+  completionTimeoutMs = CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS,
+} = {}) {
   if (!executable || !path.isAbsolute(executable) || !Array.isArray(args)) throw new Error("Browser command is unavailable.");
   if (args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) throw new Error("Browser command is invalid.");
   if (typeof openExternal !== "function") throw new Error("The default browser opener is unavailable.");
+  if (!Number.isFinite(completionTimeoutMs) || completionTimeoutMs <= 0 || completionTimeoutMs > 30 * 60_000) {
+    throw new Error("Browser login completion timeout is invalid.");
+  }
   const resolvedCwd = cwd ? realpathSync(cwd) : discoverSourceRoot();
   if (!statSync(resolvedCwd).isDirectory()) throw new Error("The session workspace is unavailable.");
   if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
@@ -297,27 +306,33 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
   let finished = false;
   let settled = false;
   let aborting = false;
+  let terminalError;
+  let urlTimeout;
+  let completionTimeout;
   let resolveOpen;
   let rejectOpen;
   const opened = new Promise((resolve, reject) => {
     resolveOpen = resolve;
     rejectOpen = reject;
   });
-  const finish = () => {
+  const finish = (outcome = {}) => {
     if (finished) return;
     finished = true;
-    if (typeof onExit === "function") onExit();
+    clearTimeout(completionTimeout);
+    if (typeof onExit === "function") onExit(outcome);
   };
   const fail = (error) => {
     if (settled) return;
     settled = true;
-    clearTimeout(timeout);
+    clearTimeout(urlTimeout);
     rejectOpen(error instanceof Error ? error : new Error(String(error)));
   };
   const abort = async (error) => {
-    if (settled || aborting) return;
+    if (finished || aborting) return;
     aborting = true;
-    clearTimeout(timeout);
+    terminalError = error instanceof Error ? error.message : String(error);
+    clearTimeout(urlTimeout);
+    clearTimeout(completionTimeout);
     // The detached Codex CLI owns the OAuth callback listener and may have
     // descendants. If browser hand-off fails, leaving that tree alive keeps
     // the callback port and the per-account in-flight gate occupied forever.
@@ -326,7 +341,7 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
     } catch {
       try { child.kill("SIGKILL"); } catch {}
     } finally {
-      finish();
+      finish({ error: terminalError });
       fail(error);
     }
   };
@@ -351,7 +366,13 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
         if (settled) return;
         browserOpened = true;
         settled = true;
-        clearTimeout(timeout);
+        clearTimeout(urlTimeout);
+        if (!finished) {
+          completionTimeout = setTimeout(() => {
+            void abort(new Error("Codex login did not finish before the browser sign-in deadline."));
+          }, completionTimeoutMs);
+          completionTimeout.unref?.();
+        }
         resolveOpen({ opened: true, surface: "browser" });
       })
       .catch((error) => {
@@ -361,22 +382,54 @@ export function openBrowserCommand(executable, args, cwd, { environment = {}, on
   };
   child.stdout?.on("data", inspectLoginOutput);
   child.stderr?.on("data", inspectLoginOutput);
-  const timeout = setTimeout(() => {
+  urlTimeout = setTimeout(() => {
     if (!browserOpened) {
       void abort(new Error("Codex login did not provide an OAuth browser URL."));
     }
   }, 15_000);
+  urlTimeout.unref?.();
   child.once("error", (error) => {
     console.error(`Browser login process failed: ${error.message}`);
     void abort(error);
   });
-  child.once("close", () => {
+  child.once("close", (code, signal) => {
     childExited = true;
-    finish();
+    finish({ code, signal, ...(terminalError ? { error: terminalError } : {}) });
     maybeFailAfterExit();
   });
   child.unref();
   return opened;
+}
+
+export function projectChatGPTSubscriptionLoginAttempts(pool, attempts, now = Date.now()) {
+  const loginAttempts = {};
+  for (const [accountId, attempt] of attempts || []) {
+    const account = pool?.accounts?.[accountId];
+    if (!account) {
+      attempts.delete(accountId);
+      continue;
+    }
+    if (account.subscription?.usable === true) {
+      attempts.delete(accountId);
+      continue;
+    }
+    const expired = Number.isFinite(attempt?.deadlineAt) && now >= attempt.deadlineAt;
+    if (attempt?.status === "pending" && !expired) {
+      loginAttempts[accountId] = { status: "pending" };
+      continue;
+    }
+    const detail = attempt?.error
+      || (attempt?.signal ? `Codex login ended with ${attempt.signal}.` : "Codex login closed before this account became usable.");
+    loginAttempts[accountId] = {
+      status: "failed",
+      error: cleanText(detail, "Codex login did not complete. Try again."),
+      retryable: true,
+    };
+  }
+  return {
+    ...pool,
+    ...(Object.keys(loginAttempts).length ? { loginAttempts } : {}),
+  };
 }
 
 function readBounded(filePath, limit = SESSION_INDEX_LIMIT) {
@@ -755,6 +808,7 @@ export function registerIpcHandlers({
   // A detached OAuth process can outlive the IPC call. Keep one browser login
   // per isolated account so a double-click cannot race two Codex callbacks.
   const subscriptionLoginInFlight = new Set();
+  const subscriptionLoginAttempts = new Map();
   const idleWaiters = new Set();
   const enqueueMutation = (task) => {
     pendingMutations += 1;
@@ -806,7 +860,10 @@ export function registerIpcHandlers({
 
   handle("getSnapshot", async () => snapshot());
   handle("getChatGptSession", async () => runJson(["chatgpt-session", "status"]));
-  handle("getChatGptAccountPool", async () => runJson(["chatgpt-account-pool", "status"]));
+  handle("getChatGptAccountPool", async () => projectChatGPTSubscriptionLoginAttempts(
+    await runJson(["chatgpt-account-pool", "status"]),
+    subscriptionLoginAttempts,
+  ));
   const windowFor = (event) => {
     const window = BrowserWindow?.fromWebContents?.(event.sender);
     if (!window || window.isDestroyed?.()) throw new Error("Application window is unavailable.");
@@ -1182,18 +1239,33 @@ export function registerIpcHandlers({
       throw new Error("The subscription account profile is not isolated from the primary Codex login.");
     }
     subscriptionLoginInFlight.add(id);
+    subscriptionLoginAttempts.set(id, {
+      status: "pending",
+      deadlineAt: Date.now() + CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS,
+    });
     try {
       return {
         ...await openBrowserCommand(codex, ["login"], discoverSourceRoot(), {
           environment: { CODEX_HOME: profileHome },
           openExternal: shell?.openExternal?.bind(shell),
-          onExit: () => subscriptionLoginInFlight.delete(id),
+          onExit: (outcome = {}) => {
+            subscriptionLoginInFlight.delete(id);
+            const current = subscriptionLoginAttempts.get(id);
+            if (!current) return;
+            subscriptionLoginAttempts.set(id, {
+              ...current,
+              status: "finished",
+              ...(outcome.error ? { error: outcome.error } : {}),
+              ...(outcome.signal ? { signal: outcome.signal } : {}),
+            });
+          },
         }),
         accountId: id,
         pending: true,
       };
     } catch (error) {
       subscriptionLoginInFlight.delete(id);
+      subscriptionLoginAttempts.delete(id);
       throw error;
     }
   });

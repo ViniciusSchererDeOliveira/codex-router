@@ -26,6 +26,7 @@ const bridgeSource = String.raw`
     : null;
   const rejectAccountUsageRead = Number(searchParams.get("rejectAccountUsageRead")) || 0;
   const rejectAccountPool = searchParams.get("rejectAccountPool") === "1";
+  const terminalLoginFailure = searchParams.get("terminalLoginFailure") === "1";
   const staleAccountFailure = searchParams.get("staleAccountFailure") === "1";
   const staleProviderUsage = searchParams.get("staleProviderUsage") === "1";
   const fallbackUsage = searchParams.get("fallbackUsage") === "1";
@@ -33,6 +34,8 @@ const bridgeSource = String.raw`
   const healthPollOnceMs = Number(searchParams.get("healthPollOnceMs")) || 0;
   const staleHealth = searchParams.get("staleHealth") === "1";
   let accountUsageReads = 0;
+  let accountPoolReads = 0;
+  let subscriptionLoginRequested = false;
   let providerUsageReads = 0;
   let healthReads = 0;
   if (pollOnceMs > 0 || healthPollOnceMs > 0) {
@@ -205,14 +208,17 @@ const bridgeSource = String.raw`
     getChatGptSession: async () => ({ sharing: "disabled", session: "usable", present: true, email: "primary@example.com" }),
     getChatGptAccountPool: async () => {
       if (rejectAccountPool) throw new Error("The saved ChatGPT account list could not be read as JSON.");
+      accountPoolReads += 1;
+      if (terminalLoginFailure) record("getChatGptAccountPool", accountPoolReads);
       return {
         version: 1,
         policy: { enabled: true, mode: "switch", selectedAccountId: "active" },
         accounts: {
           revoked: { id: "revoked", state: "revoked", paused: true, priority: 50, label: "Removed account", health: { state: "healthy" }, turns: 0, requests: 0 },
           active: { id: "active", state: "active", paused: false, priority: 50, label: "Secondary account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "secondary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
-          current: { id: "current", state: "active", paused: false, priority: 50, label: "Current account", subscription: { status: "usable", authenticated: true, usable: true, expired: false, email: "primary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
+          current: { id: "current", state: "active", paused: false, priority: 50, label: "Current account", subscription: terminalLoginFailure ? { status: "invalid", authenticated: false, usable: false, expired: false, email: "primary@example.com" } : { status: "usable", authenticated: true, usable: true, expired: false, email: "primary@example.com" }, health: { state: "healthy" }, turns: 0, requests: 0 },
         },
+        ...(terminalLoginFailure && subscriptionLoginRequested ? { loginAttempts: { current: { status: "failed", error: "Codex login closed before this account became usable.", retryable: true } } } : {}),
         sessions: { count: 0 },
         profile: { desired: "active", active: "active", pending: false, running: false },
       };
@@ -328,6 +334,11 @@ const bridgeSource = String.raw`
     setChatGptAccountSelection: async (selection) => {
       record("setChatGptAccountSelection", selection);
       return { ok: true };
+    },
+    loginChatGptSubscriptionAccount: async (accountId) => {
+      record("loginChatGptSubscriptionAccount", accountId);
+      subscriptionLoginRequested = true;
+      return { accountId, opened: true, surface: "browser", pending: true };
     },
     setSubagentModel: async () => ({ ok: true }),
     setSubagentEffort: async () => ({ ok: true }),
@@ -614,6 +625,34 @@ test("the production renderer exposes model discovery and picker actions", { tim
       await page.getByRole("textbox", { name: "Model tag or Ollama URL" }).inputValue(),
       "hf.co/unsloth/GLM-5.3-Flash-GGUF:UD-IQ1_S",
     );
+
+    const cancelledLoginPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
+    const cancelledLoginErrors = [];
+    cancelledLoginPage.setDefaultTimeout(10_000);
+    cancelledLoginPage.on("pageerror", (error) => cancelledLoginErrors.push(error.message));
+    await cancelledLoginPage.goto(`${url}?terminalLoginFailure=1`, { waitUntil: "domcontentloaded" });
+    await cancelledLoginPage.getByRole("button", { name: "Settings", exact: true }).click();
+    const currentAccount = cancelledLoginPage.locator(".subscription-account-row").filter({ hasText: "Current account" });
+    await currentAccount.getByRole("button", { name: "Login", exact: true }).click();
+    await cancelledLoginPage.getByText("ChatGPT login did not complete", { exact: true }).waitFor();
+    // One refresh may already be queued when React observes the terminal
+    // projection. Give that in-flight poll one interval to settle, then prove
+    // the interval itself was cleared.
+    await cancelledLoginPage.waitForTimeout(1_800);
+    const readsAfterFailure = await cancelledLoginPage.evaluate(() => window.routerControlTest.calls()
+      .filter((call) => call.name === "getChatGptAccountPool").length);
+    await cancelledLoginPage.waitForTimeout(1_800);
+    assert.equal(
+      await cancelledLoginPage.evaluate(() => window.routerControlTest.calls()
+        .filter((call) => call.name === "getChatGptAccountPool").length),
+      readsAfterFailure,
+      "a terminal backend login result must stop the 1.5 second renderer poll",
+    );
+    await currentAccount.getByRole("button", { name: "Login", exact: true }).click();
+    await cancelledLoginPage.waitForFunction(() => window.routerControlTest.calls()
+      .filter((call) => call.name === "loginChatGptSubscriptionAccount").length === 2);
+    assert.deepEqual(cancelledLoginErrors, []);
+    await cancelledLoginPage.close();
 
     const corruptPoolPage = await browser.newPage({ viewport: { width: 1280, height: 840 } });
     const corruptPoolErrors = [];

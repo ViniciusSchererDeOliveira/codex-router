@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-import { writePrivateJson } from "./file-security.mjs";
+import { protectPrivateFile, writePrivateJson } from "./file-security.mjs";
 import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import {
@@ -435,7 +435,7 @@ function ensureAuthFile(filePath, label) {
   }
 }
 
-function atomicPrivateCopy(source, destination) {
+export function atomicPrivateCopy(source, destination, { protect = protectPrivateFile } = {}) {
   ensureAuthFile(source, "The selected");
   ensureNoSymlinkParents(path.dirname(destination));
   if (existsSync(destination)) {
@@ -447,13 +447,16 @@ function atomicPrivateCopy(source, destination) {
   const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
   try {
     copyFileSync(source, temporary, fsConstants.COPYFILE_EXCL);
-    chmodSync(temporary, 0o600);
+    protect(temporary);
     ensureNoSymlinkParents(path.dirname(destination));
     if (existsSync(destination) && lstatSync(destination).isSymbolicLink()) {
       throw new Error("Refusing to replace a symbolic-link login profile.");
     }
     renameSync(temporary, destination);
-    chmodSync(destination, 0o600);
+    // rename preserves the temporary file's DACL on Windows, but protect the
+    // final path as well so every OAuth credential replacement is verified at
+    // the name Codex will open. POSIX remains an owner-only chmod.
+    protect(destination);
   } finally {
     rmSync(temporary, { force: true });
   }
@@ -771,18 +774,11 @@ async function applyLocked(selection, options) {
 export async function requestChatGPTProfileSwitch(selection, options = {}) {
   assertProfileDiscoveryEnabled();
   return withChatGPTAccountPoolLock(
-    () => withProfileCatalogLock(async () => {
-      recoverInterruptedSwitchLocked(options);
-      const migration = ensureProfileAccountLocked(options);
-      const normalized = validateSelection(selection, { ...options, currentAccountId: migration.currentAccountId });
-      return applyLocked(normalized, options);
-    }, options),
-    {
-      filePath: options.filePath || CHATGPT_ACCOUNT_POOL_PATH,
-      ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
-      ...(options.retryMs === undefined ? {} : { retryMs: options.retryMs }),
-      ...(options.staleMs === undefined ? {} : { staleMs: options.staleMs }),
-    },
+    () => withProfileCatalogLock(
+      () => applyRequestedSelectionLocked(selection, options),
+      options,
+    ),
+    accountPoolLockOptions(options),
   );
 }
 
@@ -793,6 +789,16 @@ function accountPoolLockOptions(options) {
     ...(options.retryMs === undefined ? {} : { retryMs: options.retryMs }),
     ...(options.staleMs === undefined ? {} : { staleMs: options.staleMs }),
   };
+}
+
+async function applyRequestedSelectionLocked(selection, options) {
+  recoverInterruptedSwitchLocked(options);
+  const migration = ensureProfileAccountLocked(options);
+  const normalized = validateSelection(selection, {
+    ...options,
+    currentAccountId: migration.currentAccountId,
+  });
+  return applyLocked(normalized, options);
 }
 
 async function restoreAccountTransaction({ pool, profile }, options) {
@@ -923,9 +929,30 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
 
 export async function reconcileChatGPTProfileSwitch(options = {}) {
   assertProfileDiscoveryEnabled();
-  const state = readChatGPTProfileSwitchState(options.switchPath || CHATGPT_PROFILE_SWITCH_PATH);
-  if (!state.pending && state.phase === "idle") return state;
-  return requestChatGPTProfileSwitch(state.desired, options);
+  return withChatGPTAccountPoolLock(
+    () => withProfileCatalogLock(async () => {
+      // Desired is a mutable policy decision. Read it only after both locks
+      // are held; a reconciler that remembers B while a newer selector commits
+      // A can otherwise install the stale login after it finally acquires them.
+      recoverInterruptedSwitchLocked(options);
+      const state = readChatGPTProfileSwitchState(
+        options.switchPath || CHATGPT_PROFILE_SWITCH_PATH,
+      );
+      if (!state.pending && state.phase === "idle") return state;
+      return applyRequestedSelectionLocked(state.desired, options);
+    }, options),
+    accountPoolLockOptions(options),
+  );
+}
+
+export async function reconcileChatGPTProfileSwitchIfReady(options = {}) {
+  assertProfileDiscoveryEnabled();
+  const state = chatGPTProfileSwitchSnapshot(options);
+  // This is the safe polling/startup hook: it performs no mutation unless an
+  // earlier explicit selection is pending and Codex has fully released the
+  // active auth file. Reconcile revalidates both facts under its locks.
+  if (!state.pending || state.running) return state;
+  return reconcileChatGPTProfileSwitch(options);
 }
 
 export function selectedChatGPTUsageProfile({

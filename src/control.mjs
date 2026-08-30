@@ -655,7 +655,12 @@ async function printAccountUsage() {
     );
   }
   const { readCodexAccountUsage } = await import("./codex-account-usage.mjs");
-  const { ensureChatGPTProfileAccounts, selectedChatGPTUsageProfile } = await import("./chatgpt-profile-switch.mjs");
+  const {
+    ensureChatGPTProfileAccounts,
+    reconcileChatGPTProfileSwitchIfReady,
+    selectedChatGPTUsageProfile,
+  } = await import("./chatgpt-profile-switch.mjs");
+  await reconcileChatGPTProfileSwitchIfReady();
   await ensureChatGPTProfileAccounts();
   const profile = selectedChatGPTUsageProfile();
   const usage = profile.home
@@ -2915,11 +2920,16 @@ async function handleChatGptAccountSwitch(action, value) {
     chatGPTProfileSwitchSnapshot,
     ensureChatGPTProfileAccounts,
     reconcileChatGPTProfileSwitch,
+    reconcileChatGPTProfileSwitchIfReady,
     removeChatGPTProfileAccount,
     selectChatGPTProfileAccount,
   } = await import("./chatgpt-profile-switch.mjs");
 
   if (!action || action === "status") {
+    // Status is the bounded production poll owned by the Control Center and
+    // tray. It is read-only unless an earlier explicit selection is pending
+    // and Codex has closed, in which case it completes the promised handoff.
+    await reconcileChatGPTProfileSwitchIfReady();
     await ensureChatGPTProfileAccounts();
     const beforeRefresh = chatGPTSubscriptionAccountPoolSnapshot();
     await Promise.all(
