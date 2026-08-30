@@ -12,7 +12,7 @@ Each account keeps its own native model catalog and routed model overlay. Switch
 
 ## Usage
 
-Control Center reads usage from the selected account's isolated `CODEX_HOME`. It shows the weekly window when OpenAI reports one, otherwise the monthly window. Returning to another account reloads that account's quota and reset time.
+Control Center reads usage from up to eight saved, usable accounts' isolated `CODEX_HOME` directories, prioritizing the selected account. It shows the weekly window when OpenAI reports one, otherwise the monthly window. Returning to another account reloads that account's quota and reset time.
 
 ## Token refresh
 

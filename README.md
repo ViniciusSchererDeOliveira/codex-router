@@ -1261,7 +1261,8 @@ applied to native Codex after Codex is closed and restarted. The previous
 login remains saved, and switching never removes another account's session.
 
 Each account keeps its own native model catalog and routed overlay. Usage is
-read from the selected account's isolated `CODEX_HOME`, using the weekly
+read from up to eight saved, usable accounts' isolated `CODEX_HOME`
+directories, prioritizing the selected account and using the weekly
 window when available and the monthly window otherwise. This is an explicit
 switch-only feature: it does not perform automatic quota or round-robin
 routing. See [the account switching guide](docs/CHATGPT-ACCOUNT-MODES.md) for
