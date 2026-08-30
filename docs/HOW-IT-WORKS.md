@@ -156,6 +156,24 @@ redact it, while Codex config and all snapshots are current-user-only files.
 The router additionally requires JSON content, rejects browser-origin headers,
 and never grants CORS access.
 
+### Capability-gated embeddings
+
+The caller-capability `/v1/embeddings` edge resolves a registered routed model
+and refuses it unless that exact model declares `/embeddings` in
+`supportedEndpoints`. It rewrites only the public slug to the gateway model,
+then re-enters the credential-owning API forwarder; that forwarder rewrites the
+gateway model to the upstream id and otherwise preserves the embeddings JSON.
+The body never enters LiteLLM or a chat/Responses adapter. Unknown, hidden, and
+undeclared models fail before an upstream request.
+
+Both directions have an 8 MiB default bound. Client cancellation aborts the
+internal and provider requests, caller query parameters are not relayed, and
+the route performs no automatic retry because a provider may already have
+billed the input before a transport failure. Endpoint-only models stay
+unlisted so the Codex picker cannot advertise them as conversational models.
+Both hops refuse redirects so a 307/308 cannot replay the POST, and
+Messages-native providers cannot declare this OpenAI endpoint.
+
 ## Credential boundaries
 
 | Route | Incoming Codex credential | Upstream credential |
@@ -165,6 +183,7 @@ and never grants CORS access.
 | Kimi API | Discarded | Kimi Platform API key |
 | DeepSeek | Discarded | DeepSeek API key |
 | GitHub Copilot | Discarded | Stored fine-grained GitHub token, after Copilot entitlement and endpoint validation |
+| Capability-gated embeddings | Router caller capability is consumed locally | The selected routed provider's isolated credential |
 
 The Codex-to-router and internal-service trust boundaries use two different
 random keys, each stored with mode `600` or a current-user Windows ACL. Neither

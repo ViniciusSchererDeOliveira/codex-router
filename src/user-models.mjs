@@ -66,6 +66,7 @@ const METADATA_FIELDS = new Set([
   "upgradeTo",
   "requiresTrailingUserTurn",
   "isFree",
+  "supportedEndpoints",
 ]);
 
 // Some providers deliberately publish opaque preview ids while documenting a

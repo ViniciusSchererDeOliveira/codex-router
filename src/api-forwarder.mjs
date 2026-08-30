@@ -70,6 +70,10 @@ import { stripCodexEncryptedSchemaAnnotation } from "./tool-schema-root.mjs";
 import { requestGenericProvider } from "./generic-providers.mjs";
 import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
 import { providerTransportError } from "./transport-failure.mjs";
+import {
+  endpointCapabilityError,
+  supportsOpenAIModelEndpoint,
+} from "./openai-endpoint-policy.mjs";
 
 installStableFetchTransport();
 
@@ -616,10 +620,33 @@ function normalizeBody(buffer, contentType, route) {
       : provider.protocol === "openai-responses"
         ? "/responses"
         : "/chat/completions";
-  if (route !== expectedRoute) {
+  if (
+    route === "/embeddings"
+      ? !supportsOpenAIModelEndpoint(route, { model, provider })
+      : route !== expectedRoute ||
+        (model.supportedEndpoints !== undefined &&
+          !supportsOpenAIModelEndpoint(route, { model, provider }))
+  ) {
+    if (route === "/embeddings" || model.supportedEndpoints !== undefined) {
+      throw endpointCapabilityError(route, model);
+    }
     const error = new Error(`Model ${model.gatewayModel} does not support ${route}.`);
     error.status = 400;
     throw error;
+  }
+
+  payload.model = model.upstreamModel;
+  // Embeddings have their own wire contract. Keep every provider-specific
+  // input field unchanged and never send the body through a chat adapter.
+  if (route === "/embeddings") {
+    const endpoint = endpointForModel(model);
+    return {
+      body: Buffer.from(JSON.stringify(payload), "utf8"),
+      model,
+      provider,
+      endpoint,
+      payload,
+    };
   }
 
   // Responses providers get one checked boundary here. The request remains a
@@ -648,7 +675,6 @@ function normalizeBody(buffer, contentType, route) {
     };
   }
 
-  payload.model = model.upstreamModel;
   // Google's OpenAI-compatible endpoint (/v1beta/openai/chat/completions)
   // rejects any field outside the OpenAI schema with a hard 400
   // (INVALID_ARGUMENT: Unknown name "..."). Two such fields reach this hop for
@@ -1150,7 +1176,7 @@ async function handleRequest(request, response) {
   }
   if (
     request.method !== "POST" ||
-    !["/chat/completions", "/messages", "/responses"].includes(route)
+    !["/chat/completions", "/messages", "/responses", "/embeddings"].includes(route)
   ) {
     writeJson(response, 404, {
       error: { type: "proxy_route_not_found", message: "Unsupported API-provider route." },
@@ -1280,7 +1306,7 @@ async function handleRequest(request, response) {
     }
     return outcome;
   };
-  if (!poolRouting.pooled && commandCode?.route === "plan") {
+  if (!poolRouting.pooled && route !== "/embeddings" && commandCode?.route === "plan") {
     await relayThroughPlan();
     return;
   }
@@ -1294,7 +1320,7 @@ async function handleRequest(request, response) {
   let target;
   let upstream;
   let deferredUpstreamLimits;
-  if (poolRouting.pooled) {
+  if (poolRouting.pooled && route !== "/embeddings") {
     const pooled = await runProviderApiKeyAttempts(normalized.endpoint.id, {
       filePath: undefined,
       resolveCredential: (credentialId) =>
@@ -1346,6 +1372,7 @@ async function handleRequest(request, response) {
           ),
           body: upstreamBody,
           signal: controller.signal,
+          redirect: route === "/embeddings" ? "error" : "follow",
         });
         let attemptResponse = await sendAttempt();
         // The source credential can still be valid when Copilot changes the
@@ -1476,11 +1503,32 @@ async function handleRequest(request, response) {
       ),
       body: upstreamBody,
       signal: controller.signal,
+      redirect: route === "/embeddings" ? "error" : "follow",
     });
+    // Embeddings can be billed even when the response never reaches the
+    // caller. Select one pool credential above and record its outcome, but do
+    // not replay the same input through another credential after a 401, 429,
+    // or transport failure. Chat/Responses keep their established pool
+    // failover contract.
+    if (poolRouting.pooled && route === "/embeddings") {
+      await recordProviderApiKeyRequestOutcome(poolRouting, normalized.endpoint, {
+        status: upstream.status,
+        ok: upstream.ok,
+        committed: false,
+        error: upstream.ok ? undefined : `upstream status ${upstream.status}`,
+        retryAfterSeconds: responseRetryAfterSeconds(upstream.headers),
+        quota: requestQuotaFromRateLimitHeaders(upstream.headers),
+      });
+    }
   }
   // Account routing can change with plan or policy. Re-resolve and replay once
   // before any response byte reaches the caller; every other status is relayed.
-  if (!poolRouting.pooled && normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
+  if (
+    !poolRouting.pooled &&
+    route !== "/embeddings" &&
+    normalized.provider.authProfile === "github-copilot" &&
+    upstream.status === 401
+  ) {
     await upstream.body?.cancel().catch(() => undefined);
     session = await upstreamSession(
       normalized.provider,
@@ -1509,7 +1557,12 @@ async function handleRequest(request, response) {
   // because only its body distinguishes "this plan has no API access" from
   // every other 403 a gateway can send, and a plan refusal must not reach the
   // caller as a failed turn when a working route exists.
-  if (commandCode && !poolRouting.pooled && upstream.status === 403) {
+  if (
+    commandCode &&
+    !poolRouting.pooled &&
+    route !== "/embeddings" &&
+    upstream.status === 403
+  ) {
     const raw = (await readResponseBody(upstream, { signal: controller.signal })).toString("utf8");
     let refusal;
     try {
