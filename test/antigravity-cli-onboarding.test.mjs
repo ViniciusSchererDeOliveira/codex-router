@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { writePrivateJson } from "../src/file-security.mjs";
+import { recordStep } from "../src/install-plan.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -24,13 +33,31 @@ function isolatedEnvironment(testRoot, extra = {}) {
   };
 }
 
-function runNode(args, env) {
+function runNode(args, env, { cwd = root } = {}) {
   return spawnSync(process.execPath, args, {
-    cwd: root,
+    cwd,
     env,
     encoding: "utf8",
     timeout: 10_000,
   });
+}
+
+function isolatedCheckout(testRoot) {
+  const checkout = path.join(testRoot, "checkout");
+  mkdirSync(checkout, { recursive: true });
+  for (const directory of ["src", "config", "node_modules"]) {
+    cpSync(path.join(root, directory), path.join(checkout, directory), { recursive: true });
+  }
+  for (const file of ["package.json", "package-lock.json"]) {
+    copyFileSync(path.join(root, file), path.join(checkout, file));
+  }
+  // `npm ci` owns and empties the checkout's entire node_modules tree. This
+  // command-path test runs beside every other test file, so it must never let
+  // the production dependency preflight mutate the suite's live checkout.
+  // The copied tree is already the exact CI install; record that fact only in
+  // the disposable checkout used by this child.
+  recordStep("node-deps", { root: checkout });
+  return checkout;
 }
 
 function expectedLoginCommand() {
@@ -105,6 +132,7 @@ test("a signed-in but unverified session remains disabled and names the live pro
 
 test("direct Antigravity login refuses a rejected client until explicit disconnect", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-rejected-client-"));
+  const checkout = isolatedCheckout(testRoot);
   const stateDir = path.join(testRoot, "state");
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   writePrivateJson(path.join(stateDir, "antigravity-oauth.json"), {
@@ -124,6 +152,7 @@ test("direct Antigravity login refuses a rejected client until explicit disconne
     const login = runNode(
       ["src/providers.mjs", "login", "antigravity-oauth"],
       isolatedEnvironment(testRoot),
+      { cwd: checkout },
     );
     assert.equal(login.status, 1, login.stderr);
     assert.match(login.stderr, /rejected.*disconnect.*valid operator-owned/i);
