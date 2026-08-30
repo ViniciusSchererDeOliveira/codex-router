@@ -13,10 +13,9 @@ process.env.MODEL_ROUTER_STATE_DIR = path.join(testRoot, "state");
 
 const { MODEL_BY_SLUG } = await import("../src/model-registry.mjs");
 
-// Only routes whose own wire contract has been proved ship checked in. A
-// provider catalog id is not enough: the removed Command Code preset rejected
-// forced tools, Nous returned 404, and the available Venice account could not
-// get past its plan balance check.
+// This inventory asserts checked-in metadata only. The Ollama Cloud entry is a
+// candidate until its own current-head router-level exact-route certificate is
+// recorded; presence in this array is not that proof.
 const ROUTES = [
   ["opencode-go/glm-5.3-flash", "glm-5.3-flash", "ox-alpha"],
   ["ollama-cloud/glm-5.3-flash", "glm-5.3-flash:cloud", "ollama-cloud-glm-5-3-flash"],
@@ -25,7 +24,7 @@ const ROUTES = [
   ["zai-coding/glm-5.3-flash", "glm-5.3-flash", "glm-thinking"],
 ];
 
-test("every GLM-5.3-Flash route records the upstream id, window and ladder", () => {
+test("every checked-in GLM-5.3-Flash route records its static metadata", () => {
   for (const [slug, upstreamModel, requestProfile] of ROUTES) {
     const model = MODEL_BY_SLUG.get(slug);
     assert.ok(model, `${slug} is missing from the registry`);
@@ -43,7 +42,7 @@ test("every GLM-5.3-Flash route records the upstream id, window and ladder", () 
   }
 });
 
-test("uncertified Ox Alpha routes stay absent while direct-proven Flash routes remain", () => {
+test("withdrawn or uncertified reseller routes stay absent while direct-proven routes remain", () => {
   for (const slug of [
     "commandcode/ox-alpha",
     "nousresearch/ox-alpha",

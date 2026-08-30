@@ -16,7 +16,7 @@ async function bodyJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function startCompatibilityServer() {
+async function startCompatibilityServer({ echoToolResult = true } = {}) {
   const requests = [];
   const server = http.createServer(async (request, response) => {
     const body = await bodyJson(request);
@@ -51,8 +51,15 @@ async function startCompatibilityServer() {
       return;
     }
     if (Array.isArray(body.input)) {
+      const toolResult = body.input.find((item) => item?.type === "function_call_output");
       jsonResponse(response, {
-        output: [{ type: "message", content: [{ type: "output_text", text: "42 acknowledged" }] }],
+        output: [{
+          type: "message",
+          content: [{
+            type: "output_text",
+            text: echoToolResult ? toolResult?.output : "generic non-empty answer",
+          }],
+        }],
       });
       return;
     }
@@ -111,6 +118,27 @@ test("routed compatibility certification covers all five exact-route surfaces", 
       mock.requests[3].body.input.map((item) => item.type),
       ["message", "function_call", "function_call_output"],
     );
+    const statelessInput = mock.requests[3].body.input;
+    const marker = statelessInput[2].output;
+    assert.match(marker, /^CODEX_ROUTER_TOOL_RESULT_[0-9a-f]{32}$/);
+    assert.equal(JSON.stringify(statelessInput.slice(0, 2)).includes(marker), false);
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.CODEX_ROUTER_BASE_URL;
+    else process.env.CODEX_ROUTER_BASE_URL = previousBaseUrl;
+    await mock.close();
+  }
+});
+
+test("compatibility certification rejects a nonempty answer that ignores the tool result", async () => {
+  const mock = await startCompatibilityServer({ echoToolResult: false });
+  const previousBaseUrl = process.env.CODEX_ROUTER_BASE_URL;
+  process.env.CODEX_ROUTER_BASE_URL = mock.url;
+  try {
+    const result = await compatibilityTest("ollama-cloud/glm-5.3", { quick: false });
+    assert.equal(result.ok, false);
+    const stateless = result.results.find((entry) => entry.name === "stateless tool result");
+    assert.equal(stateless?.ok, false);
+    assert.equal(stateless?.detail, "stateless tool-result marker missing");
   } finally {
     if (previousBaseUrl === undefined) delete process.env.CODEX_ROUTER_BASE_URL;
     else process.env.CODEX_ROUTER_BASE_URL = previousBaseUrl;

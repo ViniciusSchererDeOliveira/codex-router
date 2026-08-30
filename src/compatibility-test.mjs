@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -147,6 +148,10 @@ async function streaming(model, reasoningEffort) {
 }
 
 async function statelessToolResult(model, reasoningEffort) {
+  // The marker exists only in the tool result. If a translation layer drops
+  // the call/result pair, a plausible ordinary answer must not pass this
+  // check merely because the user prompt disclosed the expected value.
+  const marker = `CODEX_ROUTER_TOOL_RESULT_${randomUUID().replaceAll("-", "")}`;
   const { response, payload } = await request("/responses", {
     model,
     stream: false,
@@ -154,19 +159,22 @@ async function statelessToolResult(model, reasoningEffort) {
       {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: "A probe tool returned the value 42." }],
+        content: [{
+          type: "input_text",
+          text: "Read the completed codex_router_probe result below and reply with exactly its output value.",
+        }],
       },
       {
         type: "function_call",
         id: "fc_codex_router_probe",
         call_id: "call_codex_router_probe",
         name: "codex_router_probe",
-        arguments: "{\"value\":\"42\"}",
+        arguments: "{\"value\":\"pending\"}",
       },
       {
         type: "function_call_output",
         call_id: "call_codex_router_probe",
-        output: "acknowledged",
+        output: marker,
       },
     ],
     tools: [
@@ -186,12 +194,15 @@ async function statelessToolResult(model, reasoningEffort) {
     ...reasoningFields(reasoningEffort),
   });
   const text = responseText(payload);
+  const markerReceived = text.includes(marker);
   return {
-    ok: response.ok && Boolean(text),
+    ok: response.ok && markerReceived,
     status: response.status,
-    detail: response.ok && text
+    detail: response.ok && markerReceived
       ? "stateless tool-result-backed response verified"
-      : payload?.error?.message || `HTTP ${response.status}`,
+      : payload?.error?.message || (response.ok
+          ? "stateless tool-result marker missing"
+          : `HTTP ${response.status}`),
   };
 }
 

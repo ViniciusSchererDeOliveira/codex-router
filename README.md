@@ -798,6 +798,8 @@ The exact-route certification run sent basic, streaming, forced-tool,
 stateless tool-result, and compact requests without failover for the named
 OpenCode Go, OpenRouter, Z.ai API, and Z.ai Coding routes. The Ollama Cloud
 candidate must pass that same router-level suite before it is called certified.
+The full `ollama-cloud/glm-5.3` entry is candidate registry metadata too and
+requires its own run of the same suite.
 Command Code's `stealth/ox-alpha` rejected every surface as unavailable. The
 available Venice account stopped at its API billing gate before
 `stealth-ox-alpha` could be wire-certified. Publishing either preset would
