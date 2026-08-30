@@ -268,7 +268,12 @@ test("re-login invalid_client tombstones only the exact active credential and pr
     const opened = new Promise((resolve) => { openedResolve = resolve; });
     const signIn = signInAntigravity({
       open: openedResolve,
-      timeoutMs: 5_000,
+      // Re-login writes both the sign-in intent and the rejected-client
+      // tombstone. Windows hardens each private JSON write through its own
+      // bounded 15-second PowerShell operation, so a five-second interactive
+      // deadline can replace the real invalid_client error while the exact
+      // tombstone is still being secured on a loaded CI runner.
+      timeoutMs: 45_000,
       fetchImpl: async (url) => {
         assert.match(String(url), /oauth2\.googleapis\.com\/token$/);
         return new Response(JSON.stringify({ error: "invalid_client" }), {
