@@ -124,6 +124,29 @@ test("core login recovery failures survive the Control Center projection", () =>
     loginAttempts: { [accountId]: { status: "failed", error: "Profile repair required.", retryable: false } },
   }, new Map());
   assert.equal(nonRetryable.loginAttempts?.[accountId]?.retryable, false);
+
+  const localAttempts = new Map([[accountId, {
+    status: "finished",
+    code: 1,
+    deadlineAt: Date.now() - 1,
+  }]]);
+  const collision = projectChatGPTSubscriptionLoginAttempts({
+    accounts: { [accountId]: { subscription: { usable: false, attentionRequired: true } } },
+    loginAttempts: {
+      [accountId]: {
+        status: "failed",
+        error: "The active account must be retried before removal.",
+        retryable: true,
+        removable: false,
+      },
+    },
+  }, localAttempts);
+  assert.deepEqual(collision.loginAttempts?.[accountId], {
+    status: "failed",
+    error: "The active account must be retried before removal.",
+    retryable: true,
+    removable: false,
+  });
 });
 
 test("browser opener settlement survives the Codex child exiting first", async () => {

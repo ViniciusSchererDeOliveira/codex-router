@@ -453,10 +453,13 @@ export function projectChatGPTSubscriptionLoginAttempts(pool, attempts, now = Da
         : Number.isInteger(attempt?.code) && attempt.code !== 0
           ? `Codex login exited with status ${attempt.code}.`
           : "Codex login closed before this account became usable.");
+    const coreAttempt = loginAttempts[accountId];
     loginAttempts[accountId] = {
+      ...(coreAttempt || {}),
       status: "failed",
-      error: cleanText(detail, "Codex login did not complete. Try again."),
-      retryable: true,
+      error: coreAttempt?.error || cleanText(detail, "Codex login did not complete. Try again."),
+      retryable: coreAttempt?.retryable !== false,
+      ...(coreAttempt?.removable === false ? { removable: false } : {}),
     };
   }
   return {
