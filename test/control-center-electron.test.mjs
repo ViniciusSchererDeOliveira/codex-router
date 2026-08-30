@@ -971,6 +971,7 @@ test("electron boundary does not enable node integration or shell argv", async (
   const builder = await readFile(new URL("../apps/control-center/electron-builder.yml", import.meta.url), "utf8");
   assert.match(builder, /extraResources:[\s\S]*icon\.png/);
   assert.match(builder, /from:\s*\.\.\/\.\.\/src\/spawnable-command\.mjs[\s\S]*to:\s*src\/spawnable-command\.mjs/);
+  assert.match(builder, /from:\s*\.\.\/\.\.\/src\/chatgpt-login-lease\.mjs[\s\S]*to:\s*src\/chatgpt-login-lease\.mjs/);
   const packageImport = "file:///tmp/x.app/Contents/Resources/app.asar/electron/ipc.mjs";
   assert.equal(
     new URL("../../src/spawnable-command.mjs", packageImport).pathname,
@@ -1637,6 +1638,8 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(chatgptLogin, /account\.subscription\?\.usable === true/);
   assert.match(chatgptLogin, /profileHome === primaryHome/);
   assert.match(chatgptLogin, /subscriptionLoginInFlight/);
+  assert.match(chatgptLogin, /createChatGPTLoginLease/);
+  assert.match(chatgptLogin, /clearChatGPTLoginLease/);
   const chatgptRemoval = source.match(/handleAction\("removeChatGptSubscriptionAccount"[\s\S]*?\n  \}\);/)?.[0];
   assert.ok(chatgptRemoval, "ChatGPT subscription removal handler should be readable");
   assert.match(chatgptRemoval, /subscriptionLoginInFlight\.has\(id\)/);
@@ -1661,6 +1664,8 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(settings, /filter\(\(account\) => account\.state !== "revoked"\)/);
   assert.match(settings, /account\.subscription\?\.usable === true/);
   assert.match(settings, /account\.state === "revoked" \|\| loginPendingId === account\.id/);
+  assert.match(settings, /const poll = async \(\) => \{[\s\S]*?await refreshRef\.current\(\)[\s\S]*?setTimeout\(\(\) => void poll\(\), 1_500\)/);
+  assert.doesNotMatch(settings, /setInterval\(\(\) => refreshRef\.current\(\), 1_500\)/);
 });
 
 test("credential input stays off argv and is delivered over stdin", async () => {

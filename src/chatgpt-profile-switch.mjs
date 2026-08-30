@@ -17,6 +17,7 @@ import {
 import path from "node:path";
 
 import { protectPrivateFile, writePrivateJson } from "./file-security.mjs";
+import { assertChatGPTLoginLeaseInactive } from "./chatgpt-login-lease.mjs";
 import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import {
@@ -45,6 +46,7 @@ import {
 } from "./chatgpt-account-pool.mjs";
 
 const VERSION = 1;
+const TRANSACTION_VERSION = 2;
 const LEGACY_PRIMARY = "primary";
 const AUTO = "auto";
 const CATALOG_ARTIFACTS = Object.freeze([
@@ -218,16 +220,17 @@ function snapshotGlobalCatalog(options = {}) {
             }
             return readFileSync(paths[key], "utf8");
           })()
-        : undefined,
+        : null,
     ]),
   );
 }
 
 function restoreGlobalCatalog(snapshot, options = {}) {
+  validatePersistedGlobalCatalogSnapshot(snapshot);
   const paths = catalogPaths(options);
   for (const [, key] of CATALOG_ARTIFACTS) {
     const contents = snapshot[key];
-    if (contents === undefined) removeOptionalArtifact(paths[key]);
+    if (contents === null) removeOptionalArtifact(paths[key]);
     else atomicContents(paths[key], contents);
   }
 }
@@ -249,7 +252,7 @@ function writeSwitchTransaction({
   if (!identity) throw new Error("The active ChatGPT login profile has no verified identity.");
   atomicPrivateCopy(primary, transactionAuthPath(switchPath));
   writePrivateJson(transactionManifestPath(switchPath), {
-    version: VERSION,
+    version: TRANSACTION_VERSION,
     active,
     target,
     activeAccountId: identity.accountId,
@@ -271,9 +274,15 @@ function validatePersistedGlobalCatalogSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
     throw new Error("The ChatGPT profile switch catalog snapshot is invalid.");
   }
-  const artifactKeys = new Set(CATALOG_ARTIFACTS.map(([, key]) => key));
+  const artifactKeys = CATALOG_ARTIFACTS.map(([, key]) => key);
+  if (
+    Object.keys(snapshot).length !== artifactKeys.length
+    || artifactKeys.some((key) => !Object.hasOwn(snapshot, key))
+  ) {
+    throw new Error("The ChatGPT profile switch catalog snapshot is invalid.");
+  }
   for (const [key, contents] of Object.entries(snapshot)) {
-    if (!artifactKeys.has(key) || typeof contents !== "string") {
+    if (!artifactKeys.includes(key) || (contents !== null && typeof contents !== "string")) {
       throw new Error("The ChatGPT profile switch catalog snapshot is invalid.");
     }
   }
@@ -299,7 +308,7 @@ function readSwitchTransaction(switchPath) {
   }
   const parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
   if (
-    parsed?.version !== VERSION
+    parsed?.version !== TRANSACTION_VERSION
     || !isChatGPTAccountId(parsed.active)
     || !isChatGPTAccountId(parsed.target)
     || typeof parsed.activeAccountId !== "string"
@@ -904,6 +913,12 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
     };
     const account = before.pool.accounts[accountId];
     if (!account) throw new Error("Account id is not registered.");
+    assertChatGPTLoginLeaseInactive(accountId, {
+      homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
+      ...(options.loginLeaseIdentity ? { identity: options.loginLeaseIdentity } : {}),
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: options.loginLeaseMaxAgeMs }),
+    });
     if (before.profile.pending && before.profile.desired === accountId) {
       throw new Error("Cannot remove a ChatGPT account with a pending native profile selection.");
     }
@@ -934,6 +949,9 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
         filePath,
         homesDir: options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR,
         ...(selected && selected !== accountId ? { selectedAccountId: selected } : {}),
+        ...(options.loginLeaseIdentity ? { loginLeaseIdentity: options.loginLeaseIdentity } : {}),
+        ...(options.now === undefined ? {} : { now: options.now }),
+        ...(options.loginLeaseMaxAgeMs === undefined ? {} : { loginLeaseMaxAgeMs: options.loginLeaseMaxAgeMs }),
       });
       return {
         removed,

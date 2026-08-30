@@ -20,6 +20,12 @@ extraResources:
     to: icon.png
   - from: ../../src/spawnable-command.mjs
     to: src/spawnable-command.mjs
+  - from: ../../src/chatgpt-login-lease.mjs
+    to: src/chatgpt-login-lease.mjs
+  - from: ../../src/file-security.mjs
+    to: src/file-security.mjs
+  - from: ../../src/process-identity.mjs
+    to: src/process-identity.mjs
 mac:
   category: public.app-category.developer-tools
   icon: assets/icon.png

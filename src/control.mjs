@@ -2936,26 +2936,10 @@ async function handleChatGptAccountSwitch(action, value) {
         .map((account) => refreshChatGPTSubscriptionAccount(account.id)),
     );
     const safe = chatGPTSubscriptionAccountPoolSnapshot();
-    const { readCodexAccountUsage } = await import("./codex-account-usage.mjs");
-    for (const account of Object.values(safe.accounts || {})) {
-      if (account.subscription?.usable !== true) continue;
-      try {
-        const usage = await readCodexAccountUsage({ codexHome: chatGPTSubscriptionAccountHome(account.id) });
-        const windows = [usage.primary, usage.secondary].filter(Boolean);
-        const weekly = windows.find((window) => window.windowDurationMins >= 7 * 24 * 60);
-        const monthly = windows.find((window) => window.windowDurationMins >= 28 * 24 * 60);
-        const selected = weekly || monthly || windows[0];
-        if (selected) {
-          account.subscription.usage = {
-            period: selected === weekly ? "weekly" : selected === monthly ? "monthly" : "current",
-            remainingPercent: selected.remainingPercent,
-            ...(selected.resetsAt ? { resetsAt: selected.resetsAt } : {}),
-          };
-        }
-      } catch {
-        // A quota read is optional; authentication state remains authoritative.
-      }
-    }
+    const { attachBoundedChatGPTAccountUsage } = await import("./codex-account-usage.mjs");
+    await attachBoundedChatGPTAccountUsage(safe, {
+      accountHome: (accountId) => chatGPTSubscriptionAccountHome(accountId),
+    });
     process.stdout.write(`${JSON.stringify({
       ...safe,
       profile: chatGPTProfileSwitchSnapshot(),

@@ -2,9 +2,42 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ACCOUNT_POOL_USAGE_PROBE_LIMIT,
+  attachBoundedChatGPTAccountUsage,
   normalizeCodexAccountUsage,
   readCodexAccountUsage,
 } from "../src/codex-account-usage.mjs";
+
+test("64 slow account probes stay within one capped concurrent usage budget", async () => {
+  const accounts = Object.fromEntries(Array.from({ length: 64 }, (_, index) => [
+    `acct_${String(index).padStart(8, "0")}`,
+    {
+      id: `acct_${String(index).padStart(8, "0")}`,
+      subscription: { usable: true },
+    },
+  ]));
+  const pool = { accounts };
+  let active = 0;
+  let maximumActive = 0;
+  let calls = 0;
+  const startedAt = Date.now();
+  await attachBoundedChatGPTAccountUsage(pool, {
+    accountHome: (id) => `/isolated/${id}`,
+    timeoutMs: 25,
+    readUsage: async ({ timeoutMs }) => {
+      calls += 1;
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+      active -= 1;
+      throw new Error("slow optional probe");
+    },
+  });
+  assert.equal(calls, ACCOUNT_POOL_USAGE_PROBE_LIMIT);
+  assert.equal(maximumActive, ACCOUNT_POOL_USAGE_PROBE_LIMIT);
+  assert.ok(Date.now() - startedAt < 500, "optional usage probes exceeded their single bounded batch");
+  assert.equal(Object.values(accounts).some((account) => account.subscription.usage), false);
+});
 
 test("normalizes Codex limits and daily usage without account credentials", () => {
   const value = normalizeCodexAccountUsage(

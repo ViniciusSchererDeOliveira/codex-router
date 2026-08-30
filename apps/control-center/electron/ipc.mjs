@@ -32,6 +32,13 @@ const spawnableCommandUrl = import.meta.url.includes("/app.asar/")
   ? new URL("../../src/spawnable-command.mjs", import.meta.url)
   : new URL("../../../src/spawnable-command.mjs", import.meta.url);
 const { spawnableCommand } = await import(spawnableCommandUrl);
+const loginLeaseUrl = import.meta.url.includes("/app.asar/")
+  ? new URL("../../src/chatgpt-login-lease.mjs", import.meta.url)
+  : new URL("../../../src/chatgpt-login-lease.mjs", import.meta.url);
+const {
+  clearChatGPTLoginLease,
+  createChatGPTLoginLease,
+} = await import(loginLeaseUrl);
 
 // Codex is the one client-specific adapter this panel still exposes (native
 // GPT details and the current task default). Routed model identity and picker
@@ -258,6 +265,7 @@ function openTerminalCommand(executable, args, cwd) {
 // CODEX_HOME profile while the user completes sign-in.
 export function openBrowserCommand(executable, args, cwd, {
   environment = {},
+  onSpawn,
   onExit,
   openExternal,
   completionTimeoutMs = CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS,
@@ -265,6 +273,7 @@ export function openBrowserCommand(executable, args, cwd, {
   if (!executable || !path.isAbsolute(executable) || !Array.isArray(args)) throw new Error("Browser command is unavailable.");
   if (args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) throw new Error("Browser command is invalid.");
   if (typeof openExternal !== "function") throw new Error("The default browser opener is unavailable.");
+  if (onSpawn !== undefined && typeof onSpawn !== "function") throw new Error("Browser process ownership callback is invalid.");
   if (!Number.isFinite(completionTimeoutMs) || completionTimeoutMs <= 0 || completionTimeoutMs > 30 * 60_000) {
     throw new Error("Browser login completion timeout is invalid.");
   }
@@ -405,6 +414,11 @@ export function openBrowserCommand(executable, args, cwd, {
     finish({ code, signal, ...(terminalError ? { error: terminalError } : {}) });
     maybeFailAfterExit();
   });
+  try {
+    if (typeof onSpawn === "function") onSpawn(child);
+  } catch (error) {
+    void abort(error);
+  }
   child.unref();
   return opened;
 }
@@ -1254,13 +1268,29 @@ export function registerIpcHandlers({
       status: "pending",
       deadlineAt: Date.now() + CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS,
     });
+    let loginLease;
     try {
       return {
         ...await openBrowserCommand(codex, ["login"], discoverSourceRoot(), {
           environment: { CODEX_HOME: profileHome },
           openExternal: shell?.openExternal?.bind(shell),
+          onSpawn: (child) => {
+            loginLease = createChatGPTLoginLease(id, child?.pid, {
+              accountHome: profileHome,
+              homesDir: path.dirname(profileHome),
+            });
+          },
           onExit: (outcome = {}) => {
             subscriptionLoginInFlight.delete(id);
+            try {
+              if (loginLease) clearChatGPTLoginLease(id, loginLease, {
+                accountHome: profileHome,
+                homesDir: path.dirname(profileHome),
+              });
+            } catch {
+              // A lease that cannot be verified remains fail-closed for core
+              // removal and expires through its bounded owner validation.
+            }
             const current = subscriptionLoginAttempts.get(id);
             if (!current) return;
             subscriptionLoginAttempts.set(id, {
@@ -1276,6 +1306,12 @@ export function registerIpcHandlers({
       };
     } catch (error) {
       subscriptionLoginInFlight.delete(id);
+      try {
+        if (loginLease) clearChatGPTLoginLease(id, loginLease, {
+          accountHome: profileHome,
+          homesDir: path.dirname(profileHome),
+        });
+      } catch {}
       subscriptionLoginAttempts.delete(id);
       throw error;
     }

@@ -39,7 +39,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
   onLanguage: (language: LanguageId) => void;
   t: Translate;
   refreshing: boolean;
-  onRefresh: () => void;
+  onRefresh: () => Promise<unknown> | void;
   runAction: RunAction;
 }) {
   const [confirmTrayDisable, setConfirmTrayDisable] = useState(false);
@@ -87,8 +87,17 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
       setLoginError(loginAttempt.error || "Codex login did not complete. Try again.");
       return;
     }
-    const timer = window.setInterval(() => refreshRef.current(), 1_500);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await refreshRef.current();
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 1_500);
+    };
+    timer = window.setTimeout(() => void poll(), 1_500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [loginAttempt?.error, loginAttempt?.status, loginPendingId, loginPendingUsable]);
   const trayControlsUnavailable = trayCapability?.supported === false;
   const repairFailures = useMemo(

@@ -629,7 +629,7 @@ test("production reconcile hook completes an installed transaction after restart
   mkdirSync(transactionDir, { recursive: true, mode: 0o700 });
   writeFileSync(path.join(transactionDir, "primary-auth.json"), firstAuth, { mode: 0o600 });
   writeFileSync(path.join(transactionDir, "manifest.json"), JSON.stringify({
-    version: 1,
+    version: 2,
     active: first.id,
     target: second.id,
     activeAccountId: "first",
@@ -673,9 +673,17 @@ test("production reconcile hook completes an installed transaction after restart
 });
 
 test("malformed durable catalog snapshots fail closed without deleting global artifacts", async () => {
-  for (const [label, manifestSnapshot] of [
-    ["missing", undefined],
-    ["malformed", { modelsCachePath: { account: "not-serialized" } }],
+  for (const [label, manifestVersion, manifestSnapshot] of [
+    ["legacy-partial-v1", 1, { modelsCachePath: "legacy" }],
+    ["missing", 2, undefined],
+    ["partial", 2, { modelsCachePath: "only-one-artifact" }],
+    ["malformed", 2, {
+      modelsCachePath: { account: "not-serialized" },
+      nativeCatalogPath: null,
+      mergedCatalogPath: null,
+      nativeAliasPath: null,
+      announcedModelsPath: null,
+    }],
   ]) {
     const root = mkdtempSync(path.join(os.tmpdir(), `codex-profile-${label}-snapshot-`));
     const primaryHome = path.join(root, "primary");
@@ -694,7 +702,7 @@ test("malformed durable catalog snapshots fail closed without deleting global ar
     writeFileSync(path.join(primaryHome, "auth.json"), activeAuth, { mode: 0o600 });
     writeFileSync(path.join(transactionDir, "primary-auth.json"), activeAuth, { mode: 0o600 });
     const manifest = {
-      version: 1,
+      version: manifestVersion,
       active: "acct_active_12345678",
       target: "acct_target_12345678",
       activeAccountId: "active",
@@ -726,7 +734,7 @@ test("malformed durable catalog snapshots fail closed without deleting global ar
         processList: "",
         ...catalog,
       }),
-      /catalog snapshot is invalid/i,
+      /transaction manifest is invalid|catalog snapshot is invalid/i,
     );
     for (const [filePath, contents] of Object.entries(catalogContents)) {
       assert.equal(readFileSync(filePath, "utf8"), contents, `${label} snapshot changed ${path.basename(filePath)}`);
@@ -735,6 +743,76 @@ test("malformed durable catalog snapshots fail closed without deleting global ar
     assert.equal(existsSync(path.join(transactionDir, "primary-auth.json")), true);
     assert.equal(readChatGPTProfileSwitchState(switchPath).phase, "backed-up");
   }
+});
+
+test("a complete v2 durable snapshot restores every encoded catalog artifact", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-complete-snapshot-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const transactionDir = path.join(root, "chatgpt-profile", "switch-transaction");
+  const catalog = {
+    modelsCachePath: path.join(root, "models_cache.json"),
+    nativeCatalogPath: path.join(root, "native-models.json"),
+    mergedCatalogPath: path.join(root, "merged-models.json"),
+    nativeAliasPath: path.join(root, "native-aliases.json"),
+    announcedModelsPath: path.join(root, "announced-models.json"),
+  };
+  mkdirSync(primaryHome, { recursive: true });
+  const active = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const target = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const activeAuth = JSON.stringify({ tokens: { access_token: "active-token", account_id: "active" } });
+  const targetAuth = JSON.stringify({ tokens: { access_token: "target-token", account_id: "target" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), targetAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(active.id, { homesDir }), activeAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(target.id, { homesDir }), targetAuth, { mode: 0o600 });
+  mkdirSync(transactionDir, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(transactionDir, "primary-auth.json"), activeAuth, { mode: 0o600 });
+  const snapshot = {
+    modelsCachePath: JSON.stringify({ restored: "models" }),
+    nativeCatalogPath: JSON.stringify({ restored: "native" }),
+    mergedCatalogPath: JSON.stringify({ restored: "merged" }),
+    nativeAliasPath: JSON.stringify({ restored: "aliases" }),
+    announcedModelsPath: null,
+  };
+  writeFileSync(path.join(transactionDir, "manifest.json"), JSON.stringify({
+    version: 2,
+    active: active.id,
+    target: target.id,
+    activeAccountId: "active",
+    targetAccountId: "target",
+    catalogsEnabled: true,
+    globalCatalogSnapshot: snapshot,
+  }), { mode: 0o600 });
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: target.id,
+    active: active.id,
+    pending: true,
+    phase: "backed-up",
+  }), { mode: 0o600 });
+  for (const filePathValue of Object.values(catalog)) {
+    writeFileSync(filePathValue, JSON.stringify({ crash: true }), { mode: 0o600 });
+  }
+
+  const recovered = await reconcileChatGPTProfileSwitch({
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "/Applications/Codex.app/Contents/MacOS/Codex",
+    ...catalog,
+  });
+  assert.equal(recovered.active, active.id);
+  assert.equal(recovered.pending, true);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), activeAuth);
+  for (const [key, contents] of Object.entries(snapshot)) {
+    if (contents === null) assert.equal(existsSync(catalog[key]), false);
+    else assert.equal(readFileSync(catalog[key], "utf8"), contents);
+  }
+  assert.equal(existsSync(transactionDir), false);
 });
 
 test("settled production reconcile reads do not wait on account or catalog locks", async () => {

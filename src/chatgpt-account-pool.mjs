@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
@@ -10,6 +10,7 @@ import { discoveryDisabled } from "./discovery-mode.mjs";
 import { CHATGPT_ACCOUNT_HOMES_DIR, CHATGPT_ACCOUNT_POOL_PATH } from "./paths.mjs";
 import { findCodexBinary } from "./codex-binary.mjs";
 import { spawnableCommand } from "./spawnable-command.mjs";
+import { assertChatGPTLoginLeaseInactive } from "./chatgpt-login-lease.mjs";
 
 export const CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION = 1;
 
@@ -19,8 +20,7 @@ const MAX_ACCOUNTS = 64;
 const MAX_ERROR_LENGTH = 512;
 const EXPIRY_SKEW_MS = 120_000;
 const ACCOUNT_REFRESH_MARGIN_MS = 24 * 60 * 60 * 1000;
-const ACCOUNT_REFRESH_RETRY_MS = 5 * 60 * 1000;
-const refreshAttempts = new Map();
+export const ACCOUNT_REFRESH_RETRY_MS = 5 * 60 * 1000;
 
 function assertAccountDiscoveryEnabled() {
   if (discoveryDisabled()) {
@@ -67,6 +67,7 @@ function normalizeHealth(raw) {
     ...(iso(source.lastSuccessAt) ? { lastSuccessAt: iso(source.lastSuccessAt) } : {}),
     ...(iso(source.lastErrorAt) ? { lastErrorAt: iso(source.lastErrorAt) } : {}),
     ...(iso(source.lastUsedAt) ? { lastUsedAt: iso(source.lastUsedAt) } : {}),
+    ...(iso(source.lastRefreshAttemptAt) ? { lastRefreshAttemptAt: iso(source.lastRefreshAttemptAt) } : {}),
     ...(number(source.lastStatus) !== undefined ? { lastStatus: integer(source.lastStatus, 500, { min: 100, max: 999 }) } : {}),
     ...(text(source.lastError) ? { lastError: text(source.lastError).slice(0, MAX_ERROR_LENGTH) } : {}),
   };
@@ -294,11 +295,20 @@ export function removeChatGPTSubscriptionAccount(accountValue, {
   filePath = CHATGPT_ACCOUNT_POOL_PATH,
   homesDir = CHATGPT_ACCOUNT_HOMES_DIR,
   selectedAccountId,
+  loginLeaseIdentity,
+  now = Date.now(),
+  loginLeaseMaxAgeMs,
 } = {}) {
   const id = accountId(accountValue);
   const state = readChatGPTAccountPoolState(filePath);
   const removed = state.accounts[id];
   if (!removed) throw new Error("Account id is not registered.");
+  assertChatGPTLoginLeaseInactive(id, {
+    homesDir,
+    ...(loginLeaseIdentity ? { identity: loginLeaseIdentity } : {}),
+    now,
+    ...(loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: loginLeaseMaxAgeMs }),
+  });
   delete state.accounts[id];
   if (selectedAccountId !== undefined) {
     const selected = accountId(selectedAccountId);
@@ -310,8 +320,54 @@ export function removeChatGPTSubscriptionAccount(accountValue, {
   } else if (state.policy.selectedAccountId === id) {
     delete state.policy.selectedAccountId;
   }
-  writeChatGPTAccountPoolState(state, filePath);
-  rmSync(chatGPTSubscriptionAccountHome(id, { homesDir }), { recursive: true, force: true });
+  const root = path.resolve(homesDir);
+  const home = path.resolve(chatGPTSubscriptionAccountHome(id, { homesDir }));
+  const rootStat = lstatSync(root);
+  const homeStat = lstatSync(home);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error("ChatGPT account removal root is not a private directory.");
+  }
+  if (homeStat.isSymbolicLink() || !homeStat.isDirectory()) {
+    throw new Error("ChatGPT account removal target is not an owned directory.");
+  }
+  const realRoot = realpathSync(root);
+  if (path.dirname(realpathSync(home)) !== realRoot) {
+    throw new Error("ChatGPT account removal target escaped its private root.");
+  }
+  const tombstone = path.join(root, `.removed-${id}-${randomBytes(8).toString("hex")}`);
+  renameSync(home, tombstone);
+  let committed = false;
+  try {
+    const staged = lstatSync(tombstone);
+    if (staged.isSymbolicLink() || !staged.isDirectory() || path.dirname(realpathSync(tombstone)) !== realRoot) {
+      throw new Error("ChatGPT account removal staging target is not an owned directory.");
+    }
+    try {
+      writeChatGPTAccountPoolState(state, filePath);
+    } catch (error) {
+      renameSync(tombstone, home);
+      throw error;
+    }
+    committed = true;
+  } catch (error) {
+    if (existsSync(tombstone) && !existsSync(home)) {
+      try { renameSync(tombstone, home); } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "ChatGPT account removal staging rollback failed.");
+      }
+    }
+    throw error;
+  }
+  // Pool state is committed before deletion, but only the directory we just
+  // atomically staged is eligible. If its identity changes, leave a private
+  // tombstone for manual cleanup rather than following an attacker path.
+  if (committed) {
+    try {
+      const cleanup = lstatSync(tombstone);
+      if (!cleanup.isSymbolicLink() && cleanup.isDirectory() && path.dirname(realpathSync(tombstone)) === realRoot) {
+        rmSync(tombstone, { recursive: true, force: true });
+      }
+    } catch {}
+  }
   return sanitizeChatGPTAccount({ ...removed, state: "revoked", paused: true });
 }
 
@@ -359,18 +415,34 @@ export function chatGPTSubscriptionAccountStatus(accountValue, { homesDir = CHAT
     expiresInHours: session?.expiresAtMs === undefined ? undefined : Math.round(((session.expiresAtMs - now) / 36e5) * 10) / 10,
   };
 }
-export function refreshChatGPTSubscriptionAccount(accountValue, { homesDir = CHATGPT_ACCOUNT_HOMES_DIR, force = false, now = Date.now(), binary, execFileImpl = execFile } = {}) {
+export async function claimChatGPTSubscriptionRefresh(accountValue, {
+  filePath = CHATGPT_ACCOUNT_POOL_PATH,
+  force = false,
+  now = Date.now(),
+} = {}) {
+  const id = accountId(accountValue);
+  return withChatGPTAccountPoolLock(() => {
+    const state = readChatGPTAccountPoolState(filePath);
+    const account = state.accounts[id];
+    if (!account || account.state !== "active" || account.paused) return false;
+    const attemptedAt = Date.parse(account.health?.lastRefreshAttemptAt || "");
+    if (!force && Number.isFinite(attemptedAt) && now - attemptedAt < ACCOUNT_REFRESH_RETRY_MS) return false;
+    account.health = { ...account.health, lastRefreshAttemptAt: isoNow(now) };
+    writeChatGPTAccountPoolState(state, filePath);
+    return true;
+  }, { filePath });
+}
+
+export async function refreshChatGPTSubscriptionAccount(accountValue, { filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR, force = false, now = Date.now(), binary, execFileImpl = execFile } = {}) {
   assertAccountDiscoveryEnabled();
   const id = accountId(accountValue);
   const status = chatGPTSubscriptionAccountStatus(id, { homesDir, now });
   const expiresSoon = status.expiresInHours !== undefined && status.expiresInHours * 36e5 <= ACCOUNT_REFRESH_MARGIN_MS;
-  if (!force && !status.expired && !expiresSoon) return Promise.resolve(false);
-  const attemptedAt = refreshAttempts.get(id) || 0;
-  if (!force && now - attemptedAt < ACCOUNT_REFRESH_RETRY_MS) return Promise.resolve(false);
+  if (!force && !status.expired && !expiresSoon) return false;
   const resolvedBinary = binary || findCodexBinary();
-  if (!resolvedBinary) return Promise.resolve(false);
+  if (!resolvedBinary) return false;
+  if (!await claimChatGPTSubscriptionRefresh(id, { filePath, force, now })) return false;
   const target = spawnableCommand(resolvedBinary, ["login", "status"]);
-  refreshAttempts.set(id, now);
   return new Promise((resolve) => execFileImpl(target.command, target.args, { ...target.options, env: { ...process.env, CODEX_HOME: chatGPTSubscriptionAccountHome(id, { homesDir }) }, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }, (error) => resolve(!error)));
 }
 export function chatGPTSubscriptionAccountPoolSnapshot({ filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR, now = Date.now() } = {}) {
