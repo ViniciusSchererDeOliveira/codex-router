@@ -449,7 +449,8 @@ test("Windows batch refresh kills the whole shim tree before finalization", asyn
     },
     execFileSyncImpl: (command, args, killOptions) => {
       assert.equal(killOptions.timeout, 5_000);
-      calls.push(`tree-killed:${command}:${args.join(":")}`);
+      assert.equal(path.win32.basename(command), "taskkill.exe");
+      calls.push(`tree-killed:${args.join(":")}`);
       queueMicrotask(() => child.emit("close", 1, null));
     },
     createLoginLease: () => ({ ...lease, phase: "reserved" }),
@@ -459,7 +460,7 @@ test("Windows batch refresh kills the whole shim tree before finalization", asyn
     },
   });
   assert.equal(await refreshed, true);
-  assert.match(calls[0], /^tree-killed:taskkill\.exe:\/PID:4324:\/T:\/F$/);
+  assert.equal(calls[0], "tree-killed:/PID:4324:/T:/F");
   assert.deepEqual(calls.slice(1), ["finalized"]);
 });
 

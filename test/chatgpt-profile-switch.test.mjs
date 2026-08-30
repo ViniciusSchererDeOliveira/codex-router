@@ -1496,16 +1496,26 @@ test("a failed profile rollback cannot overwrite a queued catalog publication", 
   });
   await refreshStarted;
 
-  let queuedPublisherStarted = false;
+  await assert.rejects(
+    withCatalogPublicationLock(
+      async () => assert.fail("the profile switch must still own catalog publication"),
+      { stateDir: root, waitMs: 0, retryMs: 20 },
+    ),
+    (error) => error?.code === "catalog_publication_locked",
+  );
+
+  let markQueuedPublisherStarted;
+  const queuedPublisherStartedLatch = new Promise((resolve) => {
+    markQueuedPublisherStarted = resolve;
+  });
   const queuedPublication = withCatalogPublicationLock(async () => {
-    queuedPublisherStarted = true;
+    markQueuedPublisherStarted();
     writeFileSync(catalog.mergedCatalogPath, JSON.stringify({ publisher: "provider" }), { mode: 0o600 });
-  }, { stateDir: root, waitMs: 5_000, retryMs: 20, staleMs: 5_000 });
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(queuedPublisherStarted, false, "the provider publisher must wait through profile rollback");
+  }, { stateDir: root, waitMs: 60_000, retryMs: 20 });
 
   releaseRefresh();
   await assert.rejects(switching, /forced profile publication failure/);
+  await queuedPublisherStartedLatch;
   await queuedPublication;
   assert.deepEqual(JSON.parse(readFileSync(catalog.mergedCatalogPath, "utf8")), { publisher: "provider" });
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
