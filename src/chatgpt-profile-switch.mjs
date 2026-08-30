@@ -948,10 +948,11 @@ export async function reconcileChatGPTProfileSwitch(options = {}) {
 export async function reconcileChatGPTProfileSwitchIfReady(options = {}) {
   assertProfileDiscoveryEnabled();
   const state = chatGPTProfileSwitchSnapshot(options);
-  // This is the safe polling/startup hook: it performs no mutation unless an
-  // earlier explicit selection is pending and Codex has fully released the
-  // active auth file. Reconcile revalidates both facts under its locks.
-  if (!state.pending || state.running) return state;
+  // This is the safe polling/startup hook: it performs no mutation for settled
+  // idle state, and never mutates while Codex is running. Once Codex releases
+  // auth, it completes either an earlier explicit pending selection or durable
+  // crash recovery from a non-idle transaction phase under both locks.
+  if (state.running || (!state.pending && state.phase === "idle")) return state;
   return reconcileChatGPTProfileSwitch(options);
 }
 

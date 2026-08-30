@@ -328,7 +328,15 @@ export function openBrowserCommand(executable, args, cwd, {
     rejectOpen(error instanceof Error ? error : new Error(String(error)));
   };
   const abort = async (error) => {
-    if (finished || aborting) return;
+    // Promise settlement is independent from child cleanup. The Codex child
+    // may print its URL and exit while Electron's browser opener is still
+    // pending; a later opener rejection must still reject `opened`, even
+    // though close already delivered the exactly-once onExit notification.
+    if (finished) {
+      fail(error);
+      return;
+    }
+    if (aborting) return;
     aborting = true;
     terminalError = error instanceof Error ? error.message : String(error);
     clearTimeout(urlTimeout);
@@ -861,7 +869,10 @@ export function registerIpcHandlers({
   handle("getSnapshot", async () => snapshot());
   handle("getChatGptSession", async () => runJson(["chatgpt-session", "status"]));
   handle("getChatGptAccountPool", async () => projectChatGPTSubscriptionLoginAttempts(
-    await runJson(["chatgpt-account-pool", "status"]),
+    await runJson(
+      ["chatgpt-account-pool", "status"],
+      { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS },
+    ),
     subscriptionLoginAttempts,
   ));
   const windowFor = (event) => {

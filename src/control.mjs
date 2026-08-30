@@ -657,10 +657,8 @@ async function printAccountUsage() {
   const { readCodexAccountUsage } = await import("./codex-account-usage.mjs");
   const {
     ensureChatGPTProfileAccounts,
-    reconcileChatGPTProfileSwitchIfReady,
     selectedChatGPTUsageProfile,
   } = await import("./chatgpt-profile-switch.mjs");
-  await reconcileChatGPTProfileSwitchIfReady();
   await ensureChatGPTProfileAccounts();
   const profile = selectedChatGPTUsageProfile();
   const usage = profile.home
@@ -2926,9 +2924,9 @@ async function handleChatGptAccountSwitch(action, value) {
   } = await import("./chatgpt-profile-switch.mjs");
 
   if (!action || action === "status") {
-    // Status is the bounded production poll owned by the Control Center and
-    // tray. It is read-only unless an earlier explicit selection is pending
-    // and Codex has closed, in which case it completes the promised handoff.
+    // This is the single production reconcile poll, owned by the Control
+    // Center account view. It is read-only for settled state; after Codex has
+    // closed it completes an explicit pending handoff or durable crash phase.
     await reconcileChatGPTProfileSwitchIfReady();
     await ensureChatGPTProfileAccounts();
     const beforeRefresh = chatGPTSubscriptionAccountPoolSnapshot();

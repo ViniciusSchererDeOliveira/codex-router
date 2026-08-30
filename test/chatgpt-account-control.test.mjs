@@ -117,12 +117,12 @@ test("no-discovery account reads never import account modules or create pool sta
   rmSync(isolated, { recursive: true, force: true });
 });
 
-test("production account status polls own pending profile reconciliation", () => {
+test("one production account status poll owns pending profile reconciliation", () => {
   const source = readFileSync(path.join(root, "src", "control.mjs"), "utf8");
   const accountUsage = source.match(/async function printAccountUsage\(\)[\s\S]*?\n}\n\nasync function printProviderUsage/)?.[0];
   const accountPool = source.match(/async function handleChatGptAccountSwitch[\s\S]*?\n}\n\n\/\/ The public/)?.[0];
   assert.ok(accountUsage);
   assert.ok(accountPool);
-  assert.match(accountUsage, /await reconcileChatGPTProfileSwitchIfReady\(\)/);
+  assert.doesNotMatch(accountUsage, /reconcileChatGPTProfileSwitchIfReady/);
   assert.match(accountPool, /if \(!action \|\| action === "status"\)[\s\S]*?await reconcileChatGPTProfileSwitchIfReady\(\)/);
 });

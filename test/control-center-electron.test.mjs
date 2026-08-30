@@ -94,6 +94,57 @@ test("ChatGPT browser login reports a terminal retry after child close without a
   }
 });
 
+test("browser opener settlement survives the Codex child exiting first", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-exit-race-"));
+  const script = path.join(directory, "codex-login-fixture.mjs");
+  try {
+    await writeFile(
+      script,
+      "process.stdout.write('https://auth.openai.com/oauth/authorize?state=exit-race');\n",
+    );
+
+    for (const expected of ["reject", "resolve"]) {
+      let settleOpener;
+      let markOpenerCalled;
+      let markChildExited;
+      let exitCount = 0;
+      const openerCalled = new Promise((resolve) => { markOpenerCalled = resolve; });
+      const childExited = new Promise((resolve) => { markChildExited = resolve; });
+      const opener = new Promise((resolve, reject) => {
+        settleOpener = expected === "reject"
+          ? () => reject(new Error("delayed browser refusal"))
+          : resolve;
+      });
+      const opened = openBrowserCommand(process.execPath, [script], process.cwd(), {
+        environment: { PATH: process.env.PATH || "" },
+        openExternal: async () => {
+          markOpenerCalled();
+          return opener;
+        },
+        onExit: () => {
+          exitCount += 1;
+          markChildExited();
+        },
+      });
+      await openerCalled;
+      await childExited;
+      settleOpener();
+      const bounded = Promise.race([
+        opened,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("browser opener remained pending")), 700)),
+      ]);
+      if (expected === "reject") {
+        await assert.rejects(bounded, /Could not open the default browser: delayed browser refusal/);
+      } else {
+        assert.deepEqual(await bounded, { opened: true, surface: "browser" });
+      }
+      assert.equal(exitCount, 1, "child exit notification must remain exactly once");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("ChatGPT browser login has a bounded post-handoff completion deadline", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-deadline-"));
   const script = path.join(directory, "codex-login-fixture.mjs");
@@ -1703,6 +1754,7 @@ test("catalog-backed mutations outlive the publication-lock wait", async () => {
   assert.match(source, /handleAction\("setPickerModel"[\s\S]{0,320}CATALOG_MUTATION_TIMEOUT_MS/);
   assert.match(source, /handleAction\("setVisionBridgeEnabled"[\s\S]{0,280}CATALOG_MUTATION_TIMEOUT_MS/);
   assert.match(source, /handleAction\("setSignedRouting"[\s\S]{0,280}CATALOG_MUTATION_TIMEOUT_MS/);
+  assert.match(source, /handle\("getChatGptAccountPool"[\s\S]{0,260}timeoutMs: CATALOG_MUTATION_TIMEOUT_MS/);
 });
 
 test("service IPC exposes only safe beta actions and start covers readiness", async () => {

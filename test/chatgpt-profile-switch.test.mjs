@@ -557,7 +557,7 @@ test("an interrupted switch rolls back durable auth and catalog before retrying"
   assert.equal(JSON.parse(readFileSync(modelsCachePath, "utf8")).account, "second");
 });
 
-test("reconcile completes an installed transaction after restart", async () => {
+test("production reconcile hook completes an installed transaction after restart", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-installed-recovery-"));
   const primaryHome = path.join(root, "primary");
   const homesDir = path.join(root, "accounts");
@@ -590,7 +590,19 @@ test("reconcile completes an installed transaction after restart", async () => {
     phase: "installed",
   }), { mode: 0o600 });
 
-  const recovered = await reconcileChatGPTProfileSwitch({
+  const stillInstalled = await reconcileChatGPTProfileSwitchIfReady({
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    platform: "darwin",
+    processList: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+    refreshCatalog: false,
+  });
+  assert.equal(stillInstalled.phase, "installed");
+  assert.equal(existsSync(transactionDir), true);
+
+  const recovered = await reconcileChatGPTProfileSwitchIfReady({
     filePath,
     homesDir,
     primaryHome,
@@ -604,6 +616,42 @@ test("reconcile completes an installed transaction after restart", async () => {
   assert.equal(recovered.phase, "idle");
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), secondAuth);
   assert.equal(existsSync(transactionDir), false);
+});
+
+test("settled production reconcile reads do not wait on account or catalog locks", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-settled-read-"));
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  let releaseHolder;
+  let markHeld;
+  const held = new Promise((resolve) => { markHeld = resolve; });
+  const release = new Promise((resolve) => { releaseHolder = resolve; });
+  const holder = withChatGPTAccountPoolLock(async () => {
+    markHeld();
+    await release;
+  }, { filePath, waitMs: 5_000, retryMs: 20 });
+  await held;
+  try {
+    const state = await Promise.race([
+      reconcileChatGPTProfileSwitchIfReady({
+        filePath,
+        switchPath,
+        platform: "darwin",
+        processList: "",
+        catalogLockStateDir: root,
+        refreshCatalog: false,
+      }),
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error("settled reconcile attempted to acquire a mutation lock")),
+        250,
+      )),
+    ]);
+    assert.equal(state.pending, false);
+    assert.equal(state.phase, "idle");
+  } finally {
+    releaseHolder();
+    await holder;
+  }
 });
 
 test("cross-process account selections commit one matching policy and profile", async () => {
