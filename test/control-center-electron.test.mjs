@@ -1734,7 +1734,7 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(settings, /subscription\?\.usable === true && !loginAttempt/);
   assert.match(settings, /accountLoginAttempt\?\.status !== "failed"/);
   assert.match(settings, /loginPendingId === loginRetryingId/);
-  assert.match(settings, /account\.state === "revoked" \|\| accountLoginAttempt\?\.retryable === false \|\| loginPendingId === account\.id/);
+  assert.match(settings, /account\.state === "revoked" \|\| accountLoginAttempt\?\.retryable === false \|\| accountLoginAttempt\?\.removable === false \|\| loginPendingId === account\.id/);
   assert.match(settings, /const poll = async \(\) => \{[\s\S]*?await refreshRef\.current\(\)[\s\S]*?setTimeout\(\(\) => void poll\(\), 1_500\)/);
   assert.doesNotMatch(settings, /setInterval\(\(\) => refreshRef\.current\(\), 1_500\)/);
 });

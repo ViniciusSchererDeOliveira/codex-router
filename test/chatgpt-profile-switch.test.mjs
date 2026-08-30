@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync as rawWriteFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,12 +30,19 @@ import {
   selectChatGPTProfileAccount,
 } from "../src/chatgpt-profile-switch.mjs";
 import { withCatalogPublicationLock } from "../src/catalog-publication-lock.mjs";
-import { privateFileIsProtected } from "../src/file-security.mjs";
+import { privateFileIsProtected, protectPrivateFile } from "../src/file-security.mjs";
 import {
   CHATGPT_LOGIN_LEASE_MAX_AGE_MS,
   clearChatGPTLoginLease,
   createChatGPTLoginLease,
 } from "../src/chatgpt-login-lease.mjs";
+
+function writeFileSync(target, contents, options) {
+  rawWriteFileSync(target, contents, options);
+  if (options && typeof options === "object" && options.mode === 0o600) {
+    protectPrivateFile(target);
+  }
+}
 
 function runModuleChild(source) {
   return new Promise((resolve, reject) => {
@@ -923,6 +930,73 @@ test("an inactive identity-conflict account remains removable after explicit fai
   const persisted = readChatGPTAccountPoolState(filePath).accounts[duplicate.id];
   assert.ok(!persisted || persisted.state === "revoked");
   assert.equal(removed.profile.active, first.id);
+});
+
+test("an active bound-identity mismatch remains retryable without bypassing removal discovery", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-mismatch-remove-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  const primaryHome = path.join(root, "primary");
+  mkdirSync(primaryHome, { recursive: true });
+  const replacement = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const mismatch = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const replacementAuth = JSON.stringify({ tokens: { access_token: "replacement", account_id: "replacement-account" } });
+  const priorAuth = JSON.stringify({ tokens: { access_token: "prior", account_id: "prior-account" } });
+  writeFileSync(path.join(primaryHome, "auth.json"), priorAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(replacement.id, { homesDir }), replacementAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(mismatch.id, { homesDir }), priorAuth, { mode: 0o600 });
+  const pool = readChatGPTAccountPoolState(filePath);
+  pool.accounts[replacement.id].identity = { accountId: "replacement-account" };
+  pool.accounts[mismatch.id].identity = { accountId: "prior-account" };
+  pool.policy.selectedAccountId = mismatch.id;
+  writeChatGPTAccountPoolState(pool, filePath);
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    desired: mismatch.id,
+    active: mismatch.id,
+    pending: false,
+    phase: "idle",
+  }), { mode: 0o600 });
+  createChatGPTLoginLease(mismatch.id, 4242, {
+    homesDir,
+    identity: () => "departed-owner",
+    now: 1_000,
+    phase: "running",
+  });
+  writeFileSync(
+    chatGPTSubscriptionAccountAuthPath(mismatch.id, { homesDir }),
+    JSON.stringify({ tokens: { access_token: "new", account_id: "new-unique-account" } }),
+    { mode: 0o600 },
+  );
+  const options = {
+    filePath,
+    homesDir,
+    primaryHome,
+    switchPath,
+    refreshCatalog: false,
+    platform: "darwin",
+    processList: "",
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 2_000,
+  };
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), {
+    recovered: [],
+    failures: [{ accountId: mismatch.id, code: "identity-conflict" }],
+  });
+  assert.equal(await discardCompletedChatGPTProfileLogin(mismatch.id, options), true);
+  await assert.rejects(
+    removeChatGPTProfileAccount(mismatch.id, options),
+    /identity does not match/i,
+  );
+  const retry = createChatGPTLoginLease(mismatch.id, 5252, {
+    homesDir,
+    identity: () => "retry-owner",
+    now: 3_000,
+    phase: "reserved",
+  });
+  assert.equal(clearChatGPTLoginLease(mismatch.id, retry, { homesDir }), true);
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), priorAuth);
 });
 
 test("Windows login finalization replaces a foreign inherited OAuth ACL", { skip: process.platform !== "win32" }, async () => {

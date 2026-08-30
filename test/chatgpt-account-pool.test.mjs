@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync as rawWriteFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -29,6 +29,14 @@ import {
   clearChatGPTLoginLease,
   createChatGPTLoginLease,
 } from "../src/chatgpt-login-lease.mjs";
+import { protectPrivateFile } from "../src/file-security.mjs";
+
+function writeFileSync(target, contents, options) {
+  rawWriteFileSync(target, contents, options);
+  if (options && typeof options === "object" && options.mode === 0o600) {
+    protectPrivateFile(target);
+  }
+}
 
 function runClaimChild(moduleUrl, account, options, now) {
   const source = `

@@ -324,7 +324,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                           });
                         }}
                       ><LogIn aria-hidden size={13} strokeWidth={1.7} /> Login</Button>
-                      <Button variant="ghost" disabled={!api || account.state === "revoked" || accountLoginAttempt?.retryable === false || loginPendingId === account.id} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
+                      <Button variant="ghost" disabled={!api || account.state === "revoked" || accountLoginAttempt?.retryable === false || accountLoginAttempt?.removable === false || loginPendingId === account.id} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
                     </div>
                   </div>
                 );

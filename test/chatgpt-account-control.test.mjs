@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync as rawWriteFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { protectPrivateFile } from "../src/file-security.mjs";
+
+function writeFileSync(target, contents, options) {
+  rawWriteFileSync(target, contents, options);
+  if (options && typeof options === "object" && options.mode === 0o600) {
+    protectPrivateFile(target);
+  }
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-account-control-"));

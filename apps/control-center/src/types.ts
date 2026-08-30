@@ -324,6 +324,7 @@ export interface ChatGptAccountPool {
     status: "pending" | "failed";
     error?: string;
     retryable?: boolean;
+    removable?: boolean;
   }>;
   sessions: { count: number };
   profile?: ChatGptProfileSwitch;

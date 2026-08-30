@@ -1343,23 +1343,30 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
     const initialProfile = readChatGPTProfileSwitchState(switchPath);
     const homesDir = options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR;
     const targetIdentity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
-    const inactiveIdentityConflict = Boolean(
+    const removableIdentityConflict = Boolean(
       targetIdentity
       && initialProfile.active !== accountId
       && initialProfile.desired !== accountId
-      && Object.entries(initialPool.accounts).some(([candidateId, candidate]) => (
-        candidateId !== accountId
-        && (
-          candidate?.identity?.accountId === targetIdentity.accountId
-          || authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
-            === targetIdentity.accountId
+      && (
+        (
+          initialPool.accounts[accountId]?.identity?.accountId
+          && initialPool.accounts[accountId].identity.accountId !== targetIdentity.accountId
         )
-      )),
+        || Object.entries(initialPool.accounts).some(([candidateId, candidate]) => (
+          candidateId !== accountId
+          && (
+            candidate?.identity?.accountId === targetIdentity.accountId
+            || authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
+              === targetIdentity.accountId
+          )
+        ))
+      ),
     );
     // Normal discovery must reject duplicate identities. Removal is the one
-    // operation that can resolve an already-classified duplicate, and only
-    // when the conflicted target is neither active nor desired.
-    if (!inactiveIdentityConflict) ensureProfileAccountLocked(options);
+    // operation that can resolve an already-classified conflict, and only
+    // while the target is neither active nor desired. Active conflicts remain
+    // recoverable through Retry without bypassing native-profile discovery.
+    if (!removableIdentityConflict) ensureProfileAccountLocked(options);
     const before = {
       pool: readChatGPTAccountPoolState(filePath),
       profile: readChatGPTProfileSwitchState(switchPath),

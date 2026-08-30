@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync as rawWriteFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,6 +21,14 @@ import {
   readChatGPTAccountPoolState,
 } from "../src/chatgpt-account-pool.mjs";
 import { removeChatGPTProfileAccount } from "../src/chatgpt-profile-switch.mjs";
+import { protectPrivateFile } from "../src/file-security.mjs";
+
+function writeFileSync(target, contents, options) {
+  rawWriteFileSync(target, contents, options);
+  if (options && typeof options === "object" && options.mode === 0o600) {
+    protectPrivateFile(target);
+  }
+}
 
 function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-login-lease-"));
