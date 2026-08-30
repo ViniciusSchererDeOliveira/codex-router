@@ -180,6 +180,29 @@ test("account removal refuses symlinked roots and targets without deleting exter
   }
 });
 
+test("account removal refuses a symlinked ancestor without deleting external data", () => {
+  const options = fixture();
+  options.homesDir = path.join(options.root, "profile-parent", "accounts");
+  const account = createChatGPTSubscriptionAccount(options);
+  const originalPool = readFileSync(options.filePath, "utf8");
+  const parent = path.dirname(options.homesDir);
+  const external = mkdtempSync(path.join(os.tmpdir(), "codex-account-external-ancestor-"));
+  const externalHome = path.join(external, "accounts", account.id);
+  mkdirSync(externalHome, { recursive: true });
+  const sentinel = path.join(externalHome, "keep.txt");
+  writeFileSync(sentinel, "external-data", { mode: 0o600 });
+  renameSync(parent, `${parent}.owned`);
+  symlinkSync(external, parent, process.platform === "win32" ? "junction" : "dir");
+
+  assert.throws(
+    () => removeChatGPTSubscriptionAccount(account.id, options),
+    /symbolic-link|private directory|owned directory|lease/i,
+  );
+  assert.equal(readFileSync(sentinel, "utf8"), "external-data");
+  assert.equal(readFileSync(options.filePath, "utf8"), originalPool);
+  assert.equal(readChatGPTAccountPoolState(options.filePath).accounts[account.id].id, account.id);
+});
+
 test("an existing malformed account list fails closed and is never replaced as first-run state", () => {
   const options = fixture();
   const damaged = '{"version":1,"policy":';

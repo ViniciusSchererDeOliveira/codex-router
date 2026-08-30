@@ -11,6 +11,7 @@ import { CHATGPT_ACCOUNT_HOMES_DIR, CHATGPT_ACCOUNT_POOL_PATH } from "./paths.mj
 import { findCodexBinary } from "./codex-binary.mjs";
 import { spawnableCommand } from "./spawnable-command.mjs";
 import { assertChatGPTLoginLeaseInactive } from "./chatgpt-login-lease.mjs";
+import { ensureNoSymlinkParents } from "./path-security.mjs";
 
 export const CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION = 1;
 
@@ -212,6 +213,7 @@ function ensurePrivateAccountDirectory(target, homesDir) {
   if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
     throw new Error("ChatGPT account profile escaped its private home directory.");
   }
+  ensureNoSymlinkParents(path.dirname(root), { label: "ChatGPT account home parent" });
   if (existsSync(root)) {
     const rootStat = lstatSync(root);
     if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
@@ -220,52 +222,15 @@ function ensurePrivateAccountDirectory(target, homesDir) {
   } else {
     mkdirSync(root, { recursive: true, mode: 0o700 });
   }
+  ensureNoSymlinkParents(root, { label: "ChatGPT account home" });
   mkdirSync(absolute, { recursive: true, mode: 0o700 });
-  ensureNoSymlinkParents(absolute, root);
+  ensureNoSymlinkParents(absolute, { label: "ChatGPT account profile" });
   const accountStat = lstatSync(absolute);
   if (accountStat.isSymbolicLink() || !accountStat.isDirectory()) {
     throw new Error("ChatGPT account profile directory is not a private directory.");
   }
   chmodSync(root, 0o700);
   chmodSync(absolute, 0o700);
-}
-
-function ensureNoSymlinkParents(target, boundary = path.parse(path.resolve(target)).root) {
-  const absolute = path.resolve(target);
-  const root = path.resolve(boundary);
-  const relative = path.relative(root, absolute);
-  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
-    throw new Error("ChatGPT profile path escaped its private directory.");
-  }
-  let current = root;
-  for (const component of relative.split(path.sep).filter(Boolean)) {
-    current = path.join(current, component);
-    let stat;
-    try { stat = lstatSync(current); } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      throw error;
-    }
-    if (stat.isSymbolicLink()) {
-      if (!isAllowedSystemPathLink(current)) {
-        throw new Error(`Refusing to traverse a symbolic-link path: ${current}`);
-      }
-      continue;
-    }
-    if (!stat.isDirectory()) throw new Error(`ChatGPT profile path component is not a directory: ${current}`);
-  }
-}
-
-function isAllowedSystemPathLink(target) {
-  const normalized = path.resolve(target);
-  if (!["/var", "/tmp"].includes(normalized)) return false;
-  try {
-    const resolved = path.resolve(realpathSync(normalized));
-    return normalized === "/var"
-      ? resolved === "/private/var"
-      : resolved === "/private/tmp";
-  } catch {
-    return false;
-  }
 }
 
 function nextAccountLabel(state) {
@@ -322,6 +287,8 @@ export function removeChatGPTSubscriptionAccount(accountValue, {
   }
   const root = path.resolve(homesDir);
   const home = path.resolve(chatGPTSubscriptionAccountHome(id, { homesDir }));
+  ensureNoSymlinkParents(root, { label: "ChatGPT account removal root" });
+  ensureNoSymlinkParents(home, { label: "ChatGPT account removal target" });
   const rootStat = lstatSync(root);
   const homeStat = lstatSync(home);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
@@ -335,6 +302,15 @@ export function removeChatGPTSubscriptionAccount(accountValue, {
     throw new Error("ChatGPT account removal target escaped its private root.");
   }
   const tombstone = path.join(root, `.removed-${id}-${randomBytes(8).toString("hex")}`);
+  // The account/publisher locks serialize router mutations, but an external
+  // filesystem actor can still replace an ancestor. Revalidate the full chain
+  // and realpath ownership at the destructive boundary immediately before the
+  // atomic rename.
+  ensureNoSymlinkParents(root, { label: "ChatGPT account removal root" });
+  ensureNoSymlinkParents(home, { label: "ChatGPT account removal target" });
+  if (realpathSync(root) !== realRoot || path.dirname(realpathSync(home)) !== realRoot) {
+    throw new Error("ChatGPT account removal target changed during validation.");
+  }
   renameSync(home, tombstone);
   let committed = false;
   try {

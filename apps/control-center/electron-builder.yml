@@ -24,6 +24,8 @@ extraResources:
     to: src/chatgpt-login-lease.mjs
   - from: ../../src/file-security.mjs
     to: src/file-security.mjs
+  - from: ../../src/path-security.mjs
+    to: src/path-security.mjs
   - from: ../../src/process-identity.mjs
     to: src/process-identity.mjs
 mac:
