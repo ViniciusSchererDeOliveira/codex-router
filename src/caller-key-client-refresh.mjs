@@ -1,4 +1,9 @@
-import { assertCallerSecret, isManagedCallerBaseUrl, isManagedGeminiBaseUrl } from "./caller-auth.mjs";
+import {
+  assertCallerSecret,
+  isManagedCallerBaseUrl,
+  isManagedCodexBaseUrl,
+  isManagedGeminiBaseUrl,
+} from "./caller-auth.mjs";
 import { DSH_CREDENTIAL_REF, DSH_ROUTE_ID } from "./dsh-catalog.mjs";
 import { geminiManagedBlockPresent, spliceGeminiEnvBlock } from "./gemini-env.mjs";
 import { scanYamlDocument, yamlNode } from "./yaml-structure.mjs";
@@ -37,6 +42,11 @@ function assignmentValue(line, key, separator = "=") {
   return match ? decodeScalar(match[1]) : undefined;
 }
 
+function managedCodexBase(value, port, legacyPort) {
+  return isManagedCodexBaseUrl(value, port) ||
+    (legacyPort !== undefined && isManagedCodexBaseUrl(value, legacyPort));
+}
+
 function managedCallerBase(value, port, legacyPort) {
   return isManagedCallerBaseUrl(value, port) ||
     (legacyPort !== undefined && isManagedCallerBaseUrl(value, legacyPort));
@@ -54,8 +64,8 @@ function replaceRootCallerBase(contents, nextBase, port, legacyPort) {
     throw new Error("Codex caller capability refresh requires exactly one managed openai_base_url.");
   }
   const oldBase = assignmentValue(lines[matches[0]], "openai_base_url");
-  if (!managedCallerBase(oldBase, port, legacyPort)) {
-    throw new Error("Codex openai_base_url is not a managed caller capability.");
+  if (!managedCodexBase(oldBase, port, legacyPort)) {
+    throw new Error("Codex openai_base_url is not a managed router URL.");
   }
   lines[matches[0]] = replaceAssignmentLine(lines[matches[0]], "openai_base_url", nextBase);
   return lines.join("\n");
@@ -77,16 +87,16 @@ function replaceMarkedBase(contents, begin, end, nextBase, port, legacyPort) {
     throw new Error(`Managed caller capability block ${begin} has no unique base_url.`);
   }
   const oldBase = assignmentValue(lines[matches[0]], "base_url");
-  if (!managedCallerBase(oldBase, port, legacyPort)) {
-    throw new Error(`Managed caller capability block ${begin} has an unmanaged base_url.`);
+  if (!managedCodexBase(oldBase, port, legacyPort)) {
+    throw new Error(`Managed Codex block ${begin} has an unmanaged base_url.`);
   }
   lines[matches[0]] = replaceAssignmentLine(lines[matches[0]], "base_url", nextBase);
   return lines.join("\n");
 }
 
 export function refreshCodexCallerCapabilityContents(contents, nextBase, { port, legacyPort } = {}) {
-  if (!isManagedCallerBaseUrl(nextBase, port)) {
-    throw new Error("Refusing an invalid Codex caller capability URL.");
+  if (!isManagedCodexBaseUrl(nextBase, port)) {
+    throw new Error("Refusing an invalid Codex router URL.");
   }
   let next = replaceRootCallerBase(String(contents ?? ""), nextBase, port, legacyPort);
   next = replaceMarkedBase(next, CODEX_PROVIDER_BEGIN, CODEX_PROVIDER_END, nextBase, port, legacyPort);
@@ -97,8 +107,8 @@ export function refreshCodexCallerCapabilityContents(contents, nextBase, { port,
 export function refreshCodexCallerCapabilityState(state, nextBase, { port, legacyPort } = {}) {
   if (!state || typeof state !== "object") return state;
   if (!("managedBaseUrl" in state)) return { ...state };
-  if (!managedCallerBase(state.managedBaseUrl, port, legacyPort) || !isManagedCallerBaseUrl(nextBase, port)) {
-    throw new Error("Codex managed provider state contains an invalid caller capability URL.");
+  if (!managedCodexBase(state.managedBaseUrl, port, legacyPort) || !isManagedCodexBaseUrl(nextBase, port)) {
+    throw new Error("Codex managed provider state contains an invalid router URL.");
   }
   return { ...state, managedBaseUrl: nextBase };
 }

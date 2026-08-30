@@ -155,6 +155,42 @@ wire_api = "responses"
       assert.equal(byName.get("Routed model agents").status, "ok");
       assert.match(byName.get("Routed model agents").detail, /^0 current definitions/);
       assert.equal(byName.get("Signed router coexistence").status, "ok");
+
+      if (process.platform === "win32") {
+        // Codex Desktop writes config.toml atomically. Recreate the resulting
+        // inherited-ACL shape without changing the temporary directory ACL.
+        const configured = readFileSync(configPath, "utf8");
+        unlinkSync(configPath);
+        writeFileSync(configPath, configured, { mode: 0o600 });
+
+        const privacyDoctor = child("doctor.mjs", ["--json"], env);
+        const privacyReport = JSON.parse(privacyDoctor.stdout);
+        const privacy = privacyReport.checks.find((check) => check.name === "Codex config privacy");
+        assert.deepEqual(privacy, {
+          status: "ok",
+          name: "Codex config privacy",
+          detail: "router credentials stay outside config.toml",
+        });
+
+        const legacy = configured.replace(
+          /^openai_base_url\s*=.*$/m,
+          `openai_base_url = "http://127.0.0.1:46192/_codex-router/${callerSecret}/v1"`,
+        );
+        assert.notEqual(legacy, configured, "legacy fixture must replace the managed root URL");
+        assert.match(legacy, /\/_codex-router\/[A-Za-z0-9_-]+\/v1/);
+        unlinkSync(configPath);
+        writeFileSync(configPath, legacy, { mode: 0o600 });
+        assert.equal(readFileSync(configPath, "utf8"), legacy);
+        const legacyDoctor = child("doctor.mjs", ["--json"], env);
+        const legacyReport = JSON.parse(legacyDoctor.stdout);
+        const legacyPrivacy = legacyReport.checks.find((check) => check.name === "Codex config privacy");
+        assert.deepEqual(legacyPrivacy, {
+          status: "fail",
+          name: "Codex config privacy",
+          detail: "Windows ACL is broader than the current user",
+          fix: "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
+        });
+      }
     } finally {
       rmSync(codexHome, { recursive: true, force: true });
     }

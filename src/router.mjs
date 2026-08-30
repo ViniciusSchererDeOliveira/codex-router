@@ -171,7 +171,10 @@ import {
   toolResultAgingEnabled,
 } from "./tool-result-aging-state.mjs";
 import { VERSION } from "./version.mjs";
-import { nativeSessionHeaders } from "./codex-native-session.mjs";
+import {
+  nativeSessionHeaders,
+  nativeSessionTokenMatches,
+} from "./codex-native-session.mjs";
 import {
   installStableFetchTransport,
   loopbackProbeFetch,
@@ -642,6 +645,16 @@ function callerBroughtNoUpstreamCredential(request) {
   const presented = bearerToken(request.headers.authorization);
   if (presented === undefined) return request.headers.authorization === undefined;
   return secretEqual(presented, CALLER_KEY || "") || secretEqual(presented, INTERNAL_KEY || "");
+}
+
+function authenticatedDirectV1Route(request, pathname) {
+  if (pathname !== "/v1" && !pathname.startsWith("/v1/")) return undefined;
+  const presented = bearerToken(request.headers.authorization);
+  if (presented === undefined) return undefined;
+  if (secretEqual(presented, CALLER_KEY || "") || nativeSessionTokenMatches(presented)) {
+    return pathname;
+  }
+  return undefined;
 }
 
 // ChatGPT's own backend accepts a narrower request than the public Responses
@@ -4407,7 +4420,9 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const route = authenticatedRoute(requestUrl.pathname, CALLER_KEY);
+  const route =
+    authenticatedRoute(requestUrl.pathname, CALLER_KEY) ||
+    authenticatedDirectV1Route(request, requestUrl.pathname);
   if (!route) {
     writeJson(response, 401, {
       error: {

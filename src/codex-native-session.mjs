@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 
+import { secretEqual } from "./caller-auth.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { writePrivateJson } from "./file-security.mjs";
 import { CODEX_HOME, NATIVE_SESSION_CONSENT_PATH } from "./paths.mjs";
@@ -92,13 +93,20 @@ function tokenEmail(idToken) {
 // turn, and there is nothing to gain from spending the last seconds of one.
 const EXPIRY_SKEW_MS = 120_000;
 
-function readSession() {
+function readAuthDocument() {
   // Under --no-discovery the Codex auth file is never opened; status readers
   // above report it absent rather than pretending to know what is inside.
   if (discoveryDisabled()) return undefined;
   if (!existsSync(CODEX_AUTH_PATH)) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(CODEX_AUTH_PATH, "utf8"));
+    return JSON.parse(readFileSync(CODEX_AUTH_PATH, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionFromAuthDocument(parsed) {
+  try {
     const tokens = parsed?.tokens;
     const accessToken = typeof tokens?.access_token === "string" ? tokens.access_token : "";
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id : "";
@@ -119,6 +127,29 @@ function readSession() {
     // the way it did before, with the upstream's own 401.
     return undefined;
   }
+}
+
+function readSession() {
+  return sessionFromAuthDocument(readAuthDocument());
+}
+
+// Authenticate a bearer that claims to be the already-signed-in Codex client.
+// This never enables session sharing; it only verifies the caller's own token.
+export function nativeSessionTokenMatches(token) {
+  if (typeof token !== "string" || !token) return false;
+  const auth = readAuthDocument();
+  const session = sessionFromAuthDocument(auth);
+  const actuallyExpired = session?.expiresAtMs !== undefined && session.expiresAtMs <= Date.now();
+  if (session && !actuallyExpired && secretEqual(token, session.accessToken)) return true;
+
+  // API-key login is an official Codex auth mode too. It uses the same bearer
+  // header on a requires_openai_auth provider, but stores the credential at the
+  // top level rather than under `tokens`. Matching it authenticates this one
+  // request only; session sharing below remains ChatGPT-token-only.
+  const apiKey = auth?.auth_mode === "apikey" && typeof auth?.OPENAI_API_KEY === "string"
+    ? auth.OPENAI_API_KEY
+    : "";
+  return Boolean(apiKey && secretEqual(token, apiKey));
 }
 
 /**

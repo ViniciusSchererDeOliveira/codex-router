@@ -154,7 +154,7 @@ approval_policy = "never"
     assert.equal(enabled.config_protected, true);
     assert.equal(
       enabled.openai_base_url,
-      "http://127.0.0.1:46192/_codex-router/[REDACTED]/v1",
+      "http://127.0.0.1:46192/v1",
     );
     assert.doesNotMatch(JSON.stringify(enabled), new RegExp(CALLER_KEY));
 
@@ -174,11 +174,12 @@ approval_policy = "never"
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
     assert.match(configured, /^supports_standalone_web_search = true$/m);
-    assert.ok(
-      configured.includes(
-        `openai_base_url = "http://127.0.0.1:46192/_codex-router/${CALLER_KEY}/v1"`,
-      ),
-    );
+    assert.match(configured, /^requires_openai_auth = true$/m);
+    assert.doesNotMatch(configured, /\[model_providers\.codex-router\.auth\]/);
+    assert.doesNotMatch(configured, /caller-key-auth-command\.mjs/);
+    assert.match(configured, /^openai_base_url = "http:\/\/127\.0\.0\.1:46192\/v1"$/m);
+    assert.doesNotMatch(configured, new RegExp(CALLER_KEY));
+    assert.doesNotMatch(configured, /\/_codex-router\/[A-Za-z0-9_-]+\/v1/);
     assert.match(
       configured,
       /^experimental_realtime_webrtc_call_base_url = "https:\/\/chatgpt\.com\/backend-api\/codex"$/m,
@@ -625,6 +626,9 @@ approval_policy = "never"
     assert.match(loginFreeConfig, /^model_provider = "custom"$/m);
     assert.match(loginFreeConfig, /name = "Codex Router \(external models\)"/);
     assert.match(loginFreeConfig, /requires_openai_auth = false/);
+    assert.match(loginFreeConfig, /\[model_providers\.custom\.auth\]/);
+    assert.match(loginFreeConfig, /caller-key-auth-command\.mjs/);
+    assert.doesNotMatch(loginFreeConfig, new RegExp(CALLER_KEY));
     assert.match(loginFreeConfig, /model = "deepseek\/deepseek-v4-pro"/);
     assert.match(loginFreeConfig, /model_reasoning_effort = "high"/);
     assert.match(loginFreeConfig, /\[profiles\.work\]/);
@@ -864,9 +868,12 @@ test("disabling the router from login-free mode restores an originally unset pro
     const enabledConfig = readFileSync(configPath, "utf8");
     // Built-in provider ids cannot be overridden on current Codex builds, so
     // the implicit OpenAI provider takes the proven provider-switch fallback.
-    assert.match(enabledConfig, /^openai_base_url = "http:\/\/127\.0\.0\.1:\d+\/_codex-router\/[^"]+\/v1"$/m);
+    assert.match(enabledConfig, /^openai_base_url = "http:\/\/127\.0\.0\.1:\d+\/v1"$/m);
     assert.match(enabledConfig, /^model_provider = "codex-router"$/m);
     assert.match(enabledConfig, /\[model_providers\.codex-router\]/);
+    assert.match(enabledConfig, /\[model_providers\.codex-router\.auth\]/);
+    assert.match(enabledConfig, /caller-key-auth-command\.mjs/);
+    assert.doesNotMatch(enabledConfig, new RegExp(CALLER_KEY));
 
     const disabled = run("disable", codexHome, stateDir);
     assert.equal(disabled.mode, "native");
@@ -911,8 +918,11 @@ model_provider = "openai"
 
     const loginFreeConfig = readFileSync(configPath, "utf8");
     assert.match(loginFreeConfig, /^model_provider = "codex-router"$/m);
-    assert.match(loginFreeConfig, /^openai_base_url = "http:\/\/127\.0\.0\.1:\d+\/_codex-router\/[^"]+\/v1"$/m);
+    assert.match(loginFreeConfig, /^openai_base_url = "http:\/\/127\.0\.0\.1:\d+\/v1"$/m);
     assert.match(loginFreeConfig, /\[model_providers\.codex-router\]/);
+    assert.match(loginFreeConfig, /\[model_providers\.codex-router\.auth\]/);
+    assert.match(loginFreeConfig, /caller-key-auth-command\.mjs/);
+    assert.doesNotMatch(loginFreeConfig, new RegExp(CALLER_KEY));
 
     const drifted = loginFreeConfig.replace(
       'model_provider = "codex-router"',
@@ -1170,7 +1180,7 @@ test("config manager adopts the exact legacy router-owned provider table", () =>
         'name = "Codex Router (external models)"',
         'name = "Codex Router (extra providers)"',
       )
-      .replace('wire_api = "responses"', 'wire_api = "responses"\nrequires_openai_auth = true');
+      ;
     writeFileSync(configPath, legacy, { mode: 0o600 });
 
     const enabled = run("login-free-enable", codexHome, stateDir, ["kimi-oauth/kimi-k2.5"]);
@@ -1349,8 +1359,9 @@ model = "gpt-5.6-terra"
   try {
     assert.equal(run("enable", codexHome, stateDir).mode, "router");
     const configured = readFileSync(configPath, "utf8");
-    assert.ok(configured.includes("http://127.0.0.1:46192/_codex-router/"));
+    assert.ok(configured.includes("http://127.0.0.1:46192/v1"));
     assert.doesNotMatch(configured, /127\.0\.0\.1:4102/);
+    assert.doesNotMatch(configured, new RegExp(CALLER_KEY));
     assert.match(configured, /\[profiles\.work\]/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
@@ -1508,7 +1519,8 @@ Authorization = "Bearer PROVIDER_HEADER_SECRET"
     assert.match(configured, /# BEGIN codex-router-signed-provider-managed/);
     assert.match(configured, /\[model_providers\.custom\]/);
     assert.doesNotMatch(configured, /\[model_providers\.codex-router-signed\]/);
-    assert.match(configured, new RegExp(`base_url = "http://127\\.0\\.0\\.1:46192/_codex-router/${CALLER_KEY}/v1"`));
+    assert.match(configured, /base_url = "http:\/\/127\.0\.0\.1:46192\/v1"/);
+    assert.doesNotMatch(configured, new RegExp(CALLER_KEY));
     assert.match(configured, /requires_openai_auth = true/);
     assert.match(configured, /supports_websockets = false/);
     assert.match(configured, /^supports_standalone_web_search = true$/m);
@@ -2175,7 +2187,7 @@ accent = "#4e96d1"
   }
 });
 
-test("caller capability refresh preserves Codex policy while replacing managed URLs", () => {
+test("caller capability refresh preserves Codex policy without embedding the rotated key", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-caller-refresh-"));
   const stateDir = path.join(codexHome, "router-state");
   const configPath = path.join(codexHome, "config.toml");
@@ -2189,7 +2201,9 @@ test("caller capability refresh preserves Codex policy while replacing managed U
     const result = run("caller-capability-refresh", codexHome, stateDir);
     assert.equal(result.refreshed, true);
     const after = readFileSync(configPath, "utf8");
-    assert.equal(after, before.replaceAll(CALLER_KEY, nextSecret));
+    assert.equal(after, before);
+    assert.doesNotMatch(after, new RegExp(CALLER_KEY));
+    assert.doesNotMatch(after, new RegExp(nextSecret));
     assert.match(after, /model = "keep-model"/);
     assert.match(after, /ambient-suggestions-enabled = false/);
   } finally {

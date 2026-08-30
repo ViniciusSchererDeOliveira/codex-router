@@ -15,6 +15,7 @@ const oldSecret = "o".repeat(48);
 const newSecret = "n".repeat(48);
 const oldBase = callerBaseUrl(4202, oldSecret);
 const newBase = callerBaseUrl(4202, newSecret);
+const secretFreeBase = "http://127.0.0.1:4202/v1";
 
 test("Codex capability refresh changes only managed caller URLs", () => {
   const before = [
@@ -49,6 +50,29 @@ test("Codex capability state refresh preserves policy and ownership", () => {
   assert.deepEqual(refreshCodexCallerCapabilityState(before, newBase, { port: 4202 }), {
     ...before, managedBaseUrl: newBase,
   });
+});
+
+test("Codex capability refresh leaves secret-free auth-command routes unchanged", () => {
+  const before = [
+    `openai_base_url = ${JSON.stringify(secretFreeBase)}`,
+    "",
+    "# BEGIN codex-router-provider-managed",
+    "[model_providers.codex-router]",
+    `base_url = ${JSON.stringify(secretFreeBase)}`,
+    "[model_providers.codex-router.auth]",
+    'command = "/usr/bin/node"',
+    '# END codex-router-provider-managed',
+    "",
+  ].join("\n");
+  assert.equal(
+    refreshCodexCallerCapabilityContents(before, secretFreeBase, { port: 4202 }),
+    before,
+  );
+  const state = { managedBaseUrl: secretFreeBase, loginFree: true, ownershipId: "a".repeat(32) };
+  assert.deepEqual(
+    refreshCodexCallerCapabilityState(state, secretFreeBase, { port: 4202 }),
+    state,
+  );
 });
 
 test("DSH capability refresh preserves route models and default policy byte-for-byte", () => {

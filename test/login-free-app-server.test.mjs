@@ -313,6 +313,9 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
     assert.match(config, new RegExp(`^model_provider = ${JSON.stringify(expectedProvider)}$`, "m"));
     assert.match(config, new RegExp(`\\[model_providers\\.${expectedProvider}\\]`));
     assert.doesNotMatch(config, /\[model_providers\.openai\]/);
+    assert.match(config, new RegExp(`\\[model_providers\\.${expectedProvider}\\.auth\\]`));
+    assert.match(config, /caller-key-auth-command\.mjs/);
+    assert.doesNotMatch(config, new RegExp(CALLER_KEY));
     if (initialProvider !== "openai") {
       assert.match(config, /requires_openai_auth = false/);
       assert.doesNotMatch(config, /direct\.invalid/);
@@ -320,8 +323,8 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
 
     const notifications = await runAppServerTurn(binary, env, model, expectedProvider);
     assert.equal(requests.length, 1);
-    assert.match(requests[0].url, /\/_codex-router\/[^/]+\/v1\/responses$/);
-    assert.equal(requests[0].headers.authorization, undefined);
+    assert.equal(requests[0].url, "/v1/responses");
+    assert.equal(requests[0].headers.authorization, `Bearer ${CALLER_KEY}`);
     assert.equal(requests[0].body.model, model);
     assert.match(JSON.stringify(notifications), new RegExp(MARKER));
   } finally {

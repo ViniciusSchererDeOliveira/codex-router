@@ -420,6 +420,142 @@ test("router requires the configured path capability before any model route", as
   }
 });
 
+test("plain Codex provider routes accept the caller key as a bearer token", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      json(response, 200, { ok: true, credential_present: true });
+      return;
+    }
+    gatewayRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GROK_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${CALLER_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", input: "allowed" }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    assert.equal(gatewayRequests[0].headers.authorization, `Bearer ${INTERNAL_KEY}`);
+
+    const rejected = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, {
+      method: "POST",
+      headers: { Authorization: "Bearer unrelated-token", "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", input: "rejected" }),
+    });
+    assert.equal(rejected.status, 401);
+    assert.equal(gatewayRequests.length, 1, "an unrelated bearer reached the gateway");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
+test("plain signed Codex routes accept the current Codex API key", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "signed-codex-api-key-route-"));
+  const authPath = path.join(testRoot, "auth.json");
+  const apiKey = "sk-test-signed-codex-api-key";
+  writeFileSync(authPath, JSON.stringify({
+    auth_mode: "apikey",
+    OPENAI_API_KEY: apiKey,
+  }), { mode: 0o600 });
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      json(response, 200, { ok: true, credential_present: true });
+      return;
+    }
+    gatewayRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GROK_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    MODEL_ROUTER_CODEX_AUTH: authPath,
+    MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", input: "allowed" }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    assert.equal(gatewayRequests[0].headers.authorization, `Bearer ${INTERNAL_KEY}`);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("plain signed Codex routes accept only the current Codex session bearer", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "signed-codex-route-"));
+  const authPath = path.join(testRoot, "auth.json");
+  const sessionToken = "test-signed-codex-session-token";
+  writeFileSync(authPath, JSON.stringify({
+    auth_mode: "chatgpt",
+    tokens: { access_token: sessionToken, account_id: "test-account" },
+  }), { mode: 0o600 });
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      json(response, 200, { ok: true, credential_present: true });
+      return;
+    }
+    gatewayRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GROK_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    MODEL_ROUTER_CODEX_AUTH: authPath,
+    MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`http://127.0.0.1:${routerPort}/v1/responses`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${sessionToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", input: "allowed" }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    assert.equal(gatewayRequests[0].headers.authorization, `Bearer ${INTERNAL_KEY}`);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("a canceled request does not flip activity into the error state", async () => {
   const gateway = await mockServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
