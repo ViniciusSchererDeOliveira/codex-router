@@ -205,6 +205,47 @@ test("a selected profile waits for Codex to close and preserves both account pro
   assert.equal(autoApplied.active, second.id);
 });
 
+test("a target auth rewrite during switching rolls back instead of installing another identity", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-target-drift-"));
+  const primaryHome = path.join(root, "primary");
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const switchPath = path.join(root, "switch.json");
+  mkdirSync(primaryHome, { recursive: true });
+  const first = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const second = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const firstAuth = JSON.stringify({ tokens: { access_token: "first-token", account_id: "first" } });
+  const secondAuth = JSON.stringify({ tokens: { access_token: "second-token", account_id: "second" } });
+  const replacementAuth = JSON.stringify({ tokens: { access_token: "replacement-token", account_id: "replacement" } });
+  const targetPath = chatGPTSubscriptionAccountAuthPath(second.id, { homesDir });
+  writeFileSync(path.join(primaryHome, "auth.json"), firstAuth, { mode: 0o600 });
+  writeFileSync(chatGPTSubscriptionAccountAuthPath(first.id, { homesDir }), firstAuth, { mode: 0o600 });
+  writeFileSync(targetPath, secondAuth, { mode: 0o600 });
+
+  await assert.rejects(
+    requestChatGPTProfileSwitch(second.id, {
+      filePath,
+      homesDir,
+      primaryHome,
+      switchPath,
+      platform: "darwin",
+      processList: "",
+      refreshCatalog: false,
+      afterSwitchBackup: () => writeFileSync(targetPath, replacementAuth, { mode: 0o600 }),
+    }),
+    /selected ChatGPT login profile changed during the native switch/,
+  );
+  assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
+  assert.equal(readFileSync(targetPath, "utf8"), replacementAuth);
+  assert.deepEqual(readChatGPTProfileSwitchState(switchPath), {
+    version: 1,
+    desired: second.id,
+    active: first.id,
+    pending: true,
+    phase: "idle",
+  });
+});
+
 test("private OAuth profile copies protect the temporary and final replacement", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-private-copy-"));
   const source = path.join(root, "source-auth.json");

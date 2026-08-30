@@ -37,6 +37,7 @@ const loginLeaseUrl = import.meta.url.includes("/app.asar/")
   : new URL("../../../src/chatgpt-login-lease.mjs", import.meta.url);
 const {
   attachChatGPTLoginLease,
+  chatGPTLoginAuthChanged,
   clearChatGPTLoginLease,
   createChatGPTLoginLease,
 } = await import(loginLeaseUrl);
@@ -1290,6 +1291,7 @@ export function registerIpcHandlers({
       deadlineAt: Date.now() + CHATGPT_LOGIN_COMPLETION_TIMEOUT_MS,
     });
     let loginLease;
+    let loginFinalization;
     let resolveLoginExit;
     const loginExited = new Promise((resolve) => { resolveLoginExit = resolve; });
     try {
@@ -1348,7 +1350,7 @@ export function registerIpcHandlers({
           releaseSubscriptionLogin(id);
         }
       };
-      const opened = await openBrowserCommand(codex, ["login"], discoverSourceRoot(), {
+      const openedPromise = openBrowserCommand(codex, ["login"], discoverSourceRoot(), {
           environment: { CODEX_HOME: profileHome },
           openExternal: shell?.openExternal?.bind(shell),
           onSpawn: (child) => {
@@ -1361,23 +1363,37 @@ export function registerIpcHandlers({
             resolveLoginExit(outcome);
           },
         });
-      // A child may exit before a delayed browser opener settles. Attach the
-      // finalizer only after the handoff succeeds so a rejected handoff can
-      // clear the lease without racing a credential commit.
-      void loginExited.then(processLoginExit);
+      // A child may persist valid auth and exit before a delayed browser
+      // opener settles. Give every attached writer exactly one completion
+      // owner immediately; the handoff result is not credential truth.
+      loginFinalization = loginExited.then(processLoginExit);
+      const opened = await openedPromise;
       return {
         ...opened,
         accountId: id,
         pending: true,
       };
     } catch (error) {
-      releaseSubscriptionLogin(id);
-      try {
-        if (loginLease) clearChatGPTLoginLease(id, loginLease, {
-          accountHome: profileHome,
-          homesDir: path.dirname(profileHome),
-        });
-      } catch {}
+      if (loginFinalization) {
+        try { await loginFinalization; } catch {}
+      } else {
+        releaseSubscriptionLogin(id);
+        try {
+          // Synchronous validation can fail after reservation but before a
+          // child owns it. Clear only an unchanged reservation; changed auth
+          // remains durable attention evidence rather than being guessed away.
+          if (
+            loginLease
+            && !chatGPTLoginAuthChanged(id, loginLease, {
+              accountHome: profileHome,
+              homesDir: path.dirname(profileHome),
+            })
+          ) clearChatGPTLoginLease(id, loginLease, {
+            accountHome: profileHome,
+            homesDir: path.dirname(profileHome),
+          });
+        } catch {}
+      }
       subscriptionLoginAttempts.delete(id);
       throw error;
     }

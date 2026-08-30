@@ -468,15 +468,9 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, {
     let lease;
     let child;
     let childFinished = false;
-    let childError;
     let leaseReady = false;
     const finish = async () => {
       if (!leaseReady || !childFinished) return;
-      if (childError) {
-        try { clearLoginLease(id, lease, { homesDir }); } catch {}
-        resolve(false);
-        return;
-      }
       try {
         const finalize = finalizeLogin
           || (await import("./chatgpt-profile-switch.mjs")).finalizeChatGPTProfileLogin;
@@ -504,8 +498,7 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, {
           maxBuffer: 256 * 1024,
           windowsHide: true,
         },
-        (error) => {
-          childError = error;
+        () => {
           childFinished = true;
           void finish();
         },

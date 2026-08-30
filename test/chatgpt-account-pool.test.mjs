@@ -226,6 +226,48 @@ test("automatic refresh keeps its exact lease until locked login finalization", 
   assert.deepEqual(calls, ["lease-created", "lease-attached", "finalize-started"]);
 });
 
+test("automatic refresh finalizes digest evidence after a late nonzero exit", async () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = {
+    version: 3,
+    leaseId: "00000000-0000-4000-8000-000000000002",
+    pid: 4322,
+    processIdentity: "fixture-process",
+    createdAt: Date.now(),
+    phase: "running",
+    authDigestBefore: null,
+  };
+  const calls = [];
+  const refreshed = await refreshChatGPTSubscriptionAccount(account.id, {
+    ...options,
+    force: true,
+    binary: process.execPath,
+    execFileImpl: (_command, _args, _childOptions, callback) => {
+      queueMicrotask(() => callback(new Error("Codex exited after persisting auth"), "", ""));
+      return { pid: lease.pid, kill() {} };
+    },
+    createLoginLease: () => {
+      calls.push("lease-created");
+      return { ...lease, phase: "reserved" };
+    },
+    attachLoginLease: () => {
+      calls.push("lease-attached");
+      return lease;
+    },
+    clearLoginLease: () => {
+      calls.push("lease-cleared");
+      return true;
+    },
+    finalizeLogin: async (_id, finalizeOptions) => {
+      calls.push("finalize-started");
+      assert.equal(finalizeOptions.expectedLoginLease, lease);
+    },
+  });
+  assert.equal(refreshed, true);
+  assert.deepEqual(calls, ["lease-created", "lease-attached", "finalize-started"]);
+});
+
 test("one status poll bounds near-expiry refresh children and prioritizes the selected account", async () => {
   const selectedId = "acct_00000063";
   const accounts = Object.fromEntries(Array.from({ length: 64 }, (_, index) => {

@@ -1663,10 +1663,12 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(chatgptLogin, /"login-finalize", id, completionLease/);
   assert.match(chatgptLogin, /enqueueMutation\(\(\) => runJson\([\s\S]*?"login-finalize", id, completionLease/);
   assert.ok(
-    chatgptLogin.indexOf("const opened = await openBrowserCommand")
-      < chatgptLogin.indexOf("void loginExited.then(processLoginExit)"),
-    "login finalization must wait for a successful browser handoff",
+    chatgptLogin.indexOf("loginFinalization = loginExited.then(processLoginExit)")
+      < chatgptLogin.indexOf("const opened = await openedPromise"),
+    "every attached credential writer must own finalization before browser handoff settles",
   );
+  assert.match(chatgptLogin, /if \(loginFinalization\) \{[\s\S]*?await loginFinalization/);
+  assert.match(chatgptLogin, /!chatGPTLoginAuthChanged\(id, loginLease,[\s\S]*?clearChatGPTLoginLease/);
   assert.ok(
     chatgptLogin.indexOf("deadlineAt: Date.now() + CATALOG_MUTATION_TIMEOUT_MS + 30_000")
       < chatgptLogin.indexOf('"login-finalize", id, completionLease'),
@@ -1690,7 +1692,7 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.match(source, /stdio: \["ignore", "pipe", "pipe"\]/);
   assert.match(source, /openExternal\(match\[0\]\)/);
   assert.match(source, /openExternal: shell\?\.openExternal\?\.bind\(shell\)/);
-  assert.match(source, /await openBrowserCommand\(codex, \["login"\]/);
+  assert.match(source, /const openedPromise = openBrowserCommand\(codex, \["login"\]/);
   assert.match(source, /did not provide an OAuth browser URL/);
   assert.match(source, /surface: "browser"/);
 

@@ -643,6 +643,30 @@ export function atomicPrivateCopy(source, destination, { protect = protectPrivat
   }
 }
 
+function atomicPrivateContents(contents, destination, { protect = protectPrivateFile } = {}) {
+  if (!Buffer.isBuffer(contents)) throw new Error("The selected login profile snapshot is invalid.");
+  ensureNoSymlinkParents(path.dirname(destination));
+  if (existsSync(destination)) {
+    const target = lstatSync(destination);
+    if (target.isSymbolicLink()) throw new Error("Refusing to replace a symbolic-link login profile.");
+  }
+  mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+  ensureNoSymlinkParents(path.dirname(destination));
+  const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    writeFileSync(temporary, contents, { mode: 0o600, flag: "wx" });
+    protect(temporary);
+    ensureNoSymlinkParents(path.dirname(destination));
+    if (existsSync(destination) && lstatSync(destination).isSymbolicLink()) {
+      throw new Error("Refusing to replace a symbolic-link login profile.");
+    }
+    renameSync(temporary, destination);
+    protect(destination);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
 function syncAuthProfile(source, destination) {
   ensureAuthFile(source, "The active");
   ensureAuthFile(destination, "The saved");
@@ -652,13 +676,9 @@ function syncAuthProfile(source, destination) {
   else atomicPrivateCopy(destination, source);
 }
 
-function authIdentity(filePath) {
-  if (!existsSync(filePath)) return undefined;
+function authIdentityFromContents(contents) {
   try {
-    ensureNoSymlinkParents(path.dirname(filePath));
-    const file = lstatSync(filePath);
-    if (file.isSymbolicLink() || !file.isFile() || !privateFileIsProtected(filePath)) return undefined;
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    const parsed = JSON.parse(Buffer.from(contents).toString("utf8"));
     const tokens = parsed?.tokens;
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : "";
     if (!accountId) return undefined;
@@ -673,6 +693,27 @@ function authIdentity(filePath) {
   } catch {
     return undefined;
   }
+}
+
+function authIdentity(filePath) {
+  if (!existsSync(filePath)) return undefined;
+  try {
+    ensureNoSymlinkParents(path.dirname(filePath));
+    const file = lstatSync(filePath);
+    if (file.isSymbolicLink() || !file.isFile() || !privateFileIsProtected(filePath)) return undefined;
+    return authIdentityFromContents(readFileSync(filePath));
+  } catch {
+    return undefined;
+  }
+}
+
+function authSnapshot(filePath, label) {
+  ensureAuthFile(filePath, label);
+  if (!privateFileIsProtected(filePath)) throw new Error(`${label} login profile is not owner-only.`);
+  const contents = readFileSync(filePath);
+  const identity = authIdentityFromContents(contents);
+  if (!identity) throw new Error(`${label} login profile has no verified identity.`);
+  return { contents, identity };
 }
 
 function accountForAuth(state, authPath, {
@@ -1059,9 +1100,9 @@ async function applyLocked(selection, options) {
     return writeState({ ...current, desired: target, active, pending: false, phase: "idle" }, switchPath);
   }
   ensureAuthFile(activeProfile, "The active");
-  ensureAuthFile(targetProfile, "The selected");
+  const targetSnapshot = authSnapshot(targetProfile, "The selected");
   const poolState = readChatGPTAccountPoolState(filePath);
-  const targetIdentity = authIdentity(targetProfile);
+  const targetIdentity = targetSnapshot.identity;
   const boundIdentity = poolState.accounts[target]?.identity?.accountId;
   if (!targetIdentity) throw new Error("The selected ChatGPT login profile has no verified identity.");
   if (boundIdentity && boundIdentity !== targetIdentity.accountId) {
@@ -1090,8 +1131,24 @@ async function applyLocked(selection, options) {
     if (target !== active) syncAuthProfile(primary, activeProfile);
     writeState({ ...current, desired: target, active, pending: true, phase: "backed-up" }, switchPath);
     options.afterSwitchBackup?.();
-    atomicPrivateCopy(targetProfile, primary);
+    atomicPrivateContents(targetSnapshot.contents, primary);
     options.afterSwitchInstall?.();
+    const targetStillCurrent = (() => {
+      try {
+        ensureAuthFile(targetProfile, "The selected");
+        ensureAuthFile(primary, "The active");
+        return privateFileIsProtected(targetProfile)
+          && privateFileIsProtected(primary)
+          && readFileSync(targetProfile).equals(targetSnapshot.contents)
+          && readFileSync(primary).equals(targetSnapshot.contents)
+          && authIdentity(primary)?.accountId === targetIdentity.accountId;
+      } catch {
+        return false;
+      }
+    })();
+    if (!targetStillCurrent) {
+      throw new Error("The selected ChatGPT login profile changed during the native switch.");
+    }
     if (catalogsEnabled) {
       restoreAccountCatalog(target, options);
       await refreshActiveCatalog(options);
