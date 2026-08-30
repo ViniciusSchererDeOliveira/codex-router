@@ -426,7 +426,9 @@ export function openBrowserCommand(executable, args, cwd, {
 }
 
 export function projectChatGPTSubscriptionLoginAttempts(pool, attempts, now = Date.now()) {
-  const loginAttempts = {};
+  const loginAttempts = pool?.loginAttempts && typeof pool.loginAttempts === "object"
+    ? { ...pool.loginAttempts }
+    : {};
   for (const [accountId, attempt] of attempts || []) {
     const account = pool?.accounts?.[accountId];
     if (!account) {
@@ -1285,6 +1287,12 @@ export function registerIpcHandlers({
     if (path.basename(profileHome) !== id || profileHome === primaryHome) {
       throw new Error("The subscription account profile is not isolated from the primary Codex login.");
     }
+    if (pool?.loginAttempts?.[id]?.status === "failed" && pool.loginAttempts[id].retryable === true) {
+      const reset = await runJson(["chatgpt-account-pool", "login-reset", id], { timeoutMs: 20_000 });
+      if (reset?.reset !== true) {
+        throw new Error("The saved login changed before retry. Refresh the account list and try again.");
+      }
+    }
     subscriptionLoginInFlight.add(id);
     subscriptionLoginAttempts.set(id, {
       status: "pending",
@@ -1402,6 +1410,16 @@ export function registerIpcHandlers({
     const id = stringValue(accountId, "Account id", CHATGPT_ACCOUNT_ID);
     if (subscriptionLoginInFlight.has(id)) {
       throw new Error("Cannot remove a ChatGPT account while its browser sign-in is in progress.");
+    }
+    const pool = await runJson(
+      ["chatgpt-account-pool", "status"],
+      { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS },
+    );
+    if (pool?.loginAttempts?.[id]?.status === "failed" && pool.loginAttempts[id].retryable === true) {
+      const reset = await runJson(["chatgpt-account-pool", "login-reset", id], { timeoutMs: 20_000 });
+      if (reset?.reset !== true) {
+        throw new Error("The saved login changed before removal. Refresh the account list and try again.");
+      }
     }
     return runJson(["chatgpt-account-pool", "remove", id], { timeoutMs: 60_000 });
   });

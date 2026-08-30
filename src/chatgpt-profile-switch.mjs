@@ -681,7 +681,7 @@ function authIdentityFromContents(contents) {
     const parsed = JSON.parse(Buffer.from(contents).toString("utf8"));
     const tokens = parsed?.tokens;
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id.trim() : "";
-    if (!accountId) return undefined;
+    if (!accountId || accountId.length > 256 || /[\u0000-\u001f\u007f]/.test(accountId)) return undefined;
     let email;
     try {
       const payload = JSON.parse(Buffer.from(String(tokens?.id_token || "").split(".")[1] || "", "base64url").toString("utf8"));
@@ -913,6 +913,7 @@ export async function recoverCompletedChatGPTProfileLogins(options = {}) {
   const homesDir = options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR;
   const state = readChatGPTAccountPoolState(filePath);
   const recovered = [];
+  const failures = [];
   for (const accountId of Object.keys(state.accounts)) {
     const candidate = chatGPTLoginLeaseCompletionCandidate(accountId, {
       homesDir,
@@ -921,13 +922,64 @@ export async function recoverCompletedChatGPTProfileLogins(options = {}) {
       ...(options.now === undefined ? {} : { now: options.now }),
     });
     if (!candidate) continue;
-    const result = await finalizeChatGPTProfileLogin(accountId, {
-      ...options,
-      expectedLoginLease: candidate,
-    });
-    if (result.loginFinalizationPending !== true) recovered.push(accountId);
+    try {
+      const result = await finalizeChatGPTProfileLogin(accountId, {
+        ...options,
+        expectedLoginLease: candidate,
+      });
+      if (result.loginFinalizationPending !== true) recovered.push(accountId);
+    } catch (error) {
+      const detail = String(error?.message || "");
+      failures.push({
+        accountId,
+        code: /registered more than once|identity does not match/i.test(detail)
+          ? "identity-conflict"
+          : /profile is invalid after hardening/i.test(detail)
+            ? "invalid-auth"
+            : "finalization-failed",
+      });
+    }
   }
-  return recovered;
+  return { recovered, failures };
+}
+
+export async function discardCompletedChatGPTProfileLogin(accountId, options = {}) {
+  assertProfileDiscoveryEnabled();
+  if (!isChatGPTAccountId(accountId)) throw new Error("Account id is invalid.");
+  return withChatGPTAccountPoolLock(() => {
+    const homesDir = options.homesDir || CHATGPT_ACCOUNT_HOMES_DIR;
+    const candidate = chatGPTLoginLeaseCompletionCandidate(accountId, {
+      homesDir,
+      ...(options.loginLeaseIdentity ? { identity: options.loginLeaseIdentity } : {}),
+      ...(options.loginLeaseMaxAgeMs === undefined ? {} : { maxAgeMs: options.loginLeaseMaxAgeMs }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    if (!candidate) return false;
+    const state = readChatGPTAccountPoolState(options.filePath || CHATGPT_ACCOUNT_POOL_PATH);
+    const account = state.accounts[accountId];
+    if (!account) return false;
+    const identity = authIdentity(chatGPTSubscriptionAccountAuthPath(accountId, { homesDir }));
+    const conflicts = identity && (
+      (account.identity?.accountId && account.identity.accountId !== identity.accountId)
+      || Object.entries(state.accounts).some(([candidateId, candidateAccount]) => (
+        candidateId !== accountId
+        && (
+          candidateAccount?.identity?.accountId === identity.accountId
+          || authIdentity(chatGPTSubscriptionAccountAuthPath(candidateId, { homesDir }))?.accountId
+            === identity.accountId
+        )
+      ))
+    );
+    // A valid, unique completion is recovery evidence, not retry debris. It
+    // may be waiting for the active Codex app to close and must never be
+    // discarded by a direct CLI reset or an account-removal attempt.
+    if (identity && !conflicts) return false;
+    const clearLoginLease = options.clearLoginLease || clearChatGPTLoginLease;
+    if (!clearLoginLease(accountId, candidate, { homesDir })) {
+      throw new Error("The ChatGPT login completion lease changed before retry cleanup.");
+    }
+    return true;
+  }, accountPoolLockOptions(options));
 }
 
 export function codexDesktopRunning({ platform = process.platform, processList, processListReader } = {}) {

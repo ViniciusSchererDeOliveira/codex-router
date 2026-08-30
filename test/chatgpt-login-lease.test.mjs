@@ -114,6 +114,32 @@ test("changed running auth becomes a recovery candidate while changed reservatio
   }
 });
 
+test("an ended reservation with unchanged auth stays fail-closed for an unattached child", () => {
+  const { options } = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = createChatGPTLoginLease(account.id, 4242, {
+    homesDir: options.homesDir,
+    identity: () => "departed-parent",
+    now: 1_000,
+    phase: "reserved",
+  });
+  const status = chatGPTLoginLeaseStatus(account.id, {
+    homesDir: options.homesDir,
+    identity: () => "replacement-process",
+    now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+  });
+  assert.equal(status.active, true);
+  assert.equal(status.stale, true);
+  assert.equal(status.attentionRequired, true);
+  assert.equal(existsSync(chatGPTLoginLeasePath(account.id, options)), true);
+  assert.equal(chatGPTLoginLeaseCompletionCandidate(account.id, {
+    homesDir: options.homesDir,
+    identity: () => "replacement-process",
+    now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
+  }), undefined);
+  assert.equal(clearChatGPTLoginLease(account.id, lease, options), true);
+});
+
 test("age never clears a lease when process ownership is unknown", () => {
   const { options } = fixture();
   const account = createChatGPTSubscriptionAccount(options);

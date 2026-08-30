@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -53,6 +54,17 @@ function runClaimChild(moduleUrl, account, options, now) {
       ? resolve(JSON.parse(stdout))
       : reject(new Error(stderr || `claim child exited ${code}`)));
   });
+}
+
+function refreshChild(pid, onKill) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.kill = () => {
+    onKill?.();
+    return true;
+  };
+  child.unref = () => {};
+  return child;
 }
 
 function fixture() {
@@ -112,6 +124,28 @@ test("an owned login lease keeps newly written OAuth auth pending and unusable",
     assert.equal(snapshot.accounts[account.id].subscription.usable, false);
     assert.equal(snapshot.accounts[account.id].subscription.authenticated, false);
     assert.equal(snapshot.accounts[account.id].subscription.loginInProgress, true);
+  } finally {
+    assert.equal(clearChatGPTLoginLease(account.id, lease, options), true);
+  }
+});
+
+test("a dead pre-attach reservation is surfaced as manual attention", () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = createChatGPTLoginLease(account.id, 4242, {
+    ...options,
+    identity: () => "departed-parent",
+    now: 1_000,
+    phase: "reserved",
+  });
+  try {
+    const snapshot = chatGPTSubscriptionAccountPoolSnapshot({
+      ...options,
+      loginLeaseIdentity: () => "replacement-process",
+      now: 2_000,
+    });
+    assert.equal(snapshot.accounts[account.id].subscription.loginInProgress, true);
+    assert.equal(snapshot.accounts[account.id].subscription.attentionRequired, true);
   } finally {
     assert.equal(clearChatGPTLoginLease(account.id, lease, options), true);
   }
@@ -198,9 +232,10 @@ test("automatic refresh keeps its exact lease until locked login finalization", 
     ...options,
     force: true,
     binary: process.execPath,
-    execFileImpl: (_command, _args, _childOptions, callback) => {
-      queueMicrotask(() => callback(null, "", ""));
-      return { pid: lease.pid, kill() {} };
+    spawnImpl: () => {
+      const child = refreshChild(lease.pid);
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
     },
     createLoginLease: () => {
       calls.push("lease-created");
@@ -243,9 +278,10 @@ test("automatic refresh finalizes digest evidence after a late nonzero exit", as
     ...options,
     force: true,
     binary: process.execPath,
-    execFileImpl: (_command, _args, _childOptions, callback) => {
-      queueMicrotask(() => callback(new Error("Codex exited after persisting auth"), "", ""));
-      return { pid: lease.pid, kill() {} };
+    spawnImpl: () => {
+      const child = refreshChild(lease.pid);
+      queueMicrotask(() => child.emit("close", 1, null));
+      return child;
     },
     createLoginLease: () => {
       calls.push("lease-created");
@@ -285,10 +321,7 @@ test("automatic refresh retains changed auth when process attachment fails", asy
     ...options,
     force: true,
     binary: process.execPath,
-    execFileImpl: () => ({
-      pid: 4323,
-      kill() { calls.push("child-killed"); },
-    }),
+    spawnImpl: () => refreshChild(4323, () => calls.push("child-killed")),
     createLoginLease: () => lease,
     attachLoginLease: () => {
       writeFileSync(
@@ -298,13 +331,128 @@ test("automatic refresh retains changed auth when process attachment fails", asy
       );
       throw new Error("process identity probe failed after auth write");
     },
+    terminationGraceMs: 1,
     clearLoginLease: () => {
       calls.push("lease-cleared");
       return true;
     },
   });
   assert.equal(refreshed, false);
-  assert.deepEqual(calls, ["child-killed"]);
+  assert.deepEqual(calls, ["child-killed", "child-killed"]);
+});
+
+test("automatic refresh owns a spawn error before attachment failure and retains the reservation", async () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = {
+    version: 3,
+    leaseId: "00000000-0000-4000-8000-000000000005",
+    pid: process.pid,
+    processIdentity: "fixture-parent",
+    createdAt: Date.now(),
+    phase: "reserved",
+    authDigestBefore: null,
+  };
+  const calls = [];
+  const refreshed = await refreshChatGPTSubscriptionAccount(account.id, {
+    ...options,
+    force: true,
+    binary: process.execPath,
+    spawnImpl: () => {
+      const child = refreshChild(4325, () => calls.push("child-killed"));
+      queueMicrotask(() => child.emit("error", Object.assign(new Error("spawn failed"), { code: "ENOENT" })));
+      return child;
+    },
+    createLoginLease: () => lease,
+    attachLoginLease: () => { throw new Error("process identity probe failed"); },
+    clearLoginLease: () => {
+      calls.push("lease-cleared");
+      return true;
+    },
+  });
+  assert.equal(refreshed, false);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["child-killed", "lease-cleared"]);
+});
+
+test("automatic refresh bounds a child that ignores graceful termination", async () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = {
+    version: 3,
+    leaseId: "00000000-0000-4000-8000-000000000006",
+    pid: 4326,
+    processIdentity: "fixture-process",
+    createdAt: Date.now(),
+    phase: "running",
+    authDigestBefore: null,
+  };
+  const signals = [];
+  const child = refreshChild(lease.pid);
+  let unreferenced = false;
+  child.unref = () => { unreferenced = true; };
+  child.kill = (signal) => {
+    signals.push(signal || "SIGTERM");
+    return true;
+  };
+  let cleared = false;
+  const refreshed = await refreshChatGPTSubscriptionAccount(account.id, {
+    ...options,
+    force: true,
+    binary: process.execPath,
+    refreshTimeoutMs: 1,
+    terminationGraceMs: 1,
+    spawnImpl: () => child,
+    createLoginLease: () => ({ ...lease, phase: "reserved" }),
+    attachLoginLease: () => lease,
+    clearLoginLease: () => { cleared = true; return true; },
+    finalizeLogin: async () => { throw new Error("must wait for close"); },
+  });
+  assert.equal(refreshed, false);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(unreferenced, true);
+  assert.equal(cleared, false);
+});
+
+test("Windows batch refresh kills the whole shim tree before finalization", async () => {
+  const options = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const lease = {
+    version: 3,
+    leaseId: "00000000-0000-4000-8000-000000000004",
+    pid: 4324,
+    processIdentity: "cmd-wrapper",
+    createdAt: Date.now(),
+    phase: "running",
+    authDigestBefore: null,
+  };
+  const calls = [];
+  const child = refreshChild(lease.pid, () => calls.push("wrapper-killed-only"));
+  const refreshed = refreshChatGPTSubscriptionAccount(account.id, {
+    ...options,
+    force: true,
+    binary: "C:\\router\\codex.cmd",
+    platform: "win32",
+    refreshTimeoutMs: 1,
+    spawnImpl: (command, _args, childOptions) => {
+      assert.match(command, /cmd\.exe$/i);
+      assert.equal(childOptions.windowsVerbatimArguments, true);
+      return child;
+    },
+    execFileSyncImpl: (command, args, killOptions) => {
+      assert.equal(killOptions.timeout, 5_000);
+      calls.push(`tree-killed:${command}:${args.join(":")}`);
+      queueMicrotask(() => child.emit("close", 1, null));
+    },
+    createLoginLease: () => ({ ...lease, phase: "reserved" }),
+    attachLoginLease: () => lease,
+    finalizeLogin: async () => {
+      calls.push("finalized");
+    },
+  });
+  assert.equal(await refreshed, true);
+  assert.match(calls[0], /^tree-killed:taskkill\.exe:\/PID:4324:\/T:\/F$/);
+  assert.deepEqual(calls.slice(1), ["finalized"]);
 });
 
 test("one status poll bounds near-expiry refresh children and prioritizes the selected account", async () => {

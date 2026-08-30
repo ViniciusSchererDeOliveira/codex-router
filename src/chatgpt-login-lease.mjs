@@ -356,6 +356,18 @@ export function chatGPTLoginLeaseStatus(value, {
               pid: lease.pid,
             };
           }
+          if (lease.phase === "reserved") {
+            // The reserving parent can die after spawning a detached child but
+            // before attaching its process identity. Unchanged auth does not
+            // prove that child is gone; keep the only durable exclusion rather
+            // than admitting a second writer that can race its later callback.
+            return {
+              active: true,
+              stale: true,
+              attentionRequired: true,
+              pid: lease.pid,
+            };
+          }
         }
         if (clearChatGPTLoginLease(value, lease, options)) {
           stale = true;

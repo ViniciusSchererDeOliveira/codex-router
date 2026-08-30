@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
@@ -31,6 +31,37 @@ const ACCOUNT_REFRESH_MARGIN_MS = 24 * 60 * 60 * 1000;
 export const ACCOUNT_REFRESH_RETRY_MS = 5 * 60 * 1000;
 export const ACCOUNT_REFRESH_POLL_LIMIT = 8;
 export const ACCOUNT_REFRESH_POLL_CONCURRENCY = 2;
+const ACCOUNT_REFRESH_TIMEOUT_MS = 30_000;
+
+function terminateRefreshProcessTree(child, {
+  viaShell,
+  platform,
+  execFileSyncImpl,
+} = {}) {
+  if (viaShell && platform === "win32") {
+    if (!Number.isInteger(child?.pid) || child.pid < 1) return false;
+    try {
+      const systemRoot = process.env.SystemRoot;
+      const systemTaskkill = systemRoot ? path.join(systemRoot, "System32", "taskkill.exe") : undefined;
+      const command = systemTaskkill && existsSync(systemTaskkill) ? systemTaskkill : "taskkill.exe";
+      execFileSyncImpl(command, ["/PID", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+        timeout: 5_000,
+      });
+      return true;
+    } catch {
+      // Killing only cmd.exe would orphan the Codex descendant whose auth
+      // write the lease protects. Keep the wrapper and lease live instead.
+      return false;
+    }
+  }
+  try {
+    return child?.kill?.() !== false;
+  } catch {
+    return false;
+  }
+}
 
 function assertAccountDiscoveryEnabled() {
   if (discoveryDisabled()) {
@@ -450,7 +481,11 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, {
   force = false,
   now = Date.now(),
   binary,
-  execFileImpl = execFile,
+  platform = process.platform,
+  spawnImpl = spawn,
+  execFileSyncImpl = execFileSync,
+  refreshTimeoutMs = ACCOUNT_REFRESH_TIMEOUT_MS,
+  terminationGraceMs = 2_000,
   createLoginLease = createChatGPTLoginLease,
   attachLoginLease = attachChatGPTLoginLease,
   clearLoginLease = clearChatGPTLoginLease,
@@ -464,15 +499,33 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, {
   const resolvedBinary = binary || findCodexBinary();
   if (!resolvedBinary) return false;
   if (!await claimChatGPTSubscriptionRefresh(id, { filePath, force, now })) return false;
-  const target = spawnableCommand(resolvedBinary, ["login", "status"]);
+  const target = spawnableCommand(resolvedBinary, ["login", "status"], platform);
   return new Promise((resolve) => {
     let lease;
     let child;
     let childFinished = false;
     let leaseReady = false;
+    let attachmentFailed = false;
+    let finalizationStarted = false;
+    let settled = false;
+    let timeout;
+    let terminationDeadline;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const finish = async () => {
-      if (!leaseReady || !childFinished) return;
+      if (!leaseReady || !childFinished || finalizationStarted) return;
+      finalizationStarted = true;
+      clearTimeout(timeout);
+      clearTimeout(terminationDeadline);
       try {
+        if (attachmentFailed && !chatGPTLoginAuthChanged(id, lease, { homesDir })) {
+          clearLoginLease(id, lease, { homesDir });
+          settle(false);
+          return;
+        }
         const finalize = finalizeLogin
           || (await import("./chatgpt-profile-switch.mjs")).finalizeChatGPTProfileLogin;
         await finalize(id, {
@@ -481,42 +534,91 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, {
           expectedLoginLease: lease,
           clearLoginLease,
         });
-        resolve(true);
+        settle(true);
       } catch {
-        resolve(false);
+        settle(false);
       }
     };
     try {
       lease = createLoginLease(id, process.pid, { homesDir, phase: "reserved" });
-      child = execFileImpl(
+      child = spawnImpl(
         target.command,
         target.args,
         {
           ...target.options,
           env: { ...process.env, CODEX_HOME: chatGPTSubscriptionAccountHome(id, { homesDir }) },
-          encoding: "utf8",
-          timeout: 30_000,
-          maxBuffer: 256 * 1024,
+          stdio: "ignore",
           windowsHide: true,
         },
-        () => {
-          childFinished = true;
-          void finish();
-        },
       );
+      const childDone = () => {
+        if (childFinished) return;
+        childFinished = true;
+        void finish();
+      };
+      // Spawn errors are delivered on a later tick. Own that event before any
+      // synchronous process-identity attachment can throw, or ENOENT becomes
+      // an unhandled EventEmitter error after the reservation catch returns.
+      child.once("error", childDone);
+      child.once("close", childDone);
       lease = attachLoginLease(id, lease, child?.pid, { homesDir });
       leaseReady = true;
       void finish();
+      timeout = setTimeout(() => {
+        const terminated = terminateRefreshProcessTree(child, {
+          viaShell: Boolean(target.options.windowsVerbatimArguments),
+          platform,
+          execFileSyncImpl,
+        });
+        if (!terminated) {
+          child.unref?.();
+          settle(false);
+          return;
+        }
+        terminationDeadline = setTimeout(() => {
+          if (childFinished) return;
+          if (!(target.options.windowsVerbatimArguments && platform === "win32")) {
+            try { child.kill?.("SIGKILL"); } catch {}
+          }
+          // Keep the exact lease. A late close will still finalize it, while
+          // the caller is released from a child that ignored termination.
+          child.unref?.();
+          settle(false);
+        }, terminationGraceMs);
+      }, refreshTimeoutMs);
     } catch {
-      try { child?.kill?.(); } catch {}
-      if (lease) {
+      if (child) {
+        attachmentFailed = true;
+        leaseReady = true;
+        const terminated = terminateRefreshProcessTree(child, {
+          viaShell: Boolean(target.options.windowsVerbatimArguments),
+          platform,
+          execFileSyncImpl,
+        });
+        if (terminated) {
+          terminationDeadline = setTimeout(() => {
+            if (childFinished) return;
+            if (!(target.options.windowsVerbatimArguments && platform === "win32")) {
+              try { child.kill?.("SIGKILL"); } catch {}
+            }
+            child.unref?.();
+            settle(false);
+          }, terminationGraceMs);
+          void finish();
+          return;
+        }
+        child.unref?.();
+      }
+      if (lease && !child) {
         try {
           if (!chatGPTLoginAuthChanged(id, lease, { homesDir })) {
             clearLoginLease(id, lease, { homesDir });
           }
         } catch {}
       }
-      resolve(false);
+      clearTimeout(timeout);
+      clearTimeout(terminationDeadline);
+      settle(false);
     }
   });
 }
@@ -567,6 +669,7 @@ export function chatGPTSubscriptionAccountPoolSnapshot({
         expired: false,
         hasAccountId: false,
         loginInProgress: true,
+        ...(loginLease.attentionRequired === true ? { attentionRequired: true } : {}),
       };
       continue;
     }

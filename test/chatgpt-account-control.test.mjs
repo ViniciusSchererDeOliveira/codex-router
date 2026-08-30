@@ -126,5 +126,6 @@ test("one production account status poll owns pending profile reconciliation", (
   assert.doesNotMatch(accountUsage, /reconcileChatGPTProfileSwitchIfReady/);
   assert.match(accountPool, /if \(!action \|\| action === "status"\)[\s\S]*?await reconcileChatGPTProfileSwitchIfReady\(\)/);
   assert.match(accountPool, /await refreshBoundedChatGPTSubscriptionAccounts\(beforeRefresh\)/);
+  assert.match(accountPool, /attentionRequired[\s\S]*?retryable: false[\s\S]*?previous sign-in may still be running/i);
   assert.doesNotMatch(accountPool, /\.map\(\(account\) => refreshChatGPTSubscriptionAccount/);
 });

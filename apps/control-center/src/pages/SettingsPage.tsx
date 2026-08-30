@@ -291,6 +291,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                     <div>
                       <strong><UserRound aria-hidden size={14} strokeWidth={1.7} /> {title} {accountSelection === account.id ? <Badge tone="accent">Selected</Badge> : null}</strong>
                       <small>{label}{status}{account.subscription?.expiresInHours !== undefined ? ` · ${account.subscription.expiresInHours}h token` : ""} · {usageLabel}</small>
+                      {accountLoginAttempt?.status === "failed" ? <small>{accountLoginAttempt.error}</small> : null}
                     </div>
                     <div className="settings-actions">
                       <Button
@@ -301,7 +302,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                       >{accountSelection === account.id ? <><Check aria-hidden size={13} strokeWidth={1.9} /> Selected</> : <><Check aria-hidden size={13} strokeWidth={1.9} /> Select</>}</Button>
                       <Button
                         variant="ghost"
-                        disabled={!api || account.state !== "active" || (account.subscription?.usable === true && accountLoginAttempt?.status !== "failed") || loginPendingId === account.id}
+                        disabled={!api || account.state !== "active" || accountLoginAttempt?.retryable === false || (account.subscription?.usable === true && accountLoginAttempt?.status !== "failed") || loginPendingId === account.id}
                         onClick={() => {
                           if (!api) return;
                           setLoginError(null);
@@ -323,7 +324,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
                           });
                         }}
                       ><LogIn aria-hidden size={13} strokeWidth={1.7} /> Login</Button>
-                      <Button variant="ghost" disabled={!api || account.state === "revoked" || loginPendingId === account.id} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
+                      <Button variant="ghost" disabled={!api || account.state === "revoked" || accountLoginAttempt?.retryable === false || loginPendingId === account.id} onClick={() => setRemoveAccountId(account.id)}><Trash2 aria-hidden size={13} strokeWidth={1.7} /> Remove</Button>
                     </div>
                   </div>
                 );

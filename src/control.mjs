@@ -2946,6 +2946,7 @@ async function handleChatGptAccountSwitch(action, value, completionLease) {
   } = await import("./chatgpt-account-pool.mjs");
   const {
     chatGPTProfileSwitchSnapshot,
+    discardCompletedChatGPTProfileLogin,
     ensureChatGPTProfileAccounts,
     finalizeChatGPTProfileLogin,
     recoverCompletedChatGPTProfileLogins,
@@ -2959,18 +2960,46 @@ async function handleChatGptAccountSwitch(action, value, completionLease) {
     // This is the single production reconcile poll, owned by the Control
     // Center account view. It is read-only for settled state; after Codex has
     // closed it completes an explicit pending handoff or durable crash phase.
-    await recoverCompletedChatGPTProfileLogins();
+    const recovery = await recoverCompletedChatGPTProfileLogins();
     await reconcileChatGPTProfileSwitchIfReady();
     await ensureChatGPTProfileAccounts();
     const beforeRefresh = chatGPTSubscriptionAccountPoolSnapshot();
     await refreshBoundedChatGPTSubscriptionAccounts(beforeRefresh);
     const safe = chatGPTSubscriptionAccountPoolSnapshot();
+    const loginAttempts = {};
+    for (const failure of recovery.failures) {
+      const account = safe.accounts?.[failure.accountId];
+      if (!account) continue;
+      account.subscription = {
+        ...(account.subscription || {}),
+        loginInProgress: false,
+        attentionRequired: true,
+      };
+      loginAttempts[failure.accountId] = {
+        status: "failed",
+        retryable: failure.code !== "finalization-failed",
+        error: failure.code === "identity-conflict"
+          ? "This saved login matches another account. Retry sign-in with the intended account or remove it."
+          : failure.code === "invalid-auth"
+            ? "The saved login is incomplete or invalid. Retry sign-in or remove this account."
+            : "The saved login could not be finalized safely. Resolve the profile error, then refresh.",
+      };
+    }
+    for (const [accountId, account] of Object.entries(safe.accounts || {})) {
+      if (account.subscription?.attentionRequired !== true || loginAttempts[accountId]) continue;
+      loginAttempts[accountId] = {
+        status: "failed",
+        retryable: false,
+        error: "A previous sign-in may still be running. Verify that no Codex login process remains before manually clearing its saved ownership.",
+      };
+    }
     const { attachBoundedChatGPTAccountUsage } = await import("./codex-account-usage.mjs");
     await attachBoundedChatGPTAccountUsage(safe, {
       accountHome: (accountId) => chatGPTSubscriptionAccountHome(accountId),
     });
     process.stdout.write(`${JSON.stringify({
       ...safe,
+      ...(Object.keys(loginAttempts).length ? { loginAttempts } : {}),
       profile: chatGPTProfileSwitchSnapshot(),
       sessions: { count: Object.keys(safe.sessions || {}).length },
     })}\n`);
@@ -2995,6 +3024,11 @@ async function handleChatGptAccountSwitch(action, value, completionLease) {
     process.stdout.write(`${JSON.stringify(await finalizeChatGPTProfileLogin(value, {
       expectedLoginLease: decodeChatGPTLoginLease(completionLease),
     }))}\n`);
+    return;
+  }
+  if (action === "login-reset") {
+    if (!value || !/^acct_[A-Za-z0-9_-]{8,80}$/.test(value)) throw new Error("Account id is invalid.");
+    process.stdout.write(`${JSON.stringify({ reset: await discardCompletedChatGPTProfileLogin(value) })}\n`);
     return;
   }
   if (action === "remove") {

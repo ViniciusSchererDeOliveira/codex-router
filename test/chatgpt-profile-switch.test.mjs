@@ -24,6 +24,7 @@ import {
   reconcileChatGPTProfileSwitch,
   reconcileChatGPTProfileSwitchIfReady,
   recoverCompletedChatGPTProfileLogins,
+  discardCompletedChatGPTProfileLogin,
   removeChatGPTProfileAccount,
   requestChatGPTProfileSwitch,
   selectChatGPTProfileAccount,
@@ -463,11 +464,14 @@ test("restart recovery finalizes changed active auth from its durable lease exac
     loginLeaseIdentity: () => "replacement-owner",
     now: 1_000 + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1,
   };
-  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), [account.id]);
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), {
+    recovered: [account.id],
+    failures: [],
+  });
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), freshAuth);
   assert.equal(existsSync(path.join(homesDir, account.id, "router-login-lease.json")), false);
   assert.equal(readChatGPTProfileSwitchState(switchPath).pending, false);
-  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), []);
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), { recovered: [], failures: [] });
 });
 
 test("restart recovery is idempotent after profile commit but before exact lease clear", async () => {
@@ -520,9 +524,116 @@ test("restart recovery is idempotent after profile commit but before exact lease
     refreshCatalog: false,
     loginLeaseIdentity: () => "replacement-owner",
     now: 2_000,
-  }), [account.id]);
+  }), { recovered: [account.id], failures: [] });
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), freshAuth);
   assert.equal(existsSync(path.join(homesDir, account.id, "router-login-lease.json")), false);
+});
+
+test("restart recovery reports one invalid login while finalizing another", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-partial-recovery-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const invalid = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const valid = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  for (const account of [invalid, valid]) {
+    createChatGPTLoginLease(account.id, 4242, {
+      homesDir,
+      identity: () => "departed-owner",
+      now: 1_000,
+      phase: "running",
+    });
+  }
+  writeFileSync(
+    chatGPTSubscriptionAccountAuthPath(invalid.id, { homesDir }),
+    JSON.stringify({ tokens: { access_token: "invalid", account_id: "x".repeat(257) } }),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    chatGPTSubscriptionAccountAuthPath(valid.id, { homesDir }),
+    JSON.stringify({ tokens: { access_token: "valid", account_id: "valid-account" } }),
+    { mode: 0o600 },
+  );
+
+  const options = {
+    filePath,
+    homesDir,
+    refreshCatalog: false,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 2_000,
+  };
+  assert.deepEqual(await recoverCompletedChatGPTProfileLogins(options), {
+    recovered: [valid.id],
+    failures: [{ accountId: invalid.id, code: "invalid-auth" }],
+  });
+  assert.equal(existsSync(path.join(homesDir, invalid.id, "router-login-lease.json")), true);
+  assert.equal(existsSync(path.join(homesDir, valid.id, "router-login-lease.json")), false);
+  assert.equal(readChatGPTAccountPoolState(filePath).accounts[valid.id].identity.accountId, "valid-account");
+  assert.equal(await discardCompletedChatGPTProfileLogin(invalid.id, options), true);
+  assert.equal(await discardCompletedChatGPTProfileLogin(invalid.id, options), false);
+});
+
+test("explicit retry resets only an exactly ended changed login", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-reset-"));
+  const homesDir = path.join(root, "accounts");
+  const filePath = path.join(root, "pool.json");
+  const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+  const ended = createChatGPTLoginLease(account.id, 4242, {
+    homesDir,
+    identity: () => "departed-owner",
+    now: 1_000,
+    phase: "running",
+  });
+  writeFileSync(
+    chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }),
+    JSON.stringify({ tokens: { access_token: "changed", account_id: "x".repeat(257) } }),
+    { mode: 0o600 },
+  );
+  const endedOptions = {
+    filePath,
+    homesDir,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 2_000,
+  };
+  assert.equal(await discardCompletedChatGPTProfileLogin(account.id, endedOptions), true);
+  const retry = createChatGPTLoginLease(account.id, 5252, {
+    homesDir,
+    identity: () => "live-retry",
+    now: 3_000,
+    phase: "running",
+  });
+  writeFileSync(
+    chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }),
+    JSON.stringify({ tokens: { access_token: "changed-again", account_id: "y".repeat(257) } }),
+    { mode: 0o600 },
+  );
+  assert.notEqual(retry.leaseId, ended.leaseId);
+  assert.equal(await discardCompletedChatGPTProfileLogin(account.id, {
+    ...endedOptions,
+    loginLeaseIdentity: () => "live-retry",
+  }), false, "a live matching owner must not be reset");
+  assert.equal(await discardCompletedChatGPTProfileLogin(account.id, {
+    ...endedOptions,
+    loginLeaseIdentity: () => undefined,
+  }), false, "an unprobeable owner must not be reset");
+  assert.equal(clearChatGPTLoginLease(account.id, retry, { homesDir }), true);
+
+  const valid = createChatGPTLoginLease(account.id, 6262, {
+    homesDir,
+    identity: () => "departed-valid-owner",
+    now: 4_000,
+    phase: "running",
+  });
+  writeFileSync(
+    chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }),
+    JSON.stringify({ tokens: { access_token: "valid", account_id: "valid-recovery" } }),
+    { mode: 0o600 },
+  );
+  assert.equal(await discardCompletedChatGPTProfileLogin(account.id, {
+    ...endedOptions,
+    loginLeaseIdentity: () => "replacement-owner",
+    now: 5_000,
+  }), false, "valid recovery evidence must not be reset");
+  assert.equal(clearChatGPTLoginLease(account.id, valid, { homesDir }), true);
 });
 
 test("login finalization binds inactive identities and synchronizes an active refresh only when Codex closes", async () => {
@@ -667,6 +778,36 @@ test("login finalization leaves its durable lease when credential hardening fail
   );
   assert.equal(readChatGPTAccountPoolState(filePath).accounts[account.id].identity, undefined);
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), auth);
+});
+
+test("login finalization rejects unbindable account identities without clearing ownership", async () => {
+  for (const accountId of ["x".repeat(257), "valid-prefix\u0007suffix"]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-login-invalid-identity-"));
+    const homesDir = path.join(root, "accounts");
+    const filePath = path.join(root, "pool.json");
+    const account = createChatGPTSubscriptionAccount({ filePath, homesDir });
+    writeFileSync(
+      chatGPTSubscriptionAccountAuthPath(account.id, { homesDir }),
+      JSON.stringify({ tokens: { access_token: "fresh", account_id: accountId } }),
+      { mode: 0o600 },
+    );
+    let cleared = false;
+    await assert.rejects(
+      finalizeChatGPTProfileLogin(account.id, {
+        filePath,
+        homesDir,
+        refreshCatalog: false,
+        expectedLoginLease: { leaseId: "fixture" },
+        loginLeaseMatches: () => true,
+        loginAuthChanged: () => true,
+        hardenAuth: () => {},
+        clearLoginLease: () => { cleared = true; return true; },
+      }),
+      /login profile is invalid after hardening/,
+    );
+    assert.equal(cleared, false);
+    assert.equal(readChatGPTAccountPoolState(filePath).accounts[account.id].identity, undefined);
+  }
 });
 
 test("login finalization rejects duplicate unbound credentials without clearing ownership", async () => {
