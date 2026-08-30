@@ -84,6 +84,20 @@ test("curation metadata can expose provider-verified reasoning summaries", () =>
   assert.equal(entry.defaultReasoningSummary, "auto");
 });
 
+test("curation metadata preserves only explicit endpoint capabilities", () => {
+  const entry = userModelEntry({
+    providerId: "openrouter",
+    upstreamId: "vendor/embedding-model",
+    priority: 100,
+    metadata: {
+      supportedEndpoints: ["/embeddings"],
+      endpoint: "/audio/speech",
+    },
+  });
+  assert.deepEqual(entry.supportedEndpoints, ["/embeddings"]);
+  assert.equal(entry.endpoint, undefined);
+});
+
 test("curation metadata cannot replace identity or routing fields", () => {
   const entry = userModelEntry({
     providerId: "deepseek",
@@ -170,6 +184,44 @@ test("registry merges valid user models and skips collisions", async () => {
     },
     // Unknown provider must be skipped, not fatal.
     userModelEntry({ providerId: "no-such-provider", upstreamId: "x-model", priority: 102 }),
+    // Endpoint-only models stay out of conversational pickers. A listed model
+    // that omits its provider's chat route would otherwise advertise a turn
+    // that the forwarder must refuse.
+    {
+      ...userModelEntry({
+        providerId: "openrouter",
+        upstreamId: "vendor/embedding-only-listed",
+        priority: 116,
+        metadata: { supportedEndpoints: ["/embeddings"] },
+      }),
+      listed: true,
+    },
+    {
+      ...userModelEntry({
+        providerId: "openrouter",
+        upstreamId: "vendor/embedding-only",
+        priority: 117,
+        metadata: { supportedEndpoints: ["/embeddings"] },
+      }),
+      listed: false,
+    },
+    {
+      ...userModelEntry({
+        providerId: "openrouter",
+        upstreamId: "vendor/bad-endpoint",
+        priority: 118,
+      }),
+      supportedEndpoints: ["/audio/speech"],
+    },
+    {
+      ...userModelEntry({
+        providerId: "anthropic-api",
+        upstreamId: "vendor/embedding-only",
+        priority: 119,
+        metadata: { supportedEndpoints: ["/embeddings"] },
+      }),
+      listed: false,
+    },
     // Announcement copy must be a non-empty string; a blank one is skipped.
     {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-blank-nux", priority: 103 }),
@@ -231,6 +283,10 @@ test("registry merges valid user models and skips collisions", async () => {
   const registry = await import("../src/model-registry.mjs");
   const slugs = registry.MODELS.map((model) => model.slug);
   assert.ok(slugs.includes("deepseek/deepseek-user-test"));
+  assert.equal(slugs.includes("openrouter/vendor/embedding-only-listed"), false);
+  assert.equal(slugs.includes("openrouter/vendor/embedding-only"), true);
+  assert.equal(slugs.includes("openrouter/vendor/bad-endpoint"), false);
+  assert.equal(slugs.includes("anthropic-api/vendor/embedding-only"), false);
   assert.equal(slugs.filter((slug) => slug === "deepseek/deepseek-v4-pro").length, 1);
   assert.equal(slugs.includes("opencode-free/ox-alpha"), false);
   assert.equal(slugs.filter((slug) => slug === "opencode-free/x-preview-f-free").length, 1);

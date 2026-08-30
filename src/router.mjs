@@ -32,6 +32,7 @@ import { handlePanelRequest, isPanelRoute } from "./desktop-panel.mjs";
 import { handleGeminiRequest, isGeminiRoute } from "./gemini-surface.mjs";
 import {
   applyKeepAliveTimeouts,
+  copyResponseHeaders,
   endStreamedResponse,
   finishResponse,
   formatErrorChain,
@@ -141,6 +142,10 @@ import {
 } from "./codex-session-names.mjs";
 import { gatewayErrorStatus, translateGatewayError } from "./error-translation.mjs";
 import { describeTransportFailure } from "./transport-failure.mjs";
+import {
+  endpointCapabilityError,
+  supportsOpenAIModelEndpoint,
+} from "./openai-endpoint-policy.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
 import {
   classifySsePrefix,
@@ -179,6 +184,7 @@ import {
   installStableFetchTransport,
   loopbackProbeFetch,
 } from "./fetch-transport.mjs";
+import { handleResponsesWebSocketUpgrade } from "./responses-websocket.mjs";
 
 installStableFetchTransport();
 
@@ -203,6 +209,10 @@ const API_HEALTH =
   process.env.CODEX_ROUTER_API_HEALTH_URL ||
   process.env.KIMI_API_HEALTH_URL ||
   loopback(PORTS.api, "/health");
+const API_BASE = (
+  process.env.CODEX_ROUTER_API_BASE_URL ||
+  loopback(PORTS.api, "/v1")
+).replace(/\/+$/, "");
 const GROK_OAUTH_HEALTH =
   process.env.CODEX_ROUTER_GROK_OAUTH_HEALTH_URL ||
   loopback(PORTS.grokOauth, "/health");
@@ -217,6 +227,27 @@ const INTERNAL_KEY =
 const CALLER_KEY = process.env.CODEX_ROUTER_CALLER_KEY;
 const QUIET =
   process.env.CODEX_ROUTER_QUIET === "1" || process.env.KIMI_PROXY_QUIET === "1";
+function positiveByteLimit(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function safeForwardedRequestId(value) {
+  return typeof value === "string" &&
+      value.length <= 200 &&
+      /^[A-Za-z0-9._:-]+$/.test(value)
+    ? value
+    : undefined;
+}
+
+const EMBEDDINGS_MAX_BODY_BYTES = positiveByteLimit(
+  process.env.CODEX_ROUTER_EMBEDDINGS_MAX_BODY_BYTES,
+  8 * 1024 * 1024,
+);
+const EMBEDDINGS_MAX_RESPONSE_BYTES = positiveByteLimit(
+  process.env.CODEX_ROUTER_EMBEDDINGS_MAX_RESPONSE_BYTES,
+  8 * 1024 * 1024,
+);
 // Kill switch for the zero-prompt-token substitution (#95). It is on because a
 // provider that reports no prompt tokens breaks compaction outright, but an
 // operator who would rather see the provider's own numbers can turn it off
@@ -460,6 +491,8 @@ const FORWARD_HEADERS = new Set([
   "session_id",
   "session-id",
   "thread-id",
+  "traceparent",
+  "tracestate",
   "x-client-request-id",
   "x-codex-beta-features",
   "x-codex-installation-id",
@@ -468,6 +501,7 @@ const FORWARD_HEADERS = new Set([
   "x-codex-turn-state",
   "x-codex-window-id",
   "x-oai-attestation",
+  "x-openai-internal-codex-responses-lite",
   "x-openai-subagent",
   "x-responsesapi-include-timing-metrics",
 ]);
@@ -505,7 +539,11 @@ function bindClientAbort(request, response, onAbort) {
   if (request.aborted || response.destroyed) abort();
 }
 
-function decodeBody(body, contentEncoding) {
+function decodeBody(
+  body,
+  contentEncoding,
+  { maxBytes = MAX_DECODED_BODY_BYTES } = {},
+) {
   const value = Array.isArray(contentEncoding)
     ? contentEncoding.join(",")
     : String(contentEncoding || "");
@@ -517,7 +555,7 @@ function decodeBody(body, contentEncoding) {
   let decoded = body;
   try {
     for (const encoding of encodings) {
-      const options = { maxOutputLength: MAX_DECODED_BODY_BYTES };
+      const options = { maxOutputLength: maxBytes };
       if (encoding === "zstd") decoded = zstdDecompressSync(decoded, options);
       else if (encoding === "gzip" || encoding === "x-gzip") {
         decoded = gunzipSync(decoded, options);
@@ -533,7 +571,7 @@ function decodeBody(body, contentEncoding) {
     if (error?.status) throw error;
     if (error?.code === "ERR_BUFFER_TOO_LARGE") {
       const wrapped = new Error(
-        `Decoded request body exceeds ${MAX_DECODED_BODY_BYTES} bytes.`,
+        `Decoded request body exceeds ${maxBytes} bytes.`,
       );
       wrapped.status = 413;
       throw wrapped;
@@ -544,7 +582,7 @@ function decodeBody(body, contentEncoding) {
     wrapped.status = 400;
     throw wrapped;
   }
-  if (decoded.length > MAX_DECODED_BODY_BYTES) {
+  if (decoded.length > maxBytes) {
     const error = new Error("Decoded request body is too large.");
     error.status = 413;
     throw error;
@@ -655,6 +693,13 @@ function authenticatedDirectV1Route(request, pathname) {
     return pathname;
   }
   return undefined;
+}
+
+function authenticatedCallerRoute(request, requestUrl) {
+  return (
+    authenticatedRoute(requestUrl.pathname, CALLER_KEY) ||
+    authenticatedDirectV1Route(request, requestUrl.pathname)
+  );
 }
 
 // ChatGPT's own backend accepts a narrower request than the public Responses
@@ -4403,6 +4448,136 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
   }
 }
 
+async function handleEmbeddings(request, response, requestUrl) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const activity = beginRequestActivity({ request, response, controller });
+  let clientGone = false;
+  let requestedModel = "";
+  let route;
+  let status = 0;
+  bindClientAbort(request, response, () => {
+    clientGone = true;
+    controller.abort();
+  });
+  try {
+    if (!requireCodexTransport(request, response)) {
+      status = response.statusCode;
+      return;
+    }
+    const encoded = await readRequestBody(request, {
+      maxBytes: EMBEDDINGS_MAX_BODY_BYTES,
+      signal: controller.signal,
+    });
+    const body = decodeBody(encoded, request.headers["content-encoding"], {
+      maxBytes: EMBEDDINGS_MAX_BODY_BYTES,
+    });
+    const payload = await parseBodyAsync(body);
+    controller.signal.throwIfAborted();
+    requestedModel = typeof payload.model === "string" ? payload.model : "";
+    route = MODEL_BY_SLUG.get(requestedModel);
+    if (!route) {
+      status = 400;
+      writeJson(response, status, {
+        error: {
+          type: "unknown_model",
+          code: "unknown_model",
+          message: "The embeddings request must name a registered routed model.",
+        },
+      });
+      return;
+    }
+    activity.setRoute({
+      provider: canonicalProviderId(route.provider),
+      model: route.slug,
+      ...activityMetadataFromHeaders(request.headers),
+    });
+    if (!routeProviderEnabled(route.provider)) {
+      status = 409;
+      writeJson(response, status, {
+        error: {
+          type: "provider_not_enabled",
+          code: "provider_not_enabled",
+          provider: route.provider,
+          message: `Provider ${route.provider} is hidden. Run ./bin/providers enable ${route.provider}.`,
+        },
+      });
+      return;
+    }
+    const provider = providerForModel(route);
+    if (!supportsOpenAIModelEndpoint("/embeddings", { model: route, provider })) {
+      const error = endpointCapabilityError("/embeddings", route);
+      status = error.status;
+      writeJson(response, status, {
+        error: {
+          type: error.code,
+          code: error.code,
+          message: error.message,
+        },
+      });
+      return;
+    }
+    const headers = routedHeaders();
+    const requestId = safeForwardedRequestId(request.headers["x-request-id"]);
+    if (requestId) headers["X-Request-Id"] = requestId;
+    const upstream = await fetch(
+      `${API_BASE}/embeddings${nativeRequestSearch(requestUrl)}`,
+      {
+        method: "POST",
+        headers,
+        body: Buffer.from(
+          JSON.stringify({ ...payload, model: route.gatewayModel }),
+          "utf8",
+        ),
+        signal: controller.signal,
+        // A 307/308 replays the POST body. The internal capability hop must
+        // never let a replaced or misconfigured forwarder redirect a billable
+        // embeddings request to another destination.
+        redirect: "error",
+      },
+    );
+    const responseBody = await readResponseBody(upstream, {
+      maxBytes: EMBEDDINGS_MAX_RESPONSE_BYTES,
+      signal: controller.signal,
+    });
+    controller.signal.throwIfAborted();
+    status = upstream.status;
+    response.statusCode = upstream.status;
+    copyResponseHeaders(upstream, response, HOP_BY_HOP_HEADERS);
+    response.end(responseBody);
+  } catch (error) {
+    if (clientGone) {
+      status = 0;
+      return;
+    }
+    if (activity.deadlineExceeded()) {
+      status = 504;
+      if (!response.headersSent) {
+        writeJson(response, status, {
+          error: {
+            type: "router_request_timeout",
+            code: "router_request_timeout",
+            message: "The router canceled an embeddings request that exceeded its execution deadline.",
+          },
+        });
+      }
+      return;
+    }
+    status = httpErrorStatus(error);
+    throw error;
+  } finally {
+    if (requestedModel) {
+      recordUsageEvent({
+        model: route?.slug || requestedModel,
+        provider: route ? canonicalProviderId(route.provider) : "unknown",
+        status,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    activity.finish(status);
+  }
+}
+
 async function handleRequest(request, response) {
   const requestUrl = new URL(
     request.url || "/",
@@ -4420,9 +4595,7 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const route =
-    authenticatedRoute(requestUrl.pathname, CALLER_KEY) ||
-    authenticatedDirectV1Route(request, requestUrl.pathname);
+  const route = authenticatedCallerRoute(request, requestUrl);
   if (!route) {
     writeJson(response, 401, {
       error: {
@@ -4466,6 +4639,13 @@ async function handleRequest(request, response) {
   if (request.method === "OPTIONS") {
     response.writeHead(204);
     response.end();
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    ["/embeddings", "/v1/embeddings"].includes(requestUrl.pathname)
+  ) {
+    await handleEmbeddings(request, response, requestUrl);
     return;
   }
   if (
@@ -4530,11 +4710,16 @@ const server = http.createServer((request, response) => {
   });
 });
 
-server.on("upgrade", (_request, socket) => {
-  socket.on("error", () => {});
-  socket.end(
-    "HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-  );
+server.on("upgrade", (request, socket, head) => {
+  handleResponsesWebSocketUpgrade(request, socket, head, {
+    callerKey: CALLER_KEY,
+    authenticateUpgrade: authenticatedCallerRoute,
+    // The WebSocket is an edge translation only. Every complete request
+    // re-enters this caller-authenticated HTTP route, so routing, provider
+    // credentials, retries, failover, transforms, usage, and cancellation all
+    // continue to have one implementation.
+    responsesUrl: `${callerBaseUrl(LISTEN_PORT, CALLER_KEY)}/responses`,
+  });
 });
 // Without this an 'error' event is unhandled and the process exits silently.
 // Under a supervisor that reads as a crash loop with the port never bound and

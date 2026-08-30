@@ -17,6 +17,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { codexCandidatePaths, findCodexBinary } from "../src/codex-binary.mjs";
+import { handleResponsesWebSocketUpgrade } from "../src/responses-websocket.mjs";
 import { spawnableCommand } from "../src/spawnable-command.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -272,10 +273,26 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
       response.end(responseStream(requests.at(-1).body.model));
     });
   });
+  const upgradedSockets = new Set();
+  const upgrades = [];
 
   try {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = server.address().port;
+    server.on("upgrade", (request, socket, head) => {
+      upgrades.push({ headers: request.headers, url: request.url });
+      upgradedSockets.add(socket);
+      socket.once("close", () => upgradedSockets.delete(socket));
+      handleResponsesWebSocketUpgrade(request, socket, head, {
+        callerKey: CALLER_KEY,
+        authenticateUpgrade: (upgradeRequest, requestUrl) =>
+          requestUrl.pathname === "/v1/responses" &&
+          upgradeRequest.headers.authorization === `Bearer ${CALLER_KEY}`
+            ? requestUrl.pathname
+            : undefined,
+        responsesUrl: `http://127.0.0.1:${port}/_codex-router/${CALLER_KEY}/v1/responses`,
+      });
+    });
     const env = cleanCredentialEnvironment({
       CODEX_BIN: binary,
       CODEX_HOME: codexHome,
@@ -323,11 +340,27 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
 
     const notifications = await runAppServerTurn(binary, env, model, expectedProvider);
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, "/v1/responses");
-    assert.equal(requests[0].headers.authorization, `Bearer ${CALLER_KEY}`);
+    if (upgrades.length > 0) {
+      assert.equal(upgrades.length, 1);
+      assert.equal(upgrades[0].url, "/v1/responses");
+      assert.equal(upgrades[0].headers.authorization, `Bearer ${CALLER_KEY}`);
+      assert.equal(
+        requests[0].url,
+        `/_codex-router/${CALLER_KEY}/v1/responses`,
+      );
+      assert.equal(
+        requests[0].headers.authorization,
+        undefined,
+        "the caller capability stops at the WebSocket edge",
+      );
+    } else {
+      assert.equal(requests[0].url, "/v1/responses");
+      assert.equal(requests[0].headers.authorization, `Bearer ${CALLER_KEY}`);
+    }
     assert.equal(requests[0].body.model, model);
     assert.match(JSON.stringify(notifications), new RegExp(MARKER));
   } finally {
+    for (const socket of upgradedSockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
     rmSync(codexHome, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }

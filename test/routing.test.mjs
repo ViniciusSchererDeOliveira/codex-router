@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
 import {
   existsSync,
@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
+import { gzipSync, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import {
@@ -879,6 +879,9 @@ test("router preserves native auth and isolates every external route", async () 
       Authorization: "Bearer CODEX_CALLER_SECRET",
       "ChatGPT-Account-Id": "account-secret",
       "X-Codex-Installation-Id": "installation-secret",
+      Traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+      Tracestate: "vendor=value",
+      "X-OpenAI-Internal-Codex-Responses-Lite": "true",
       "X-Private-Header": "must-not-forward",
       "Content-Type": "application/json",
     };
@@ -890,7 +893,10 @@ test("router preserves native auth and isolates every external route", async () 
           previous_response_id: "remove-me",
           prompt_cache_retention: "24h",
           prompt_cache_options: { ttl: "30m" },
-          client_metadata: { workspace: "caller-owned" },
+          client_metadata: {
+            workspace: "caller-owned",
+            "x-codex-turn-metadata": "native-canonical-turn-metadata",
+          },
         }),
       ),
     );
@@ -918,7 +924,11 @@ test("router preserves native auth and isolates every external route", async () 
         body: JSON.stringify({
           model,
           input: "external test",
-          client_metadata: { workspace: "caller-owned" },
+          client_metadata: {
+            workspace: "caller-owned",
+            "x-codex-turn-metadata": "routed-canonical-turn-metadata",
+            "x-codex-turn-state": "routed-turn-state",
+          },
         }),
       });
       assert.equal(response.status, 200);
@@ -927,6 +937,12 @@ test("router preserves native auth and isolates every external route", async () 
 
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
+    assert.equal(
+      nativeRequests[0].headers.traceparent,
+      "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+    );
+    assert.equal(nativeRequests[0].headers.tracestate, "vendor=value");
+    assert.equal(nativeRequests[0].headers["x-openai-internal-codex-responses-lite"], "true");
     assert.equal(nativeRequests[0].headers["x-private-header"], undefined);
     assert.equal(nativeRequests[0].url, "/backend-api/codex/responses");
     assert.doesNotMatch(nativeRequests[0].url, /PROVIDER_QUERY_SECRET/);
@@ -934,11 +950,17 @@ test("router preserves native auth and isolates every external route", async () 
     assert.equal(nativeRequests[0].body.prompt_cache_retention, undefined);
     assert.deepEqual(nativeRequests[0].body.prompt_cache_options, { ttl: "30m" });
     // Native OpenAI traffic owns client_metadata; only routed traffic drops it.
-    assert.deepEqual(nativeRequests[0].body.client_metadata, { workspace: "caller-owned" });
+    assert.deepEqual(nativeRequests[0].body.client_metadata, {
+      workspace: "caller-owned",
+      "x-codex-turn-metadata": "native-canonical-turn-metadata",
+    });
     for (const request of routedRequests) {
       assert.equal(request.headers.authorization, `Bearer ${INTERNAL_KEY}`);
       assert.equal(request.headers["chatgpt-account-id"], undefined);
       assert.equal(request.headers["x-codex-installation-id"], undefined);
+      assert.equal(request.headers.traceparent, undefined);
+      assert.equal(request.headers.tracestate, undefined);
+      assert.equal(request.headers["x-openai-internal-codex-responses-lite"], undefined);
       assert.equal(request.headers["x-private-header"], undefined);
       assert.equal(request.body.client_metadata, undefined);
     }
@@ -4066,6 +4088,16 @@ function curatedOpenRouterModels() {
         entry("openrouter", "openai/gpt-5.3", "openrouter-openai-gpt-5-3"),
         entry("openrouter", "vendor/strict-schema", "openrouter-vendor-strict-schema", "codex-encrypted-schema"),
         entry("openrouter", "vendor/ordinary-schema", "openrouter-vendor-ordinary-schema"),
+        {
+          ...entry("openrouter", "vendor/embedding-only", "openrouter-vendor-embedding-only"),
+          listed: false,
+          supportedEndpoints: ["/embeddings"],
+        },
+        {
+          ...entry("opencode-go", "vendor/embedding-only", "opencode-go-vendor-embedding-only"),
+          listed: false,
+          supportedEndpoints: ["/embeddings"],
+        },
         entry("chutes", "moonshotai/Kimi-K3-TEE", "chutes-moonshotai-kimi-k3-tee"),
       ],
     }),
@@ -4078,9 +4110,410 @@ function curatedOpenRouterModels() {
     unrestricted: "openrouter-openai-gpt-5-3",
     strictSchema: "openrouter-vendor-strict-schema",
     ordinarySchema: "openrouter-vendor-ordinary-schema",
+    embeddings: "openrouter-vendor-embedding-only",
+    embeddingsSlug: "openrouter/vendor/embedding-only",
+    pooledEmbeddings: "opencode-go-vendor-embedding-only",
     chutes: "chutes-moonshotai-kimi-k3-tee",
   };
 }
+
+test("API forwarder sends only explicitly declared embeddings without chat conversion", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, {
+      object: "list",
+      data: [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }],
+    });
+  });
+  const curated = curatedOpenRouterModels();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${INTERNAL_KEY}`,
+    "Content-Type": "application/json",
+  };
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, headers);
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: curated.embeddings,
+        input: ["hello", "world"],
+        encoding_format: "float",
+        dimensions: 2,
+        vendor_option: { keep: true },
+      }),
+    });
+    assert.equal(response.status, 200, forwarder.testErrors());
+    assert.deepEqual(await response.json(), {
+      object: "list",
+      data: [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }],
+    });
+    assert.equal(upstreamRequests.length, 1);
+    assert.equal(upstreamRequests[0].url, "/embeddings");
+    assert.equal(upstreamRequests[0].headers.authorization, "Bearer TEST_OPENROUTER_API_KEY");
+    assert.deepEqual(upstreamRequests[0].body, {
+      model: "vendor/embedding-only",
+      input: ["hello", "world"],
+      encoding_format: "float",
+      dimensions: 2,
+      vendor_option: { keep: true },
+    });
+
+    const undeclared = await fetch(`http://127.0.0.1:${forwarderPort}/v1/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: curated.unrestricted, input: "hello" }),
+    });
+    assert.equal(undeclared.status, 400);
+    assert.equal((await undeclared.json()).error.type, "provider_api_proxy_error");
+    const wrongSurface = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: curated.embeddings,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+    assert.equal(wrongSurface.status, 400);
+    assert.equal((await wrongSurface.json()).error.type, "provider_api_proxy_error");
+    assert.equal(upstreamRequests.length, 1);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+test("API forwarder never replays embeddings through a provider API-key pool", async () => {
+  const curated = curatedOpenRouterModels();
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-embedding-pool-state-"));
+  const credentialStorePath = path.join(stateDir, "provider-credentials.json");
+  const poolStatePath = path.join(stateDir, "provider-api-key-pools.json");
+  const inactiveRouterPort = await openPort();
+  const credentials = [
+    ["OPENCODE_API_KEY", "POOL_EMBEDDING_KEY_ONE"],
+    ["OPENCODE_GO_API_KEY", "POOL_EMBEDDING_KEY_TWO"],
+  ];
+  for (const [name] of credentials) {
+    execFileSync(process.execPath, [
+      path.join(root, "src", "control.mjs"),
+      "key-pool",
+      "opencode-go",
+      "add-env",
+      name,
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODEL_ROUTER_TARGET: "codex",
+        MODEL_ROUTER_STATE_DIR: stateDir,
+        MODEL_ROUTER_PROVIDER_CREDENTIAL_STORE: credentialStorePath,
+        MODEL_ROUTER_API_KEY_POOL_PATH: poolStatePath,
+        CODEX_ROUTER_PORT: String(inactiveRouterPort),
+        CODEX_ROUTER_SERVICE_PLATFORM: "darwin",
+        MODEL_ROUTER_LAUNCH_AGENTS_DIR: path.join(stateDir, "launch-agents"),
+      },
+      stdio: "ignore",
+    });
+  }
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 429, { error: { message: "rate limited after accepting input" } });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    MODEL_ROUTER_PROVIDER_CREDENTIAL_STORE: credentialStorePath,
+    MODEL_ROUTER_API_KEY_POOL_PATH: poolStatePath,
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENCODE_API_KEY: credentials[0][1],
+    OPENCODE_GO_API_KEY: credentials[1][1],
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    const headers = {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+      "Content-Type": "application/json",
+    };
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, headers);
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: curated.pooledEmbeddings, input: "bill this once" }),
+    });
+    assert.equal(response.status, 429, forwarder.testErrors());
+    assert.equal(upstreamRequests.length, 1);
+    assert.ok(
+      credentials.some(([, value]) => upstreamRequests[0].headers.authorization === `Bearer ${value}`),
+    );
+    const pool = JSON.parse(readFileSync(poolStatePath, "utf8")).providers["opencode-go"];
+    assert.equal(
+      Object.values(pool.credentials).filter((entry) => entry.health.lastStatus === 429).length,
+      1,
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("caller embeddings stay capability-gated, bounded, cancelable, and credential-isolated", async () => {
+  const curated = curatedOpenRouterModels();
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-embeddings-state-"));
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["openrouter"] })}\n`,
+    { mode: 0o600 },
+  );
+  const upstreamRequests = [];
+  let canceledUpstream = false;
+  let redirectedProviderRequests = 0;
+  const providerRedirectSink = await mockServer(async (request, response) => {
+    redirectedProviderRequests += 1;
+    request.resume();
+    json(response, 200, { stolen: true });
+  });
+  const upstream = await mockServer(async (request, response) => {
+    const body = await bodyJson(request);
+    upstreamRequests.push({ url: request.url, headers: request.headers, body });
+    if (body.input === "hold") {
+      response.on("close", () => {
+        if (!response.writableEnded) canceledUpstream = true;
+      });
+      return;
+    }
+    if (body.input === "oversize-response") {
+      json(response, 200, { object: "list", data: [], padding: "x".repeat(2_048) });
+      return;
+    }
+    if (body.input === "provider-redirect") {
+      response.writeHead(307, {
+        Location: `http://127.0.0.1:${providerRedirectSink.port}/replayed`,
+      });
+      response.end();
+      return;
+    }
+    json(response, 200, {
+      object: "list",
+      data: [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }],
+    });
+  });
+  const forwarderPort = await openPort();
+  const routerPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_API_BASE_URL: `http://127.0.0.1:${forwarderPort}/v1`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${forwarderPort}/health`,
+    CODEX_ROUTER_EMBEDDINGS_MAX_BODY_BYTES: "512",
+    CODEX_ROUTER_EMBEDDINGS_MAX_RESPONSE_BYTES: "512",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    const response = await fetch(`${routerBase(routerPort)}/embeddings?trace=one`, {
+      method: "POST",
+      headers: { ...headers, "X-Request-Id": "embedding-request-1" },
+      body: JSON.stringify({
+        model: curated.embeddingsSlug,
+        input: ["hello", "world"],
+        dimensions: 2,
+      }),
+    });
+    assert.equal(response.status, 200, `${router.testErrors()}\n${forwarder.testErrors()}`);
+    assert.equal((await response.json()).data[0].embedding.length, 2);
+    assert.equal(upstreamRequests.length, 1);
+    // The capability URL may inherit provider-level query params from a
+    // client. They can contain secrets, so this route drops them like native
+    // Responses rather than reflecting them to an unrelated upstream.
+    assert.equal(upstreamRequests[0].url, "/embeddings");
+    assert.equal(upstreamRequests[0].headers.authorization, "Bearer TEST_OPENROUTER_API_KEY");
+    assert.equal(upstreamRequests[0].headers["x-request-id"], "embedding-request-1");
+    assert.equal(upstreamRequests[0].headers.authorization.includes(CALLER_KEY), false);
+    assert.equal(upstreamRequests[0].headers.authorization.includes(INTERNAL_KEY), false);
+    assert.equal(upstreamRequests[0].body.model, "vendor/embedding-only");
+
+    const undeclared = await fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "openrouter/openai/gpt-5.3", input: "hello" }),
+    });
+    assert.equal(undeclared.status, 400);
+    assert.equal((await undeclared.json()).error.code, "unsupported_model_endpoint");
+    assert.equal(upstreamRequests.length, 1);
+
+    const wrongCapability = await fetch(
+      `http://127.0.0.1:${routerPort}/_codex-router/${"x".repeat(40)}/v1/embeddings`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: curated.embeddingsSlug, input: "hello" }),
+      },
+    );
+    assert.equal(wrongCapability.status, 401);
+    assert.equal(upstreamRequests.length, 1);
+
+    const tooLarge = await fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: curated.embeddingsSlug, input: "x".repeat(1_024) }),
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.equal(upstreamRequests.length, 1);
+
+    const compressedTooLarge = await fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers: { ...headers, "Content-Encoding": "gzip" },
+      body: gzipSync(Buffer.from(JSON.stringify({
+        model: curated.embeddingsSlug,
+        input: "x".repeat(1_024),
+      }))),
+    });
+    assert.equal(compressedTooLarge.status, 413);
+    assert.equal(upstreamRequests.length, 1);
+
+    const largeResponse = await fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: curated.embeddingsSlug, input: "oversize-response" }),
+    });
+    assert.equal(largeResponse.status, 502);
+    assert.equal(upstreamRequests.length, 2);
+
+    const abort = new AbortController();
+    const held = fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: curated.embeddingsSlug, input: "hold" }),
+      signal: abort.signal,
+    });
+    const deadline = Date.now() + 5_000;
+    while (upstreamRequests.length < 3 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(upstreamRequests.length, 3);
+    abort.abort();
+    await assert.rejects(held, /abort/i);
+    while (!canceledUpstream && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(canceledUpstream, true);
+
+    const providerRedirect = await fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: curated.embeddingsSlug, input: "provider-redirect" }),
+    });
+    assert.equal(providerRedirect.status, 502);
+    assert.equal(upstreamRequests.length, 4);
+    assert.equal(redirectedProviderRequests, 0);
+  } finally {
+    await stopChild(router);
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    await closeServer(providerRedirectSink.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("caller embeddings never follow a redirect from the internal API hop", async () => {
+  const curated = curatedOpenRouterModels();
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-embedding-api-redirect-state-"));
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["openrouter"] })}\n`,
+    { mode: 0o600 },
+  );
+  let redirectedRequests = 0;
+  const redirectSink = await mockServer(async (request, response) => {
+    redirectedRequests += 1;
+    request.resume();
+    json(response, 200, { stolen: true });
+  });
+  const internalRequests = [];
+  const internalApi = await mockServer(async (request, response) => {
+    if (request.url === "/health") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    internalRequests.push({ url: request.url, body: await bodyJson(request) });
+    response.writeHead(308, {
+      Location: `http://127.0.0.1:${redirectSink.port}/replayed`,
+    });
+    response.end();
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_API_BASE_URL: `http://127.0.0.1:${internalApi.port}/v1`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${internalApi.port}/health`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/embeddings`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CALLER_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: curated.embeddingsSlug, input: "do not replay" }),
+    });
+    assert.equal(response.status, 502, router.testErrors());
+    assert.deepEqual(internalRequests, [{
+      url: "/v1/embeddings",
+      body: { model: curated.embeddings, input: "do not replay" },
+    }]);
+    assert.equal(redirectedRequests, 0);
+  } finally {
+    await stopChild(router);
+    await closeServer(internalApi.server);
+    await closeServer(redirectSink.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
 
 test("API forwarder downgrades forced tool choices only for models that declare the restriction", async () => {
   const upstreamRequests = [];
