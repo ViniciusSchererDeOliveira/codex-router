@@ -1636,6 +1636,7 @@ test("harness and context IPC remain fixed and session-scoped", async () => {
   assert.ok(chatgptLogin, "ChatGPT subscription login handler should be readable");
   assert.match(chatgptLogin, /openBrowserCommand\(codex, \["login"\]/);
   assert.match(chatgptLogin, /\["chatgpt-account-pool", "status"\]/);
+  assert.match(chatgptLogin, /\["chatgpt-account-pool", "status"\][\s\S]{0,120}CATALOG_MUTATION_TIMEOUT_MS/);
   assert.match(chatgptLogin, /account\.subscription\?\.usable === true/);
   assert.match(chatgptLogin, /profileHome === primaryHome/);
   assert.match(chatgptLogin, /subscriptionLoginInFlight/);

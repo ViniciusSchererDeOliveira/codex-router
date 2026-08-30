@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
+  ACCOUNT_REFRESH_POLL_CONCURRENCY,
+  ACCOUNT_REFRESH_POLL_LIMIT,
   ACCOUNT_REFRESH_RETRY_MS,
   claimChatGPTSubscriptionRefresh,
   chatGPTSubscriptionAccountAuthPath,
@@ -15,6 +17,7 @@ import {
   chatGPTSubscriptionAccountStatus,
   createChatGPTSubscriptionAccount,
   readChatGPTAccountPoolState,
+  refreshBoundedChatGPTSubscriptionAccounts,
   removeChatGPTSubscriptionAccount,
   sanitizeChatGPTAccountPool,
   withChatGPTAccountPoolLock,
@@ -151,6 +154,32 @@ test("refresh attempt claims serialize across processes and preserve the retry w
   const persisted = readFileSync(options.filePath, "utf8");
   assert.match(persisted, /lastRefreshAttemptAt/);
   assert.doesNotMatch(persisted, /access_token|refresh_token|id_token/);
+});
+
+test("one status poll bounds near-expiry refresh children and prioritizes the selected account", async () => {
+  const selectedId = "acct_00000063";
+  const accounts = Object.fromEntries(Array.from({ length: 64 }, (_, index) => {
+    const id = `acct_${String(index).padStart(8, "0")}`;
+    return [id, { id, subscription: { usable: true } }];
+  }));
+  const calls = [];
+  let active = 0;
+  let maximumActive = 0;
+  await refreshBoundedChatGPTSubscriptionAccounts({
+    policy: { selectedAccountId: selectedId },
+    accounts,
+  }, {
+    refresh: async (id) => {
+      calls.push(id);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+    },
+  });
+  assert.equal(calls.length, ACCOUNT_REFRESH_POLL_LIMIT);
+  assert.equal(calls[0], selectedId);
+  assert.equal(maximumActive, ACCOUNT_REFRESH_POLL_CONCURRENCY);
 });
 
 test("account removal refuses symlinked roots and targets without deleting external data", () => {

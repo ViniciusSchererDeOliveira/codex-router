@@ -111,15 +111,20 @@ export async function attachBoundedChatGPTAccountUsage(pool, {
   timeoutMs = ACCOUNT_POOL_USAGE_TIMEOUT_MS,
 } = {}) {
   if (!pool?.accounts || typeof accountHome !== "function") return pool;
+  const selectedId = pool.policy?.selectedAccountId;
   const candidates = Object.values(pool.accounts)
     .filter((account) => account?.subscription?.usable === true)
+    .sort((left, right) => Number(right.id === selectedId) - Number(left.id === selectedId))
     .slice(0, Math.max(0, Math.floor(probeLimit)));
   await Promise.all(candidates.map(async (account) => {
     try {
       const usage = await readUsage({ codexHome: accountHome(account.id), timeoutMs });
       const windows = [usage.primary, usage.secondary].filter(Boolean);
-      const weekly = windows.find((window) => window.windowDurationMins >= 7 * 24 * 60);
       const monthly = windows.find((window) => window.windowDurationMins >= 28 * 24 * 60);
+      const weekly = windows.find(
+        (window) => window.windowDurationMins >= 7 * 24 * 60
+          && window.windowDurationMins < 28 * 24 * 60,
+      );
       const selected = weekly || monthly || windows[0];
       if (selected) {
         account.subscription.usage = {

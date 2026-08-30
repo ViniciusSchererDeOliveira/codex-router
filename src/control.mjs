@@ -2911,7 +2911,7 @@ async function handleChatGptAccountSwitch(action, value) {
     chatGPTSubscriptionAccountPoolSnapshot,
     createChatGPTSubscriptionAccount,
     readChatGPTAccountPoolState,
-    refreshChatGPTSubscriptionAccount,
+    refreshBoundedChatGPTSubscriptionAccounts,
     withChatGPTAccountPoolLock,
   } = await import("./chatgpt-account-pool.mjs");
   const {
@@ -2930,11 +2930,7 @@ async function handleChatGptAccountSwitch(action, value) {
     await reconcileChatGPTProfileSwitchIfReady();
     await ensureChatGPTProfileAccounts();
     const beforeRefresh = chatGPTSubscriptionAccountPoolSnapshot();
-    await Promise.all(
-      Object.values(beforeRefresh.accounts || {})
-        .filter((account) => account.subscription?.usable === true)
-        .map((account) => refreshChatGPTSubscriptionAccount(account.id)),
-    );
+    await refreshBoundedChatGPTSubscriptionAccounts(beforeRefresh);
     const safe = chatGPTSubscriptionAccountPoolSnapshot();
     const { attachBoundedChatGPTAccountUsage } = await import("./codex-account-usage.mjs");
     await attachBoundedChatGPTAccountUsage(safe, {

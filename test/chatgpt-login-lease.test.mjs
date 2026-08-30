@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,6 +9,8 @@ import test from "node:test";
 import {
   CHATGPT_LOGIN_LEASE_MAX_AGE_MS,
   chatGPTLoginLeasePath,
+  chatGPTLoginLeaseStatus,
+  clearChatGPTLoginLease,
   createChatGPTLoginLease,
 } from "../src/chatgpt-login-lease.mjs";
 import {
@@ -141,4 +143,77 @@ test("exclusive durable ownership refuses a concurrent login and survives GUI re
     now: Date.now() + CHATGPT_LOGIN_LEASE_MAX_AGE_MS + 1_000,
   });
   assert.equal(removed.removed.id, account.id);
+});
+
+test("an old cross-process cleanup cannot unlink a newly recreated live lease", async () => {
+  const { root, options } = fixture();
+  const account = createChatGPTSubscriptionAccount(options);
+  const oldLease = createChatGPTLoginLease(account.id, 4242, {
+    homesDir: options.homesDir,
+    identity: () => "old-owner",
+    now: 1_000,
+  });
+  const moduleUrl = pathToFileURL(path.resolve("src/chatgpt-login-lease.mjs")).href;
+  const readyPath = path.join(root, "old-clear-ready");
+  const goPath = path.join(root, "old-clear-go");
+  const clearerSource = `
+    import { existsSync, writeFileSync } from "node:fs";
+    import { clearChatGPTLoginLease } from ${JSON.stringify(moduleUrl)};
+    const sleeper = new Int32Array(new SharedArrayBuffer(4));
+    const result = clearChatGPTLoginLease(${JSON.stringify(account.id)}, ${JSON.stringify(oldLease)}, {
+      homesDir: ${JSON.stringify(options.homesDir)},
+      beforeRelocate: () => {
+        writeFileSync(${JSON.stringify(readyPath)}, "ready");
+        process.stdout.write("ready\\n");
+        while (!existsSync(${JSON.stringify(goPath)})) Atomics.wait(sleeper, 0, 0, 10);
+      }
+    });
+    process.stdout.write(JSON.stringify({ result }));
+  `;
+  const clearer = spawn(process.execPath, ["--input-type=module", "-e", clearerSource], {
+    cwd: path.resolve("."),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  clearer.stdout.setEncoding("utf8");
+  let output = "";
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("old cleanup did not pause")), 10_000);
+    clearer.once("error", reject);
+    clearer.once("close", (code) => reject(new Error(`old cleanup exited early (${code})`)));
+    clearer.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes("ready\n")) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+
+  assert.equal(clearChatGPTLoginLease(account.id, oldLease, { homesDir: options.homesDir }), true);
+  const newLease = createChatGPTLoginLease(account.id, 5252, {
+    homesDir: options.homesDir,
+    identity: () => "new-owner",
+    now: 2_000,
+  });
+  writeFileSync(goPath, "go");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("old cleanup did not finish")), 10_000);
+    clearer.once("error", reject);
+    clearer.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`old cleanup failed (${code})`));
+    });
+  });
+  assert.match(output, /"result":false/);
+  assert.equal(clearChatGPTLoginLease(account.id, oldLease, { homesDir: options.homesDir }), false);
+  assert.deepEqual(
+    chatGPTLoginLeaseStatus(account.id, {
+      homesDir: options.homesDir,
+      identity: (pid) => pid === 5252 ? "new-owner" : undefined,
+      now: 3_000,
+    }),
+    { active: true, stale: false, pid: 5252 },
+  );
+  assert.equal(clearChatGPTLoginLease(account.id, newLease, { homesDir: options.homesDir }), true);
 });

@@ -1230,7 +1230,10 @@ export function registerIpcHandlers({
   });
   handleAction("loginChatGptSubscriptionAccount", async ({ accountId } = {}) => {
     const id = stringValue(accountId, "Account id", CHATGPT_ACCOUNT_ID);
-    const pool = await runJson(["chatgpt-account-pool", "status"], { timeoutMs: 20_000 });
+    const pool = await runJson(
+      ["chatgpt-account-pool", "status"],
+      { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS },
+    );
     const account = pool?.accounts?.[id];
     if (!account) throw new Error("The subscription account is not registered.");
     if (account.state !== "active") throw new Error("The subscription account is not active.");

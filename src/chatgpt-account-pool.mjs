@@ -22,6 +22,8 @@ const MAX_ERROR_LENGTH = 512;
 const EXPIRY_SKEW_MS = 120_000;
 const ACCOUNT_REFRESH_MARGIN_MS = 24 * 60 * 60 * 1000;
 export const ACCOUNT_REFRESH_RETRY_MS = 5 * 60 * 1000;
+export const ACCOUNT_REFRESH_POLL_LIMIT = 8;
+export const ACCOUNT_REFRESH_POLL_CONCURRENCY = 2;
 
 function assertAccountDiscoveryEnabled() {
   if (discoveryDisabled()) {
@@ -420,6 +422,27 @@ export async function refreshChatGPTSubscriptionAccount(accountValue, { filePath
   if (!await claimChatGPTSubscriptionRefresh(id, { filePath, force, now })) return false;
   const target = spawnableCommand(resolvedBinary, ["login", "status"]);
   return new Promise((resolve) => execFileImpl(target.command, target.args, { ...target.options, env: { ...process.env, CODEX_HOME: chatGPTSubscriptionAccountHome(id, { homesDir }) }, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }, (error) => resolve(!error)));
+}
+export async function refreshBoundedChatGPTSubscriptionAccounts(pool, {
+  refresh = refreshChatGPTSubscriptionAccount,
+  probeLimit = ACCOUNT_REFRESH_POLL_LIMIT,
+  concurrency = ACCOUNT_REFRESH_POLL_CONCURRENCY,
+} = {}) {
+  if (!pool?.accounts || typeof refresh !== "function") return pool;
+  const selectedId = pool.policy?.selectedAccountId;
+  const candidates = Object.values(pool.accounts)
+    .filter((account) => account?.subscription?.usable === true)
+    .sort((left, right) => Number(right.id === selectedId) - Number(left.id === selectedId))
+    .slice(0, Math.max(0, Math.floor(probeLimit)));
+  let cursor = 0;
+  const workerCount = Math.min(candidates.length, Math.max(1, Math.floor(concurrency)));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < candidates.length) {
+      const account = candidates[cursor++];
+      await refresh(account.id);
+    }
+  }));
+  return pool;
 }
 export function chatGPTSubscriptionAccountPoolSnapshot({ filePath = CHATGPT_ACCOUNT_POOL_PATH, homesDir = CHATGPT_ACCOUNT_HOMES_DIR, now = Date.now() } = {}) {
   assertAccountDiscoveryEnabled();
