@@ -264,7 +264,7 @@ logged_arguments=
 for argument in "$@"; do
   logged_arguments="\${logged_arguments}<\${argument}>"
 done
-printf '%s\\t%s\\t%s\\n' "$CODEX_ROUTER_NODE_BIN" "$PATH" "$logged_arguments" >>"$CODEX_ROUTER_WRAPPER_LOG"
+printf 'codex-router-wrapper-call\\0%s\\0%s\\0%s\\0' "$CODEX_ROUTER_NODE_BIN" "$PATH" "$logged_arguments" >>"$CODEX_ROUTER_WRAPPER_LOG"
 if [ "\${1:-}" = src/install-plan.mjs ] && [ "\${2:-}" = status ]; then
   printf 'skip\\n'
 fi
@@ -288,13 +288,28 @@ fi
         writeFileSync(callLog, "", "utf8");
         const result = spawnSync(script, args, { cwd: root, encoding: "utf8", env });
         assert.equal(result.status, 0, result.stderr || result.stdout);
-        const calls = readFileSync(callLog, "utf8").trim().split("\n");
-        assert.ok(calls.some((line) => line.includes(expectedCall)), calls.join("\n"));
-        const routedCalls = calls.filter((line) => line.includes("\t<src/"));
+        const fields = readFileSync(callLog, "utf8").split("\0");
+        assert.equal(fields.pop(), "", `unterminated wrapper log: ${JSON.stringify(fields)}`);
+        assert.equal(fields.length % 4, 0, `malformed wrapper log: ${JSON.stringify(fields)}`);
+        const callRecords = [];
+        for (let index = 0; index < fields.length; index += 4) {
+          const [marker, nodeBin, pathValue, loggedArguments] = fields.slice(index, index + 4);
+          assert.equal(marker, "codex-router-wrapper-call", `malformed wrapper log at ${index}`);
+          callRecords.push({ nodeBin, pathValue, loggedArguments });
+        }
+        const renderedCalls = JSON.stringify(callRecords, null, 2);
         assert.ok(
-          routedCalls.every((line) => line.startsWith(`${wrapper}\t${servicePath}\t`)),
-          calls.join("\n"),
+          callRecords.some(({ loggedArguments }) => loggedArguments.includes(expectedCall)),
+          renderedCalls,
         );
+        const routedCalls = callRecords.filter(({ loggedArguments }) =>
+          loggedArguments.includes("<src/"),
+        );
+        assert.ok(routedCalls.length > 0, renderedCalls);
+        for (const call of routedCalls) {
+          assert.equal(call.nodeBin, wrapper, renderedCalls);
+          assert.equal(call.pathValue, servicePath, renderedCalls);
+        }
       }
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
