@@ -1,15 +1,45 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { pickerCommandArgs } from "../src/control-args.mjs";
+import { writePrivateJson } from "../src/file-security.mjs";
 import { userModelEntry } from "../src/user-models.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function writeSignedOutCodexStub(directory) {
+  const windows = process.platform === "win32";
+  const target = path.join(directory, windows ? "codex-signed-out.cmd" : "codex-signed-out");
+  const catalog = JSON.stringify({
+    models: [{
+      slug: "gpt-5.6-sol",
+      display_name: "GPT-5.6-Sol",
+      visibility: "list",
+      priority: 10,
+    }],
+  });
+  writeFileSync(
+    target,
+    windows
+      ? `@echo off\r\n@if "%~1"=="debug" (\r\n  @echo ${catalog}\r\n  @exit /b 0\r\n)\r\n@echo Not logged in 1>&2\r\n@exit /b 1\r\n`
+      : `#!/bin/sh\nif [ "$1" = "debug" ]; then\n  printf '%s\\n' '${catalog}'\n  exit 0\nfi\necho 'Not logged in' >&2\nexit 1\n`,
+    { mode: 0o755 },
+  );
+  if (!windows) chmodSync(target, 0o755);
+  return target;
+}
 
 function probe(target, providers, usageEvents = [], options = {}) {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-probe-"));
@@ -65,19 +95,25 @@ function probe(target, providers, usageEvents = [], options = {}) {
     );
   }
   if (options.loginFree) {
+    const loginFreeProvider = options.loginFreeProvider || "custom";
+    const ownershipId = "00000000000000000000000000000000";
     writeFileSync(
       path.join(stateDir, "config.toml"),
-      `model = ${JSON.stringify(options.selectedModel || "deepseek/deepseek-v4-pro")}\nmodel_provider = "codex-router"\n`,
+      `model = ${JSON.stringify(options.selectedModel || "deepseek/deepseek-v4-pro")}\nmodel_provider = ${JSON.stringify(loginFreeProvider)}\n\n# codex-router-signed-provider-tree-slot ${ownershipId} 0\n# BEGIN codex-router-signed-provider-managed\n[model_providers.${loginFreeProvider}]\nname = "Codex Router (external models)"\nbase_url = "http://127.0.0.1:4202/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_standalone_web_search = true\nsupports_websockets = false\n# END codex-router-signed-provider-managed\n`,
       { mode: 0o600 },
     );
-    writeFileSync(
+    writePrivateJson(
       path.join(stateDir, "codex-provider-mode.json"),
-      `${JSON.stringify({
-        version: 1,
-        previousPresent: false,
+      {
+        version: 3,
+        mode: "provider-table",
+        managedProvider: loginFreeProvider,
+        managedBaseUrl: "http://127.0.0.1:4202/v1",
+        ownershipId,
+        previousProviderSections: [],
         previousModelPresent: false,
-      })}\n`,
-      { mode: 0o600 },
+        loginFree: true,
+      },
     );
   }
   try {
@@ -103,26 +139,6 @@ test("codex probe reports enabled models", () => {
   assert.equal(slice.target, "codex");
   const deepseek = slice.models.filter((m) => m.provider === "deepseek");
   assert.ok(deepseek.length > 0 && deepseek.every((m) => m.enabled));
-});
-
-test("desktop snapshots expose the canonical Ox Alpha route instead of its opaque OpenCode id", () => {
-  const stored = {
-    ...userModelEntry({
-      providerId: "opencode-free",
-      upstreamId: "x-preview-f-free",
-      priority: 100,
-      metadata: { isFree: true },
-    }),
-    // Simulate curation written by an older router. Registry normalization
-    // updates presentation without changing the routing identity.
-    displayName: "x-preview-f-free (curated)",
-  };
-  const slice = probe("codex", ["opencode-free"], [], { userModels: [stored] });
-  const model = slice.models.find((entry) => entry.slug === "opencode-free/ox-alpha");
-  assert.equal(model.displayName, "Ox Alpha (OpenCode Free)");
-  assert.equal(model.slug, "opencode-free/ox-alpha");
-  assert.equal(model.provider, "opencode-free");
-  assert.equal(model.enabled, true);
 });
 
 test("codex probe folds protocol variants into one provider family", () => {
@@ -595,6 +611,7 @@ test("set-apply keeps provider mutation, publication, and rollback in one transa
 
 test("login-free control selects a ready external model and restores Codex defaults", () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-login-free-"));
+  const signedOutCodex = writeSignedOutCodexStub(stateDir);
   writeFileSync(path.join(stateDir, "config.toml"), `model = "gpt-5.6-sol"\n`, {
     mode: 0o600,
   });
@@ -636,7 +653,7 @@ test("login-free control selects a ready external model and restores Codex defau
           env: {
             ...process.env,
             CODEX_HOME: stateDir,
-            CODEX_BIN: process.execPath,
+            CODEX_BIN: signedOutCodex,
             MODEL_ROUTER_TARGET: "codex",
             MODEL_ROUTER_STATE_DIR: stateDir,
           },
@@ -649,6 +666,15 @@ test("login-free control selects a ready external model and restores Codex defau
     assert.equal(enabled.login_free, true);
     assert.equal(enabled.model, "gpt-5.6-sol");
     assert.equal(enabled.model_provider, "codex-router");
+    const providerModePath = path.join(stateDir, "codex-provider-mode.json");
+    const providerMode = JSON.parse(readFileSync(providerModePath, "utf8"));
+    assert.equal(providerMode.version, 1);
+    assert.equal(providerMode.previousPresent, false);
+    assert.equal(providerMode.previousModelPresent, true);
+    assert.equal(providerMode.previousModel, "gpt-5.6-sol");
+    const loginFreeConfig = readFileSync(path.join(stateDir, "config.toml"), "utf8");
+    assert.match(loginFreeConfig, /^model_provider = "codex-router"$/m);
+    assert.match(loginFreeConfig, /\[model_providers\.codex-router\]/);
     const catalog = JSON.parse(readFileSync(path.join(stateDir, "merged-models.json"), "utf8"));
     const aliasEntry = catalog.models.find((model) => model.slug === "gpt-5.6-sol");
     assert.match(aliasEntry.display_name, /DeepSeek/);
@@ -668,6 +694,53 @@ test("login-free control selects a ready external model and restores Codex defau
       version: 1,
       aliases: { "gpt-5.6-sol": "deepseek/deepseek-v4-flash" },
     });
+
+    // A later catalog rebuild has no mode-toggle override. It must recover
+    // login-free mode remains discoverable from the ownership-validated
+    // fallback state even though the Codex stub reports no ChatGPT session.
+    execFileSync(process.execPath, [path.join(root, "src", "catalog.mjs")], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_HOME: stateDir,
+        CODEX_BIN: signedOutCodex,
+        MODEL_ROUTER_TARGET: "codex",
+        MODEL_ROUTER_STATE_DIR: stateDir,
+      },
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(path.join(stateDir, "native-aliases.json"), "utf8")),
+      aliases,
+    );
+
+    execFileSync(process.execPath, [path.join(root, "src", "refresh-catalog.mjs")], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_HOME: stateDir,
+        CODEX_BIN: signedOutCodex,
+        MODEL_ROUTER_TARGET: "codex",
+        MODEL_ROUTER_STATE_DIR: stateDir,
+      },
+    });
+    const afterRefresh = JSON.parse(
+      execFileSync(process.execPath, [path.join(root, "src", "config-manager.mjs"), "status"], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_HOME: stateDir,
+          CODEX_BIN: signedOutCodex,
+          MODEL_ROUTER_TARGET: "codex",
+          MODEL_ROUTER_STATE_DIR: stateDir,
+        },
+      }),
+    );
+    assert.equal(afterRefresh.login_free, true);
+    assert.equal(afterRefresh.model_provider, "codex-router");
+    assert.equal(afterRefresh.model, "gpt-5.6-sol");
 
     const disabled = runMode("off");
     assert.equal(disabled.login_free, false);
@@ -801,6 +874,7 @@ test("model-set switches the login-free model and rejects unavailable models", (
     runControl("auth-mode", "on");
     const switched = runControl("model-set", "deepseek/deepseek-v4-flash");
     assert.equal(switched.model, "gpt-5.6-sol");
+    // The built-in OpenAI identity takes the cross-version-safe provider switch.
     assert.equal(switched.model_provider, "codex-router");
     assert.equal(switched.login_free, true);
 
@@ -977,28 +1051,26 @@ test("aggregate overview exposes the router-owned catalog separately from client
       "operator-curated models must not be described as checked-in research routes",
     );
     const oxAlphaRoutes = parsed.catalog.knownModels
-      .filter((model) => model.displayName.startsWith("Ox Alpha"))
+      .filter((model) => model.displayName.startsWith("Ox Alpha") || model.slug.endsWith("/ox-alpha"))
       .map((model) => [model.slug, model.available])
       .sort(([left], [right]) => left.localeCompare(right));
-    assert.deepEqual(oxAlphaRoutes, [
-      ["commandcode/ox-alpha", false],
-      ["nousresearch/ox-alpha", false],
-      ["opencode-free/ox-alpha", true],
-      ["openrouter/ox-alpha", false],
-      ["venice/ox-alpha", false],
-    ]);
+    assert.deepEqual(oxAlphaRoutes, []);
     assert.deepEqual(
       parsed.catalog.models
         .filter((model) => model.slug.endsWith("/ox-alpha"))
         .map((model) => model.slug),
-      ["opencode-free/ox-alpha"],
-      "unavailable research routes must not enter the routable catalog",
+      [],
+      "withdrawn research routes must not enter the routable catalog",
     );
-    const activeOxAlpha = parsed.catalog.models.find(
-      (model) => model.slug === "opencode-free/ox-alpha",
-    );
-    assert.equal(activeOxAlpha.contextWindow, 1_048_576);
-    assert.deepEqual(activeOxAlpha.inputModalities, ["text", "image"]);
+    for (const slug of [
+      "commandcode/ox-alpha",
+      "opencode-free/ox-alpha",
+      "openrouter/ox-alpha",
+      "nousresearch/ox-alpha",
+      "venice/ox-alpha",
+    ]) {
+      assert.equal(parsed.catalog.knownModels.some((model) => model.slug === slug), false, slug);
+    }
     const flash = parsed.catalog.knownModels.find(
       (model) => model.slug === "opencode-go/glm-5.3-flash",
     );

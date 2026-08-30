@@ -10,6 +10,17 @@ export type ViewId =
 
 export type ModelViewFocus = "providers" | "models";
 
+/** Startup reads settle independently so a slow ledger or provider probe does
+ * not hold every page behind one application-wide loading state. */
+export interface RouterDataReady {
+  snapshot: boolean;
+  providers: boolean;
+  presence: boolean;
+  health: boolean;
+  accountUsage: boolean;
+  providerUsage: boolean;
+}
+
 export interface ModelViewFocusRequest {
   region: ModelViewFocus;
   id: number;
@@ -245,7 +256,6 @@ export interface RouterSnapshot {
   catalog?: RouterCatalogSnapshot;
   /** Safe consent/login projection. Never contains token, account, or path data. */
   chatgptSession?: ChatGptSessionStatus;
-  accountPool?: ChatGptAccountPool;
 }
 
 export interface RouterDashboardProvider {
@@ -314,8 +324,8 @@ export interface ChatGptAccountPool {
 }
 
 export interface ChatGptProfileSwitch {
-  desired: string;
-  active: string;
+  desired?: string;
+  active?: string;
   pending: boolean;
   running?: boolean;
 }
@@ -729,6 +739,10 @@ export interface RouterControlApi {
   installHarness(harnessId: "deepcode"): Promise<unknown>;
   openHarnessSession(harnessId: HarnessId, sessionId: string, surface: HarnessSurface, model?: string): Promise<unknown>;
   openExternal(url: string): Promise<void>;
+  onNavigation?(listener: (request: {
+    destination: "usage" | "usage-resets";
+    sourceId?: string;
+  }) => void): () => void;
   onOperation?(listener: (event: OperationEvent) => void): () => void;
 }
 

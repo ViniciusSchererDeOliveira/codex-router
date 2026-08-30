@@ -13,8 +13,8 @@ $Command = if ($args.Count) { [string]$args[0] } else { "status" }
 # failed with "Unknown tray action 's'".
 $Arguments = @(if ($args.Count -gt 1) { $args[1..($args.Count - 1)] })
 $Commands = @(
-  "setup", "install", "doctor", "status", "providers", "provider-key", "enable",
-  "disable", "chatgpt-session", "uninstall", "update", "rollback", "support-bundle",
+  "setup", "install", "doctor", "status", "providers", "provider-key", "caller-key", "key-pool", "search-sidecar", "enable",
+  "disable", "chatgpt-session", "skills", "uninstall", "update", "rollback", "support-bundle",
   "smoke-test", "start", "stop", "test-model", "discover-models", "local-mlx",
   "signed-routing", "refresh-catalog", "media", "tray", "panel", "companion"
 )
@@ -858,7 +858,11 @@ switch ($Command) {
   }
   "providers" { Invoke-RouterNode "src\providers.mjs" $Arguments }
   "provider-key" { Invoke-RouterNode "src\provider-key.mjs" $Arguments }
+  "caller-key" { Invoke-RouterNode "src\caller-key.mjs" $Arguments }
+  "key-pool" { Invoke-RouterNode "src\control.mjs" (@("key-pool") + $Arguments) }
+  "search-sidecar" { Invoke-RouterNode "src\search-sidecar-control.mjs" $Arguments }
   "chatgpt-session" { Invoke-RouterNode "src\chatgpt-session.mjs" $Arguments }
+  "skills" { Invoke-RouterNode "src\skills-install.mjs" $Arguments }
   # `bin/install` accepts --prepare-only/--migrate-known/--force-deps, so the
   # Windows wrapper has to pass the equivalent switches through instead of
   # dropping them; `./model-router.ps1 codex install -ForceDeps` was silently
@@ -893,7 +897,15 @@ switch ($Command) {
   "smoke-test" {
     Invoke-RouterNode "src\smoke-test.mjs" $Arguments
   }
-  "start" { Invoke-RouterNode "src\start.mjs" $Arguments }
+  "start" {
+    if ($Arguments.Count -eq 0) {
+      Invoke-RouterNode "src\service.mjs" @("start")
+    } elseif ($Arguments.Count -eq 1 -and [string]$Arguments[0] -eq "--foreground") {
+      Invoke-RouterNode "src\foreground-start.mjs" @()
+    } else {
+      throw "Usage: codex-router.ps1 start [--foreground]."
+    }
+  }
   "stop" { Invoke-RouterNode "src\service.mjs" @("stop") }
   "test-model" { Invoke-RouterNode "src\compatibility-test.mjs" $Arguments }
   "discover-models" { Invoke-RouterNode "src\model-discovery.mjs" $Arguments }

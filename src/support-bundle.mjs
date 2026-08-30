@@ -18,7 +18,12 @@ import { readInstallManifest } from "./install-manifest.mjs";
 import { redactProxyCredentials } from "./proxy-environment.mjs";
 import { protectPrivateFile } from "./file-security.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
-import { PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
+import {
+  PROVIDERS,
+  RUNTIME_PROVIDERS,
+  providerNeedsNoKey,
+} from "./model-registry.mjs";
+import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
 import {
   CALLER_SECRET_PATH,
   CONFIG_PATH,
@@ -30,9 +35,15 @@ import {
 import {
   credentialPaths,
   credentialStatus,
+  genericProviderCredentialPath,
 } from "./provider-credentials.mjs";
 import { providerSelectionStatus } from "./provider-selection.mjs";
-import { redactCredentialText } from "./provider-credential-store.mjs";
+import {
+  readProviderCredentialStore,
+  redactCredentialText,
+} from "./provider-credential-store.mjs";
+import { providerApiKeyPoolsSupportSnapshot } from "./provider-api-key-pool.mjs";
+import { resolveStoredCredential } from "./provider-api-key-routing.mjs";
 
 function runJson(script, args = []) {
   const result = spawnSync(
@@ -105,6 +116,14 @@ function knownLocalSecrets() {
       if (value) values.add(value);
     }
   }
+  for (const entry of readProviderCredentialStore().credentials) {
+    if (entry.providerType !== "generic") continue;
+    try {
+      files.push(genericProviderCredentialPath(entry.providerId));
+    } catch {
+      // Invalid generic metadata is already ignored by the fail-closed store reader.
+    }
+  }
   for (const target of files) {
     const value = privateText(target)?.trim();
     if (value) values.add(value);
@@ -170,6 +189,17 @@ export function createSupportBundle(options = {}) {
       ? { configured: true, source: status.source, persistent: status.persistent }
       : { configured: false };
   }
+  for (const provider of RUNTIME_PROVIDERS.values()) {
+    if (provider.generic !== true) continue;
+    const configured = genericProviderConfigured(provider.id);
+    credentialSources[provider.id] = configured
+      ? {
+          configured: true,
+          source: provider.credentialRef ? "bound credential reference" : "not required",
+          persistent: Boolean(provider.credentialRef),
+        }
+      : { configured: false };
+  }
   let selection;
   try {
     selection = providerSelectionStatus();
@@ -205,6 +235,12 @@ export function createSupportBundle(options = {}) {
     service: runJson("service.mjs", ["status"]),
     selection,
     credentialSources,
+    apiKeyPools: providerApiKeyPoolsSupportSnapshot({
+      resolveCredential: (providerId, credentialId) => {
+        const provider = PROVIDERS.get(providerId);
+        return provider ? resolveStoredCredential(provider, credentialId) : undefined;
+      },
+    }),
     ownership: detectLegacyInstallations(),
     install: sharableInstallManifest(),
     files: {

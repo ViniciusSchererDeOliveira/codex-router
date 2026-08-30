@@ -337,25 +337,49 @@ function defaultState() {
 }
 
 export function readChatGPTProfileSwitchState(filePath = CHATGPT_PROFILE_SWITCH_PATH) {
-  if (!existsSync(filePath)) return defaultState();
+  let file;
   try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    const desired = parsed?.desired === AUTO || parsed?.desired === LEGACY_PRIMARY || isChatGPTAccountId(parsed?.desired)
-      ? parsed.desired
-      : undefined;
-    const active = isChatGPTAccountId(parsed?.active) || parsed?.active === LEGACY_PRIMARY
-      ? parsed.active
-      : undefined;
-    return {
-      version: VERSION,
-      desired,
-      active,
-      pending: parsed?.pending === true,
-      phase: ["preparing", "backed-up", "installed"].includes(parsed?.phase) ? parsed.phase : "idle",
-    };
-  } catch {
-    return defaultState();
+    file = lstatSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return defaultState();
+    throw new Error("The saved ChatGPT profile switch state could not be inspected.", { cause: error });
   }
+  if (file.isSymbolicLink() || !file.isFile()) {
+    throw new Error("The saved ChatGPT profile switch state is not a regular file.");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error("The saved ChatGPT profile switch state could not be read as JSON.", { cause: error });
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.version !== VERSION) {
+    throw new Error("The saved ChatGPT profile switch state has an unsupported schema.");
+  }
+  if (
+    parsed.desired !== undefined
+    && parsed.desired !== AUTO
+    && parsed.desired !== LEGACY_PRIMARY
+    && !isChatGPTAccountId(parsed.desired)
+  ) throw new Error("The saved ChatGPT profile switch target is invalid.");
+  if (
+    parsed.active !== undefined
+    && parsed.active !== LEGACY_PRIMARY
+    && !isChatGPTAccountId(parsed.active)
+  ) throw new Error("The saved active ChatGPT profile is invalid.");
+  if (typeof parsed.pending !== "boolean") {
+    throw new Error("The saved ChatGPT profile pending state is invalid.");
+  }
+  if (!["idle", "preparing", "backed-up", "installed"].includes(parsed.phase)) {
+    throw new Error("The saved ChatGPT profile switch phase is invalid.");
+  }
+  return {
+    version: VERSION,
+    desired: parsed.desired,
+    active: parsed.active,
+    pending: parsed.pending,
+    phase: parsed.phase,
+  };
 }
 
 function writeState(state, filePath) {
@@ -586,16 +610,7 @@ function restorePreviousProfile(active, { homesDir, primaryHome }) {
 function recoverInterruptedSwitchLocked(options) {
   const switchPath = options.switchPath || CHATGPT_PROFILE_SWITCH_PATH;
   const state = readChatGPTProfileSwitchState(switchPath);
-  let transaction;
-  try {
-    transaction = readSwitchTransaction(switchPath);
-  } catch (error) {
-    if (state.phase === "idle") {
-      removeSwitchTransaction(switchPath);
-      return state;
-    }
-    throw error;
-  }
+  const transaction = readSwitchTransaction(switchPath);
   if (!transaction) {
     if (state.phase !== "idle") {
       throw new Error(`The ChatGPT profile switch has no durable transaction for phase ${state.phase}.`);
@@ -603,6 +618,15 @@ function recoverInterruptedSwitchLocked(options) {
     return state;
   }
   if (state.phase === "idle") {
+    const completed = !state.pending
+      && state.active === transaction.target
+      && state.desired === transaction.target;
+    const rolledBack = state.pending
+      && state.active === transaction.active
+      && state.desired === transaction.target;
+    if (!completed && !rolledBack) {
+      throw new Error("The idle ChatGPT profile state does not match its durable transaction.");
+    }
     removeSwitchTransaction(switchPath);
     return state;
   }
@@ -828,7 +852,7 @@ export async function removeChatGPTProfileAccount(accountId, options = {}) {
     };
     const account = before.pool.accounts[accountId];
     if (!account) throw new Error("Account id is not registered.");
-    if (before.profile.desired === accountId && before.profile.active !== accountId) {
+    if (before.profile.pending && before.profile.desired === accountId) {
       throw new Error("Cannot remove a ChatGPT account with a pending native profile selection.");
     }
     try {

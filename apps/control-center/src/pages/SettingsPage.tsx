@@ -207,7 +207,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
           </section>
 
           <section className="panel-section">
-              <SectionHeading
+            <SectionHeading
               title="ChatGPT accounts"
               description="Save multiple ChatGPT logins and choose which one native Codex chats use. Provider routes keep their own credentials."
             />
@@ -529,7 +529,7 @@ export function SettingsPage({ target, health, presence, chatgptSession, account
         description="This revokes the pool entry and deletes its isolated Codex login profile."
         onClose={() => setRemoveAccountId(null)}
       >
-        <p className="dialog-copy">The account's local OAuth profile will be removed. Your main Codex login is not changed.</p>
+        <p className="dialog-copy">The account's local OAuth profile will be removed. If it is active, close Codex first; another saved account must be activated before removal.</p>
         <div className="dialog-actions">
           <Button variant="secondary" onClick={() => setRemoveAccountId(null)}>Cancel</Button>
           <Button variant="danger" disabled={!api || !removeAccountId} onClick={() => {

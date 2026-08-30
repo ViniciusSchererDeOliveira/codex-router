@@ -21,6 +21,7 @@ import {
   shouldQuitOnLastWindowClosed,
   writeLifecycleState,
 } from "./lifecycle-state.mjs";
+import { controlCenterDestination, controlCenterNavigationURL } from "./navigation.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DEVELOPMENT_ICON = path.resolve(HERE, "..", "assets", "icon.png");
@@ -35,6 +36,7 @@ let applicationReady = false;
 let windowVisible = false;
 let windowContentReady = false;
 let showWhenContentReady = false;
+let pendingNavigationDestination = controlCenterDestination(process.argv);
 const lifecycleFile = lifecycleStatePath();
 
 // macOS keeps its existing Swift NSStatusItem. The Control Center is embedded
@@ -57,12 +59,6 @@ function embeddedInNativeHost() {
 
 const nativeTrayOwnedByHost = process.platform === "darwin"
   && (process.env.CODEX_ROUTER_EMBEDDED_CONTROL_CENTER === "1" || embeddedInNativeHost());
-// The native host starts this child in two different ways: supervised in the
-// background, or visibly after the user opens Codex Router.  Only the latter
-// should have a Dock icon.  Keeping the distinction in the launch contract
-// avoids changing the tray host's LSUIElement/accessory behavior.
-const userVisibleEmbeddedControlCenter = nativeTrayOwnedByHost
-  && process.env.CODEX_ROUTER_USER_VISIBLE_CONTROL_CENTER === "1";
 const trayOnlyInvocation = process.argv.includes("--tray-only");
 const quitForUpdateInvocation = process.argv.includes("--quit-for-update");
 const lifecycleQueryInvocation = process.argv.includes(LIFECYCLE_QUERY_ARGUMENT);
@@ -223,6 +219,20 @@ function revealWindow() {
   publishLifecycleState();
 }
 
+function flushNavigationDestination() {
+  if (!pendingNavigationDestination || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("router-control:navigate", pendingNavigationDestination);
+  pendingNavigationDestination = undefined;
+}
+
+function requestNavigation(navigation) {
+  if (!navigation) return false;
+  pendingNavigationDestination = navigation;
+  openRequests.requestOpen();
+  if (windowContentReady) flushNavigationDestination();
+  return true;
+}
+
 function showWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   showWhenContentReady = true;
@@ -296,6 +306,11 @@ const primaryInstance = !lifecycleQueryInvocation && app.requestSingleInstanceLo
 if (!lifecycleQueryInvocation && !primaryInstance) app.exit(0);
 if (primaryInstance && quitForUpdateInvocation) app.quit();
 
+if (primaryInstance) app.on("open-url", (event, url) => {
+  event.preventDefault();
+  requestNavigation(controlCenterNavigationURL(url));
+});
+
 if (primaryInstance && !quitForUpdateInvocation) {
   // Replace a stale record as soon as this process owns the single-instance
   // lock. The ready bit is raised only after the full Electron boundary is set.
@@ -342,6 +357,10 @@ if (primaryInstance && !quitForUpdateInvocation) {
       shell,
       senderGuard: trustedRendererSender,
     });
+    ipcMain.on("router-control:navigation-ready", (event) => {
+      if (!trustedRendererSender(event)) return;
+      flushNavigationDestination();
+    });
     // Even tray-only startup loads one hidden renderer before it publishes
     // ready. Otherwise a package with a missing/broken dist directory would
     // pass lifecycle validation merely because its tray icon was constructible.
@@ -354,7 +373,11 @@ if (primaryInstance && !quitForUpdateInvocation) {
 if (primaryInstance) app.on("second-instance", (_event, commandLine) => {
   if (commandLine.includes("--quit-for-update")) {
     app.quit();
-  } else openRequests.requestOpen();
+  } else {
+    const navigation = controlCenterDestination(commandLine);
+    if (navigation) requestNavigation(navigation);
+    else openRequests.requestOpen();
+  }
 });
 
 if (primaryInstance) app.on("before-quit", (event) => {

@@ -23,6 +23,7 @@ import {
 } from "./service-process.mjs";
 import { protectPrivateFile } from "./file-security.mjs";
 import { antigravityClientSecretEnvironment } from "./antigravity-oauth-constants.mjs";
+import { providerApiKeyServiceEnvironment } from "./provider-api-key-service-environment.mjs";
 import { serviceProxyEnvironment } from "./proxy-environment.mjs";
 import {
   skipServiceManagerCall,
@@ -85,6 +86,7 @@ function wrapper() {
     CODEX_ROUTER_API_PORT: String(PORTS.api),
     ...serviceProxyEnvironment(),
     ...antigravityClientSecretEnvironment(),
+    ...providerApiKeyServiceEnvironment(),
     // The LiteLLM gateway is a Python process. Force UTF-8 output so its
     // startup banner and logs do not crash on Windows systems whose default
     // ANSI/OEM code page is not UTF-8 (e.g. Russian cp1251), where Python

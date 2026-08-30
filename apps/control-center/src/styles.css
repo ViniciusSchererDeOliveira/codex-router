@@ -280,15 +280,7 @@ button {
   display: flex;
   min-height: 40px;
   align-items: center;
-  gap: 8px;
   padding: 4px 10px;
-}
-
-.router-logo {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  border-radius: 5px;
 }
 
 .router-wordmark strong {
@@ -296,18 +288,12 @@ button {
   flex: 1;
   overflow: hidden;
   color: var(--ink-strong);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 14.5px;
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.router-wordmark strong i {
-  color: var(--ink-faint);
-  font-style: normal;
 }
 
 .sidebar-search-toggle {

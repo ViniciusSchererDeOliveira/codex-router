@@ -57,7 +57,7 @@ test("snapshot exposes email and usable status from an isolated auth file", () =
   assert.equal(chatGPTSubscriptionAccountStatus(account.id, options).hasAccountId, true);
 });
 
-test("sanitization keeps account identity but never exposes credentials", () => {
+test("sanitization keeps opaque router ids but never exposes account identity or credentials", () => {
   const state = {
     version: 1,
     policy: { enabled: true, mode: "pool", strategy: "round-robin", selectedAccountId: "acct_example_123456" },
@@ -74,7 +74,8 @@ test("sanitization keeps account identity but never exposes credentials", () => 
   };
   const sanitized = sanitizeChatGPTAccountPool(state);
   assert.equal(sanitized.policy.mode, "switch");
-  assert.equal(sanitized.accounts.acct_example_123456.identity.email, "work@example.com");
+  assert.equal(sanitized.accounts.acct_example_123456.id, "acct_example_123456");
+  assert.equal("identity" in sanitized.accounts.acct_example_123456, false);
   assert.equal("tokens" in sanitized.accounts.acct_example_123456, false);
   assert.equal("strategy" in sanitized.policy, false);
 });
@@ -98,4 +99,20 @@ test("account state writes are serialized across concurrent operations", async (
   ]);
   const selected = readChatGPTAccountPoolState(options.filePath).policy.selectedAccountId;
   assert.ok(selected === first.id || selected === second.id);
+});
+
+test("an existing malformed account list fails closed and is never replaced as first-run state", () => {
+  const options = fixture();
+  const damaged = '{"version":1,"policy":';
+  writeFileSync(options.filePath, damaged, { mode: 0o600 });
+  assert.throws(() => readChatGPTAccountPoolState(options.filePath), /could not be read as JSON/i);
+  assert.throws(() => createChatGPTSubscriptionAccount(options), /could not be read as JSON/i);
+  assert.equal(readFileSync(options.filePath, "utf8"), damaged);
+});
+
+test("an unreadable account-list path fails closed instead of becoming an empty pool", () => {
+  const options = fixture();
+  mkdirSync(options.filePath);
+  assert.throws(() => readChatGPTAccountPoolState(options.filePath), /not a regular file/i);
+  assert.throws(() => createChatGPTSubscriptionAccount(options), /not a regular file/i);
 });

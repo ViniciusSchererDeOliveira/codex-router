@@ -20,6 +20,25 @@ const CALLER_KEY = "test-router-caller-capability-with-sufficient-length";
 // credentials for.
 const PRIMARY = { slug: "deepseek/deepseek-v4-pro", gatewayModel: "deepseek-v4-pro" };
 const FALLBACK = { slug: "zai-api/glm-5.2", gatewayModel: "zai-api-glm-5-2" };
+const V2_PRIMARY = { slug: "grok-api/grok-4.5", gatewayModel: "grok-api-grok-4-5" };
+const V2_FALLBACK = { slug: "kimi-api/kimi-k3", gatewayModel: "kimi-api-k3" };
+const V2_THIRD = { slug: "zai-coding/glm-5.3", gatewayModel: "zai-coding-glm-5-3" };
+const GROQ_CANDIDATE = {
+  slug: "groq/tool-limit-failover-fixture",
+  gatewayModel: "groq-tool-limit-failover-fixture",
+  upstreamModel: "openai/gpt-oss-120b",
+  provider: "groq",
+  listed: true,
+  displayName: "Groq tool-limit failover fixture",
+  description: "Local routing test fixture.",
+  priority: 500,
+  defaultEffort: "high",
+  reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+  contextWindow: 131_072,
+  autoCompact: 111_411,
+  inputModalities: ["text"],
+  compHash: "groq-tool-limit-failover-fixture-v1",
+};
 
 const TURN_BODY = { model: PRIMARY.slug, input: "hello", stream: true };
 
@@ -69,6 +88,14 @@ const BAD_KEY_BODY = JSON.stringify({
   error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "401" },
 });
 
+const TRANSPORT_BODY = JSON.stringify({
+  error: {
+    type: "provider_transport_error",
+    code: "ECONNRESET",
+    message: "The provider connection failed before a response was available.",
+  },
+});
+
 async function mockServer(handler) {
   const server = http.createServer(handler);
   await new Promise((resolve, reject) => {
@@ -109,7 +136,14 @@ function bodyJson(request) {
 
 function run(
   env,
-  { chain = [FALLBACK.slug], enabled = true, cooldowns, toolResultAging = false } = {},
+  {
+    chain = [FALLBACK.slug],
+    enabled = true,
+    cooldowns,
+    toolResultAging = false,
+    userModels,
+    v2Credentials = false,
+  } = {},
 ) {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "model-failover-router-state-"));
   if (chain !== null) {
@@ -133,6 +167,13 @@ function run(
       "utf8",
     );
   }
+  if (Array.isArray(userModels)) {
+    writeFileSync(
+      path.join(stateDir, "user-models.json"),
+      JSON.stringify({ version: 1, models: userModels }),
+      "utf8",
+    );
+  }
   // A candidate has to be one the operator could actually reach, and
   // `configuredProviderIds()` only counts a *persistent* credential -- an
   // environment variable deliberately does not qualify. Write the file the
@@ -142,12 +183,38 @@ function run(
     encoding: "utf8",
     mode: 0o600,
   });
-  // The responses-native provider used by the protocol-crossing cases. It is a
-  // variant of opencode-go, so it authenticates with that family's credential.
+  // The genuinely Responses-native provider used by the protocol-crossing
+  // cases. OpenCode Go Responses has a function-only compatibility boundary,
+  // so it is no longer a valid exemplar for preserving native namespaces.
+  writeFileSync(path.join(stateDir, "meta-api-key.secret"), "test-meta-key\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  // The pressure test deliberately uses Console Go's smaller context window;
+  // its request has no tools, so the provider's function-only compatibility
+  // boundary is not part of that assertion.
   writeFileSync(path.join(stateDir, "opencode-go-api-key.secret"), "test-opencode-go-key\n", {
     encoding: "utf8",
     mode: 0o600,
   });
+  if (userModels?.some((model) => model?.provider === "groq")) {
+    writeFileSync(path.join(stateDir, "groq-api-key.secret"), "test-groq-key\n", {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  }
+  if (v2Credentials) {
+    for (const [file, key] of [
+      ["xai-api-key.secret", "test-xai-key"],
+      ["kimi-api-key.secret", "test-kimi-key"],
+      ["zai-coding-api-key.secret", "test-zai-coding-key"],
+    ]) {
+      writeFileSync(path.join(stateDir, file), `${key}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }
+  }
   const child = spawn(process.execPath, [path.join(root, "src", "router.mjs")], {
     cwd: root,
     env: {
@@ -230,16 +297,20 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
-function readRouted(port, body) {
+function readRouted(port, body, { endpoint = "/responses", headers = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const base = new URL(`${callerBaseUrl(port, CALLER_KEY)}/responses`);
+    const base = new URL(`${callerBaseUrl(port, CALLER_KEY)}${endpoint}`);
     const request = http.request(
       {
         host: "127.0.0.1",
         port,
         path: base.pathname,
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer codex-caller-auth" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer codex-caller-auth",
+          ...headers,
+        },
       },
       (response) => {
         let text = "";
@@ -324,6 +395,214 @@ test("a turn whose provider is out of usage is served by the next model", async 
     assert.match(child.testErrors(), /failover model=deepseek\/deepseek-v4-pro/);
     assert.match(child.testErrors(), /reason=out_of_usage/);
     assert.match(child.testErrors(), /-> zai-api\/glm-5\.2 outcome=200/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a marked provider transport failure moves a subagent to a checked-in v2 route", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    const body = await bodyJson(request);
+    seen.push(body);
+    if (body.model === V2_PRIMARY.gatewayModel) {
+      response.writeHead(502, { "Content-Type": "application/json" });
+      response.end(TRANSPORT_BODY);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("subagent-transport-fallback"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(
+      routerPort,
+      { ...TURN_BODY, model: V2_PRIMARY.slug },
+      { headers: { "x-openai-subagent": "review-child" } },
+    );
+
+    assert.deepEqual(seen.map((body) => body.model), [
+      V2_PRIMARY.gatewayModel,
+      V2_FALLBACK.gatewayModel,
+    ]);
+    assert.equal(result.status, 200);
+    assert.match(result.body, /answered-by-subagent-transport-fallback/);
+    assert.doesNotMatch(result.body, /provider_transport_error/);
+    assert.match(child.testErrors(), /reason=transport/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a marked provider transport failure does not move an ordinary turn", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    seen.push(await bodyJson(request));
+    response.writeHead(502, { "Content-Type": "application/json" });
+    response.end(TRANSPORT_BODY);
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(routerPort, { ...TURN_BODY, model: V2_PRIMARY.slug });
+
+    assert.deepEqual(seen.map((body) => body.model), [V2_PRIMARY.gatewayModel]);
+    assert.equal(result.status, 502);
+    assert.match(child.testErrors(), /reason=transport -> none outcome=no-candidate/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a subagent header cannot grant fallback authority to an unverified route", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    seen.push(await bodyJson(request));
+    response.writeHead(502, { "Content-Type": "application/json" });
+    response.end(TRANSPORT_BODY);
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(
+      routerPort,
+      TURN_BODY,
+      { headers: { "x-openai-subagent": "caller-claimed-child" } },
+    );
+
+    assert.deepEqual(seen.map((body) => body.model), [PRIMARY.gatewayModel]);
+    assert.equal(result.status, 502);
+    assert.match(child.testErrors(), /reason=transport -> none outcome=no-candidate/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("subagent transport failover stops on the first application response", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    const body = await bodyJson(request);
+    seen.push(body);
+    if (body.model === V2_PRIMARY.gatewayModel) {
+      response.writeHead(502, { "Content-Type": "application/json" });
+      response.end(TRANSPORT_BODY);
+      return;
+    }
+    if (body.model === V2_FALLBACK.gatewayModel) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "bad request" } }));
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("must-not-run"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [V2_FALLBACK.slug, V2_THIRD.slug],
+    v2Credentials: true,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(
+      routerPort,
+      { ...TURN_BODY, model: V2_PRIMARY.slug },
+      { headers: { "x-openai-subagent": "review-child" } },
+    );
+
+    assert.deepEqual(seen.map((body) => body.model), [
+      V2_PRIMARY.gatewayModel,
+      V2_FALLBACK.gatewayModel,
+    ]);
+    assert.equal(result.status, 400);
+    assert.doesNotMatch(result.body, /must-not-run/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("an exact-route probe never certifies a turn or compaction served by failover", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    assert.equal(
+      request.headers["x-codex-router-exact-route"],
+      undefined,
+      "the router leaked its local probe control header to the gateway",
+    );
+    const body = await bodyJson(request);
+    seen.push(body);
+    if (body.model === PRIMARY.gatewayModel) {
+      const payload = Buffer.from(QUOTA_BODY, "utf8");
+      response.writeHead(429, {
+        "Content-Type": "application/json",
+        "Content-Length": String(payload.length),
+      });
+      response.end(payload);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("fallback-must-not-run"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    cooldowns: {
+      deepseek: {
+        until: new Date(Date.now() + 30 * 60_000).toISOString(),
+        reason: "out_of_usage",
+      },
+    },
+  });
+  const exactHeaders = { "x-codex-router-exact-route": "1" };
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+
+    const turn = await readRouted(routerPort, TURN_BODY, { headers: exactHeaders });
+    assert.equal(turn.status, 429);
+    assert.match(turn.body, /quota|usage|billing/i);
+
+    const compact = await readRouted(
+      routerPort,
+      {
+        model: PRIMARY.slug,
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Remember 42." }],
+          },
+        ],
+      },
+      { endpoint: "/responses/compact", headers: exactHeaders },
+    );
+    assert.equal(compact.status, 429);
+    assert.match(compact.body, /quota|usage|billing/i);
+
+    assert.deepEqual(
+      seen.map((body) => body.model),
+      [PRIMARY.gatewayModel, PRIMARY.gatewayModel],
+      "the exact-route marker still contacted a fallback model",
+    );
+    const events = await waitForUsageEvents(child.stateDir, 2, child);
+    assert.equal(events.every((event) => event.model === PRIMARY.slug), true);
+    assert.equal(events.every((event) => event.failoverFrom === undefined), true);
+    assert.doesNotMatch(child.testErrors(), /failover model=/);
   } finally {
     await stopChild(child);
     await closeServer(gw.server);
@@ -562,6 +841,59 @@ test("a provider that answers again clears the cooldown this router recorded", a
   }
 });
 
+test("cooldown failover skips a locally incompatible Groq candidate", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    const body = await bodyJson(request);
+    seen.push(body);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("safe-candidate"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort), {
+    chain: [GROQ_CANDIDATE.slug, FALLBACK.slug],
+    cooldowns: {
+      deepseek: {
+        until: new Date(Date.now() + 30 * 60_000).toISOString(),
+        reason: "out_of_usage",
+      },
+    },
+    userModels: [GROQ_CANDIDATE],
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(routerPort, {
+      ...TURN_BODY,
+      tools: Array.from({ length: 129 }, (_, index) => ({
+        type: "function",
+        name: `client_tool_${index}`,
+        parameters: { type: "object" },
+      })),
+    });
+    assert.equal(result.status, 200);
+    assert.match(result.body, /answered-by-safe-candidate/);
+    assert.equal(seen.length, 1, "neither the cooled route nor rejected Groq candidate is sent");
+    assert.equal(seen[0].model, FALLBACK.gatewayModel);
+
+    const logs = child.testErrors();
+    assert.match(
+      logs,
+      /-> groq\/tool-limit-failover-fixture outcome=compatibility\/groq_tool_limit_exceeded/,
+    );
+    assert.match(logs, /-> zai-api\/glm-5\.2 outcome=swapped/);
+
+    const events = await waitForUsageEvents(child.stateDir, 1, child);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].model, FALLBACK.slug);
+    assert.equal(events[0].provider, "zai-api");
+    assert.equal(events[0].failoverFrom, PRIMARY.slug);
+    assert.equal(events[0].status, 200);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
 test("a fallback rebuild carries the full request, not a model swap", async () => {
   // The routed body is rebuilt for the fallback from the pristine payload.
   // The regression this guards is a second build over already-flattened tools,
@@ -630,6 +962,10 @@ test("a fallback rebuild carries the full request, not a model swap", async () =
 // map, shipping plausible tools the response transform can no longer map back.
 
 const RESPONSES_MODEL = {
+  slug: "meta/muse-spark-1.2",
+  gatewayModel: "meta-muse-spark-1-2",
+};
+const PRESSURE_RESPONSES_MODEL = {
   slug: "opencode-go-responses/gpt-5.6-luna",
   gatewayModel: "opencode-go-responses-gpt-5-6-luna",
 };
@@ -653,7 +989,7 @@ test("failover recalculates token-maxxing pressure for the serving model", async
   });
   const routerPort = await openPort();
   const child = run(routerEnv(gw.port, routerPort), {
-    chain: [RESPONSES_MODEL.slug],
+    chain: [PRESSURE_RESPONSES_MODEL.slug],
     toolResultAging: true,
   });
   // The pristine request is larger than the fallback's context window. It can
@@ -677,11 +1013,14 @@ test("failover recalculates token-maxxing pressure for the serving model", async
     assert.equal(seen[0].model, PRIMARY.gatewayModel);
     assert.equal(seen[0].input[1].output, value);
     assert.equal(seen[0].instructions, "Base instructions.");
-    assert.equal(seen[1].model, RESPONSES_MODEL.gatewayModel);
+    assert.equal(seen[1].model, PRESSURE_RESPONSES_MODEL.gatewayModel);
     assert.match(seen[1].input[1].output, /Tool result shaped by Codex Router token maxxing/u);
     assert.match(seen[1].instructions, /## Context pressure mode/u);
     const events = await waitForUsageEvents(child.stateDir, 2, child);
-    assert.equal(events.find((event) => event.model === RESPONSES_MODEL.slug).toolResultsShaped, 1);
+    assert.equal(
+      events.find((event) => event.model === PRESSURE_RESPONSES_MODEL.slug).toolResultsShaped,
+      1,
+    );
   } finally {
     await stopChild(child);
     await closeServer(gw.server);

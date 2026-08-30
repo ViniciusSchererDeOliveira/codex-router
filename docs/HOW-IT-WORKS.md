@@ -119,17 +119,34 @@ The integration deliberately keeps the built-in `openai` provider and points
 it at a loopback `openai_base_url`. This makes named models appear in the normal
 picker instead of replacing the provider with a generic `Custom` entry.
 
-The same managed config also defines an inert `codex-router` custom provider.
-The tray's login-free switch selects that provider for new Codex sessions, so
-Codex can send Responses requests to the local router without first acquiring
-OpenAI authentication. Model selection stays in the native Codex picker in
-both modes: login-free catalogs alias external models onto native slugs, and
-`control model-set` switches the active model from the command line. The switch snapshots the previous root
-`model_provider` in protected state and restores it when disabled. It never
-changes any ChatGPT credential. It keeps an already selected external model or
-selects the first model from a connected, enabled provider, snapshots the prior
-root model, and restores that model when disabled. External routes continue to
-replace incoming authentication with only the chosen provider's credential.
+For a selected custom provider, the tray's login-free switch keeps the provider
+id unchanged and temporarily replaces its complete table with a router-owned,
+auth-free table that points Responses requests at the local router. The
+built-in `openai` id is the deliberate
+exception: Codex 0.141 requires authentication for its implicit definition,
+while current Desktop builds reject any explicit `[model_providers.openai]`
+override as reserved. A root-OpenAI configuration therefore keeps the proven
+`codex-router` provider switch instead of writing a config one supported build
+cannot load. Model selection stays in the native Codex picker: login-free
+catalogs alias external models onto native slugs, and `control model-set`
+switches the active model from the command line.
+
+The switch snapshots every replaced custom-provider section and the prior root
+model in protected state, then restores them exactly after an ownership check.
+For the OpenAI fallback it also snapshots and restores the root
+`model_provider`. It never changes any ChatGPT credential. It keeps an already
+selected external model or selects the first model from a connected, enabled
+provider. External routes continue to replace incoming authentication with only
+the chosen provider's credential.
+
+Catalog refresh writes a protected operation journal before it temporarily
+parks this login-free transport. If the process or host stops in that window,
+rerunning `bin/refresh-catalog` resumes only when the journal still matches the
+exact provider state, provider tree, and model route. Ordinary config changes,
+install, and doctor repair refuse while that journal is pending and name the
+refresh command as the recovery path. State plus an inactive configuration
+without that journal remains ambiguous and fails closed; edits made during an
+interrupted refresh are never overwritten.
 
 The managed base URL contains a separate random caller capability. The router
 validates it before reading a model request or contacting any upstream. Codex
@@ -197,6 +214,32 @@ MiMo v2.5, and GLM-5.3 on the Z.ai Coding Plan. Other provider/model pairs
 stay off until verified -- including GLM-5.3 on the opencode Go relay, which
 is a different transport from the Z.ai route the capability was proven on. User-model curation can opt in locally without changing the
 shared registry.
+
+### Per-model search sidecar
+
+A model without `searchTool` can be opted into the Perplexity Search sidecar.
+The model catalog advertises search only while the exact binding, trusted
+generic-provider descriptor, and protected credential are all ready. Codex's
+authenticated `/alpha/search` request is then handled locally and never falls
+through to the native ChatGPT search backend. Unbound requests retain the
+native behavior above.
+
+The sidecar does not accept an arbitrary destination. Its provider must be an
+enabled, public-only generic `openai-chat` descriptor whose base URL is exactly
+`https://api.perplexity.ai`, and the request path is fixed to `/search`. The
+generic-provider transport resolves and pins the destination, refuses private
+addresses and redirects, and attaches the credential inside that boundary.
+Returned citations receive their own public-DNS and credential checks before
+they become model-visible data.
+
+The accepted wire subset is deliberately smaller than a general browser:
+one through four `search_query` entries, each containing only `q`. Results,
+body size, text length, retry count, timeout, backoff, and cache size/TTL are
+bounded by the versioned per-model policy. One operation deadline covers the
+adapter, response read, result DNS checks, retries, and backoff. Cancellation
+propagates from the Codex request. Usage records contain status, duration,
+attempt/cache/result counts, model, and provider id, never query text,
+citations, endpoints, or credentials.
 
 ## Transport and compaction
 

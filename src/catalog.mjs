@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -15,6 +16,7 @@ import { isManagedCallerBaseUrl } from "./caller-auth.mjs";
 import { applyInstructionOverlay } from "./instruction-overlays.mjs";
 import {
   ANNOUNCED_MODELS_PATH,
+  CODEX_PROVIDER_MODE_PATH,
   CONFIG_PATH,
   MERGED_CATALOG_PATH,
   MODELS_CACHE_PATH,
@@ -24,7 +26,11 @@ import {
 import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
 import { readUserModels } from "./user-models.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
-import { MODEL_BY_SLUG, MODEL_SLUG_ALIASES } from "./model-registry.mjs";
+import {
+  MODEL_BY_SLUG,
+  MODEL_SLUG_ALIASES,
+  RUNTIME_PROVIDERS,
+} from "./model-registry.mjs";
 import {
   applyMultiAgentCapabilities,
   readMultiAgentSettings,
@@ -54,6 +60,25 @@ import {
 } from "./native-catalog-source.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { withCatalogPublicationLock } from "./catalog-publication-lock.mjs";
+import { genericProviderConfigured } from "./generic-provider-readiness.mjs";
+import { searchSidecarBindingForModel } from "./search-sidecar-state.mjs";
+import { trustedSearchProviderDescriptor } from "./search-sidecar-policy.mjs";
+
+export function sidecarSearchAvailable(model, {
+  bindingForModel = searchSidecarBindingForModel,
+  providers = RUNTIME_PROVIDERS,
+  providerReady = genericProviderConfigured,
+} = {}) {
+  let binding;
+  try {
+    binding = bindingForModel(model.slug);
+  } catch {
+    return false;
+  }
+  if (!binding || model.searchTool !== undefined) return false;
+  const provider = providers.get(binding.providerId);
+  return trustedSearchProviderDescriptor(provider, { requireGeneric: true }) && providerReady(provider.id);
+}
 
 const refresh = process.argv.includes("--refresh-native");
 
@@ -254,18 +279,18 @@ function captureNative(cache) {
   // The bundled source supplies schema fields that the remote cache is allowed
   // to omit, so use both when available. If it fails, account-only entries are
   // still normalized above and remain preferable to an empty picker.
- try {
-   fallback = JSON.parse(runCodex(["debug", "models", "--bundled"], {
-     encoding: "utf8",
-     timeout: 30_000,
-     maxBuffer: 32 * 1024 * 1024,
-   }));
- } catch (error) {
-   fallbackError = error;
- }
+  try {
+    fallback = JSON.parse(runCodex(["debug", "models", "--bundled"], {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 32 * 1024 * 1024,
+    }));
+  } catch (error) {
+    fallbackError = error;
+  }
   const parsed = mergeNativeCatalogs(account, fallback);
- if (!validNativeCatalog(parsed)) {
-   const detail = accountError?.message || fallbackError?.message;
+  if (!validNativeCatalog(parsed)) {
+    const detail = accountError?.message || fallbackError?.message;
     throw new Error(
       `Codex returned no valid native model catalog${detail ? ` (${detail})` : ""}.`,
     );
@@ -426,9 +451,30 @@ function loginFreeConfigured() {
   if (!existsSync(CONFIG_PATH)) return false;
   try {
     const document = scanTomlDocument(readFileSync(CONFIG_PATH, "utf8"));
-    return tomlStringValue(document, [], "model_provider") === "codex-router";
+    if (tomlStringValue(document, [], "model_provider") === "codex-router") {
+      return true;
+    }
+    if (!existsSync(CODEX_PROVIDER_MODE_PATH)) return false;
+    // Identity-preserving login-free mode deliberately leaves model_provider
+    // unchanged, so the root assignment alone can no longer identify it.
+    // Ask the config manager for its ownership-validated snapshot rather than
+    // trusting state-file presence: a drifted provider table or base URL must
+    // not publish external aliases onto a transport the router no longer owns.
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("./config-manager.mjs", import.meta.url)), "status"],
+      { encoding: "utf8", env: process.env },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        (result.stderr || "Codex provider-mode state could not be validated.").trim(),
+      );
+    }
+    return JSON.parse(result.stdout).login_free === true;
   } catch {
-    return false;
+    throw new Error(
+      "Could not validate Codex login-free provider ownership; refusing to rebuild the catalog.",
+    );
   }
 }
 
@@ -601,7 +647,9 @@ export function routedModel(template, model, behaviorTemplate = template) {
     // executed by the provider backend; standalone search is executed by
     // Codex and its result is replayed through the routed conversation. An
     // absent declaration remains the conservative default.
-    supports_search_tool: ["hosted", "standalone"].includes(model.searchTool?.mode),
+    supports_search_tool:
+      ["hosted", "standalone"].includes(model.searchTool?.mode) ||
+      sidecarSearchAvailable(model),
     supports_image_detail_original: model.supportsImageDetailOriginal === true,
     // A routed model must never inherit a native template's capability. Codex
     // now requires the key, and `false` is both schema-valid and conservative

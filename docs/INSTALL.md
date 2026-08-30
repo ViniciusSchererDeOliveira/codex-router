@@ -45,7 +45,8 @@ definition stores the checkout's absolute path.
 macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh | sh -s -- --guided
+curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh \
+  | sh -s -- --target codex --guided --with-tray
 ```
 
 Windows PowerShell:
@@ -53,7 +54,7 @@ Windows PowerShell:
 ```powershell
 $installer = Join-Path $env:TEMP "codex-router-install.ps1"
 Invoke-WebRequest https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.ps1 -OutFile $installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Guided
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Target codex -Guided -WithTray
 ```
 
 Clone-and-review installation is also supported:
@@ -61,19 +62,20 @@ Clone-and-review installation is also supported:
 ```sh
 git clone https://github.com/duolahypercho/codex-router.git
 cd codex-router
-./install.sh --guided
+./install.sh --target codex --guided --with-tray
 ```
 
 ```powershell
 git clone https://github.com/duolahypercho/codex-router.git
 Set-Location codex-router
-./install.ps1 -Guided
+./install.ps1 -Target codex -Guided -WithTray
 ```
 
-Guided setup also offers to build and launch the desktop companion (the macOS
-menu bar app, or the Windows/Linux tray). `--with-tray` installs it without
-asking, `--no-tray` never offers it, and automatic mode skips it. On Windows
-the same choice is `-WithTray` / `-NoTray`.
+The recommended commands install the complete desktop experience without an
+extra question: the macOS menu-bar app with its Electron Control Center and
+desktop widget, or the Windows/Linux Electron Control Center and tray.
+`--no-tray` omits it; leaving out both tray flags makes guided setup ask. On
+Windows the matching options are `-WithTray` and `-NoTray`.
 
 On macOS one `Codex Router.app` bundle is placed in `~/Applications`. It keeps
 the Swift-native menu-bar tray and embeds the Electron Control Center, so the
@@ -138,18 +140,30 @@ The OAuth token remains in `~/.grok/auth.json` and is sent only to xAI's Grok
 CLI inference proxy. The separate `grok-api` provider continues to use a
 separately billed xAI API key.
 
-Antigravity OAuth uses a router-managed browser sign-in; it does not require a
-Gemini API key or a separate CLI. Sign in first, then enable the provider; the
-login command does not replace or disable any provider already selected.
+Antigravity OAuth is not self-service in public builds. It requires the client
+secret paired with the integration's OAuth client ID; the project does not
+distribute that secret, and a Google AI Pro/Ultra subscription, Gemini API key,
+Google account, or existing `agy` CLI login cannot retrieve it. Do not use a
+made-up placeholder. See
+[#393](https://github.com/duolahypercho/codex-router/issues/393) for the missing
+acquisition path.
+
+Proceed only when the operator of a provisioned integration has supplied its
+matching `ANTIGRAVITY_CLIENT_SECRET` privately. Never paste it into chat, an
+issue, a command argument, or a tracked file. Sign in first, then enable the
+provider; the login command does not replace or disable any provider already
+selected. The login may provision a Google Cloud project for the signed-in
+account when none exists.
 
 macOS/Linux:
 
-Set the integration client secret before installing/signing in. The generated
-service definition preserves it for token refreshes, and login fails before
-opening Google consent if it is absent.
+Set the supplied integration client secret in the private environment used for
+both installation and sign-in. Re-run the installer with that environment so
+the generated service definition preserves it for token refreshes. Login fails
+before opening Google consent if it is absent.
 
 ```sh
-export ANTIGRAVITY_CLIENT_SECRET='your-integration-client-secret'
+test -n "$ANTIGRAVITY_CLIENT_SECRET"
 ./bin/model-router codex providers login antigravity-oauth
 ./bin/model-router codex providers enable antigravity-oauth
 ```
@@ -157,10 +171,15 @@ export ANTIGRAVITY_CLIENT_SECRET='your-integration-client-secret'
 Windows PowerShell:
 
 ```powershell
-$env:ANTIGRAVITY_CLIENT_SECRET = 'your-integration-client-secret'
+if (-not $env:ANTIGRAVITY_CLIENT_SECRET) {
+  throw 'ANTIGRAVITY_CLIENT_SECRET is not set'
+}
 .\model-router.ps1 codex providers login antigravity-oauth
 .\model-router.ps1 codex providers enable antigravity-oauth
 ```
+
+Bring-your-own OAuth client overrides exist for development, but are not yet a
+supported persistent installation flow.
 
 The access and refresh tokens are stored in the router's owner-only state
 directory and can be removed from the desktop connection panel. This is an
@@ -509,6 +528,12 @@ Windows). Homebrew owns the dependency tree in its formula prefix: its normal
 doctor repair regenerates config and services without mutating that tree, and a
 missing or broken package file must be repaired with `brew reinstall
 codex-router`.
+
+Homebrew packages only the router and CLI. Guided setup does not offer the
+Electron Control Center, tray/menu-bar app, or macOS desktop widget, and an
+explicit `--with-tray` is refused with guidance back to the complete source
+installer. This keeps setup from downloading or compiling desktop application
+code inside a Homebrew-managed installation.
 
 When upgrading from a release without caller capabilities, the installer
 generates one, replaces only the marked managed URL, tightens config permissions,

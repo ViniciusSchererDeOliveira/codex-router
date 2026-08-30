@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { redactCallerUrl } from "./caller-auth.mjs";
+import { EXACT_ROUTE_PROBE_HEADER } from "./exact-route-probe.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import {
   installedRouterBaseUrl,
@@ -23,6 +24,7 @@ async function request(suffix, body, timeoutMs = 180_000) {
     headers: {
       Authorization: "Bearer codex-router-local-compatibility-test",
       "Content-Type": "application/json",
+      [EXACT_ROUTE_PROBE_HEADER]: "1",
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
@@ -75,6 +77,7 @@ async function streaming(model) {
     headers: {
       Authorization: "Bearer codex-router-local-compatibility-test",
       "Content-Type": "application/json",
+      [EXACT_ROUTE_PROBE_HEADER]: "1",
     },
     body: JSON.stringify({
       model,

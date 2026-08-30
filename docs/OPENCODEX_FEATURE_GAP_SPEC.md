@@ -216,11 +216,11 @@ commit. Diagnostics must show the actual target without exposing credentials.
 Acceptance evidence: failover, weighted selection, all-targets-unhealthy,
 capability mismatch, sticky session, and native catalog tests.
 
-## 7. Proposed gap E: web-search sidecar
+## 7. Implemented gap E: web-search sidecar
 
-The current router preserves native standalone search and provider-specific
-hosted search. A future sidecar may be offered only as an explicit opt-in for a
-model that cannot consume the native search tool.
+The router preserves native standalone search and provider-specific hosted
+search. It also offers a concrete Perplexity Search adapter only as an explicit
+per-model opt-in for a model that does not already own either capability.
 
 Requirements:
 
@@ -233,7 +233,10 @@ Requirements:
 - capability-driven selection, never a model-name special case.
 
 Acceptance evidence: success, timeout, cancellation, cache hit, malformed
-result, native-search bypass, redaction, and request accounting.
+result, native-search bypass, redaction, and request accounting. The focused
+evidence lives in `test/search-sidecar.test.mjs`,
+`test/search-sidecar-control.test.mjs`, `test/routing.test.mjs`,
+`test/generic-providers.test.mjs`, and `test/usage-events.test.mjs`.
 
 ## 8. Proposed gap F: sub-agent policy
 

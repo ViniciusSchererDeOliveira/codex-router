@@ -28,6 +28,7 @@ import {
   promoteNativeMultiAgent,
   routedCatalogConfigured,
   routedModel,
+  sidecarSearchAvailable,
 } from "../src/catalog.mjs";
 
 const template = {
@@ -296,6 +297,40 @@ test("current Codex search contract distinguishes supported and unsupported rout
     searchTool: { mode: "standalone" },
   });
   assert.equal(standalone.supports_search_tool, true);
+});
+
+test("search sidecars advertise only an exact ready model and trusted generic provider", () => {
+  const sidecarProvider = {
+    id: "perplexity-sidecar",
+    generic: true,
+    enabled: true,
+    adapter: "openai-chat",
+    allowPrivate: false,
+    credentialRef: "cred_perplexity_sidecar_01",
+    baseUrl: "https://api.perplexity.ai",
+  };
+  const options = {
+    bindingForModel: (slug) => slug === grok.slug
+      ? { model: slug, providerId: sidecarProvider.id, enabled: true }
+      : undefined,
+    providers: new Map([[sidecarProvider.id, sidecarProvider]]),
+    providerReady: () => true,
+  };
+  assert.equal(sidecarSearchAvailable(grok, options), true);
+  assert.equal(sidecarSearchAvailable({ ...grok, slug: "grok-oauth/other" }, options), false);
+  assert.equal(sidecarSearchAvailable({ ...grok, searchTool: { mode: "hosted" } }, options), false);
+  assert.equal(sidecarSearchAvailable(grok, { ...options, providerReady: () => false }), false);
+  assert.equal(sidecarSearchAvailable(grok, {
+    ...options,
+    providers: new Map([[sidecarProvider.id, { ...sidecarProvider, allowPrivate: true }]]),
+  }), false);
+  assert.equal(sidecarSearchAvailable(grok, {
+    ...options,
+    providers: new Map([[sidecarProvider.id, {
+      ...sidecarProvider,
+      baseUrl: "https://api.perplexity.ai.attacker.example",
+    }]]),
+  }), false);
 });
 
 test("routed models advertise original image detail only when the registry opts in", () => {

@@ -1,30 +1,55 @@
 # Codex Router
 
-Use Anthropic, Kimi, DeepSeek, xAI, GitHub Copilot, opencode Go, Command Code,
-and future external models inside the Codex App and CLI — or inside
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) or
-[Gemini CLI](https://github.com/google-gemini/gemini-cli) — through
-one local, credential-isolating router.
-The integration speaks the Responses API and merges external entries into
-Codex's native model catalog, so routed models appear in the normal picker
-next to the native GPT models. The same routed models publish into the
-harness as one provider route, so they appear in its Models page too, and into
-Gemini CLI through a Gemini-shaped endpoint the router serves for it.
+## Install everything (recommended)
 
-Every client shares one installation: one background service, one gateway, one
-set of provider credentials, one provider selection. Installing a second or
-third integration does not ask for a single key again.
+This is the default setup: **guided provider setup + Electron Control Center +
+tray/menu-bar app + macOS desktop widget**.
 
-The router is also the source of truth for routed model policy. Provider/model
-selection and external picker visibility are stored locally in the router state
-directory (`model-picker.json` is an explicit allowlist: only router models you
-show or select during curation are published), then republished to every
-installed client. A signed-in Codex
-installation keeps its native GPT catalog and native visibility client-owned;
-the router never lets an external overlay erase that original picker. Codex's
-active task remains in Codex configuration. Its default model does too unless
-you explicitly opt into a router-owned routed default; that choice is saved
-locally, survives rebuilds, and can be restored to the prior Codex default.
+### macOS or Linux
+
+Copy and paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh \
+  | sh -s -- --target codex --guided --with-tray
+```
+
+### Windows
+
+Copy and paste this into PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP "codex-router-install.ps1"
+Invoke-WebRequest https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.ps1 -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Target codex -Guided -WithTray
+```
+
+That is the complete installation. It asks which providers you want and keeps
+credential entry in private local prompts.
+
+When it finishes:
+
+1. Fully quit and reopen Codex.
+2. Start a new task and choose a routed model.
+3. Open **Codex Router** to use the Control Center.
+
+On macOS, open **Codex Router** from Spotlight or `~/Applications`; its icon
+stays in the menu bar when the Control Center is closed. The desktop widget is
+already included: choose **Settings → Dynamic Island → Desktop** from the
+menu-bar app to show it. It is a movable Codex Router panel rather than an item
+in macOS's **Edit Widgets** gallery.
+
+macOS does not have a public `.dmg` yet; the command above builds and installs
+the app locally. If it asks for the Xcode Command Line Tools, run
+`xcode-select --install` and repeat the command.
+
+## What Codex Router does
+
+Use Anthropic, Kimi, DeepSeek, xAI, GitHub Copilot, and other external models
+inside the Codex App and CLI. One local installation can also serve
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and
+[Gemini CLI](https://github.com/google-gemini/gemini-cli). Your provider
+credentials stay on your computer.
 
 Codex Router is an independent community project. It is not affiliated with or
 endorsed by OpenAI, GitHub, Anthropic, Moonshot AI, DeepSeek, OpenRouter,
@@ -48,11 +73,12 @@ If compatible authentication already exists, an agent can finish everything
 except the final app restart. Provider credentials are entered only through a
 hidden local terminal prompt.
 
-## Install
+## Other installation methods
 
-### Homebrew
+### Homebrew (macOS or Linux)
 
-If you already use Homebrew, install Codex Router from this repository's tap:
+Codex Router is not in `homebrew/core` yet, so `brew install codex-router` by
+itself does not work. For now, add this repository as a tap once:
 
 ```sh
 brew tap duolahypercho/codex-router https://github.com/duolahypercho/codex-router
@@ -65,6 +91,11 @@ Python, and build dependencies; `codex-router setup --guided` performs the
 one-time provider selection, credential-safe authentication, background
 service installation, and Codex integration. When setup finishes, fully quit
 and reopen Codex, create a new task, and choose a routed model from the picker.
+
+Homebrew is the **router/CLI-only** installation. It deliberately does not
+build or download the Electron Control Center, tray/menu-bar app, or macOS
+desktop widget during setup. If you want those, use the recommended installer
+at the top of this README instead.
 
 Upgrade an existing Homebrew installation with:
 
@@ -114,6 +145,13 @@ source. The release workflow generates `Formula/codex-router.rb` from
 
 Maintainers preparing the eventual `homebrew/core` submission should follow
 [`docs/HOMEBREW_CORE.md`](docs/HOMEBREW_CORE.md).
+
+### npm
+
+This project does not publish an npm-installable CLI yet. Do not use
+`npm install codex-router` for this project. Use the recommended installer or
+Homebrew above; a future npm package should use the scoped name
+`@duolahypercho/codex-router` so it cannot be confused with existing packages.
 
 ### Guided installer
 
@@ -191,6 +229,12 @@ Linux installations support the Codex CLI.
 | Muse Spark 1.2 (Meta) | `meta/muse-spark-1.2` | Meta Model API key |
 | Muse Spark 1.2 Contributor (Meta) | `meta/muse-spark-1.2-contributor` | Meta Model API key |
 | Muse Spark 1.1 (Meta) | `meta/muse-spark-1.1` | Meta Model API key |
+| Hy4 Preview (ClinePass) | `clinepass/tencent/hy4-preview` | ClinePass API key |
+| Hy4 Preview (Command Code) | `commandcode/hy4-preview` | Command Code API key |
+| Hy4 Preview (NanoGPT) | `nano-gpt/tencent/hy4-preview` | NanoGPT API key |
+| Hy4 Preview (Nous Research) | `nousresearch/tencent/hy4-preview` | Nous Portal API key |
+| Hy4 Preview (opencode Go) | `opencode-go/hy4-preview` | opencode Go/Zen API key |
+| Hy4 Preview (OpenRouter) | `openrouter/tencent/hy4-preview` | OpenRouter API key |
 | GLM-5.2 (ClinePass) | `clinepass/glm-5.2` | ClinePass API key |
 | Kimi K3 (ClinePass) | `clinepass/kimi-k3` | ClinePass API key |
 | Kimi K2.7 Code (ClinePass) | `clinepass/kimi-k2.7-code` | ClinePass API key |
@@ -247,23 +291,73 @@ from an OpenAI-compatible endpoint. A model is advertised only after its
 provider path has been verified to preserve Codex search-result items and
 tool-call history.
 
+For a routed model that has no verified standalone or provider-hosted search,
+Codex can instead use an explicit Perplexity Search sidecar. This is not a
+global fallback: the binding names one exact routed model, uses a separately
+stored Perplexity API key, and is refused for a model that already owns a
+search capability. The adapter implements Perplexity's raw
+[`POST /search`](https://docs.perplexity.ai/api-reference/search-post) API and
+accepts only Codex `search_query` commands; unsupported filters or other web
+commands fail by name.
+
+Create the trusted provider descriptor, enter the key at the hidden terminal
+prompt, and bind the model:
+
+```sh
+./bin/model-router codex providers generic add perplexity-search \
+  --name "Perplexity Search" \
+  --base-url https://api.perplexity.ai \
+  --adapter openai-chat
+./bin/model-router codex providers generic credential perplexity-search set
+./bin/model-router codex search-sidecar set PROVIDER/MODEL perplexity-search
+./bin/model-router codex search-sidecar status PROVIDER/MODEL
+```
+
+The credential command never accepts the key as an argument. The descriptor,
+credential reference, and per-model binding are private, atomic state; the key
+remains in the generic-provider protected credential file. Search requests use
+the generic-provider DNS-pinned, redirect-refusing transport. Result URLs must
+resolve publicly, credential-bearing citations are rejected, the whole
+operation shares one timeout across retry and backoff, and cache entries are
+scoped by caller account, model, provider, and credential reference. Removing
+the generic provider also removes its credential and every dependent sidecar
+binding. Fully quit and reopen Codex after changing a binding so its model
+catalog refreshes.
+
+On Windows, the same commands are available through `codex-router.ps1`:
+
+```powershell
+.\codex-router.ps1 providers generic add perplexity-search --name "Perplexity Search" --base-url https://api.perplexity.ai --adapter openai-chat
+.\codex-router.ps1 providers generic credential perplexity-search set
+.\codex-router.ps1 search-sidecar set PROVIDER/MODEL perplexity-search
+```
+
 ```sh
 npm install -g @xai-official/grok
 grok login --oauth
 ```
 
-Antigravity OAuth uses the router's own browser sign-in and the Google AI
-Pro/Ultra entitlement on the signed-in account. It needs neither a Gemini API
-key nor a separate Antigravity CLI. Signing in and enabling are separate so a
-re-authentication never replaces the rest of the provider selection:
+> [!WARNING]
+> **Antigravity OAuth is not a self-service provider in public builds today.**
+> It requires the client secret paired with the integration's OAuth client ID.
+> This project does not distribute that secret, and a Google AI Pro/Ultra
+> subscription, Gemini API key, Google account, or existing `agy` CLI login
+> does not provide a way to retrieve it. Do not use the old
+> `your-integration-client-secret` placeholder: it cannot work.
 
-Antigravity OAuth requires an integration client secret. Set
-`ANTIGRAVITY_CLIENT_SECRET` in the environment used for installation and
-sign-in; the generated background-service definition preserves it for token
-refreshes. The command fails before opening Google consent when it is absent.
+Only enable `antigravity-oauth` if the operator of a provisioned integration
+has privately supplied its matching `ANTIGRAVITY_CLIENT_SECRET`. Set it in the
+private environment used for both installation and sign-in, and re-run the
+installer with that environment so the generated background-service definition
+can refresh tokens. Never paste the secret into chat, an issue, a command
+argument, or a tracked file. The login may provision a Google Cloud project for
+the signed-in account when none exists.
+
+If the secret is already set in the current private shell, sign in and enable
+the provider with:
 
 ```sh
-export ANTIGRAVITY_CLIENT_SECRET='your-integration-client-secret'
+test -n "$ANTIGRAVITY_CLIENT_SECRET"
 ./bin/model-router codex providers login antigravity-oauth
 ./bin/model-router codex providers enable antigravity-oauth
 ```
@@ -271,13 +365,19 @@ export ANTIGRAVITY_CLIENT_SECRET='your-integration-client-secret'
 On Windows PowerShell, use the matching wrapper:
 
 ```powershell
-$env:ANTIGRAVITY_CLIENT_SECRET = 'your-integration-client-secret'
+if (-not $env:ANTIGRAVITY_CLIENT_SECRET) {
+  throw 'ANTIGRAVITY_CLIENT_SECRET is not set'
+}
 .\model-router.ps1 codex providers login antigravity-oauth
 .\model-router.ps1 codex providers enable antigravity-oauth
 ```
 
-The credential stays in the router's owner-only state directory. This is an
-unofficial compatibility route over Google's internal Antigravity service,
+There is currently no router-managed acquisition path for that secret.
+Bring-your-own OAuth client overrides exist for development, but are not yet a
+supported persistent installation flow. Follow
+[#393](https://github.com/duolahypercho/codex-router/issues/393) for that gap.
+The resulting token stays in the router's owner-only state directory. This is
+an unofficial compatibility route over Google's internal Antigravity service,
 not a public Gemini API contract, so availability and wire behavior can change.
 
 MiMo (Xiaomi API) uses Xiaomi's official OpenAI-compatible endpoint at
@@ -403,6 +503,36 @@ enable the family:
 ./bin/model-router codex providers enable opencode-go
 ```
 
+An optional API-key pool can rotate between the two registry-declared
+OpenCode environment sources without copying either secret into pool or
+credential metadata. Export the values in an interactive shell (never put a
+key in a command argument or chat). If the managed router is already running,
+stop it before adding a new environment-backed entry: a running service cannot
+inherit a newly named shell variable, and the command refuses to publish a
+route the service could not authenticate.
+
+```sh
+codex-router key-pool opencode-go add-env OPENCODE_API_KEY
+codex-router key-pool opencode-go add-env OPENCODE_GO_API_KEY
+codex-router key-pool opencode-go policy round-robin
+codex-router key-pool opencode-go status
+```
+
+Then rerun the installer from that same shell with `--providers configured`
+(and the same target you installed originally). The installer copies only the
+allowlisted variables referenced by the pool into the owner-only service
+definition and starts it. A plain service restart is not enough because it
+replays the old definition. Rerun the installer after removing or deleting an
+environment-backed entry as well, so its old value is removed from the service
+definition.
+
+`pause <credential-id>` and `resume <credential-id>` change one entry without
+deleting its credential metadata. Once a pool exists it is authoritative: an
+empty, invalid, or unresolvable pool fails closed instead of silently spending
+the legacy single key. A pre-response `429` can rebind the request to another
+healthy entry; failover stops once response headers or body bytes have been
+committed.
+
 The desktop panel and macOS tray Settings tab provide both per-model controls
 and provider-level Select all / Unselect all actions for which registry-proven
 v2 models can run as subagents and which models appear in installed client
@@ -416,20 +546,25 @@ the operator explicitly selects them.
 
 | Picker label | Model ID |
 | --- | --- |
+| Grok 4.6 (opencode Go) | `opencode-go-responses/grok-4.6` |
 | Grok 4.5 (opencode Go) | `opencode-go-responses/grok-4.5` |
 | GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` |
 | GLM-5.3 (opencode Go) | `opencode-go/glm-5.3` |
 | GLM-5.2 (opencode Go) | `opencode-go/glm-5.2` |
 | GLM-5.1 (opencode Go) | `opencode-go/glm-5.1` |
+| GLM-5 (opencode Go, legacy) | `opencode-go/glm-5` |
 | Kimi K3 (opencode Go) | `opencode-go/kimi-k3` |
 | Kimi K2.7 Code (opencode Go) | `opencode-go/kimi-k2.7-code` |
 | Kimi K2.6 (opencode Go) | `opencode-go/kimi-k2.6` |
+| Kimi K2.5 (opencode Go, legacy) | `opencode-go/kimi-k2.5` |
+| LongCat-2.0 (opencode Go) | `opencode-go/longcat-2.0` |
 | DeepSeek V4 Pro (opencode Go) | `opencode-go/deepseek-v4-pro` |
 | DeepSeek V4 Flash (opencode Go) | `opencode-go/deepseek-v4-flash` |
 | DeepSeek V4 Flash Vision Exp (opencode Go) | `opencode-go/deepseek-v4-flash-vision-exp` |
 | MiMo-V2.5 (opencode Go) | `opencode-go/mimo-v2.5` |
 | MiMo-V2.5-Pro (opencode Go) | `opencode-go/mimo-v2.5-pro` |
 | Hy3 (opencode Go) | `opencode-go/hy3` |
+| Hy4 Preview (opencode Go) | `opencode-go/hy4-preview` |
 | MiniMax M3 (opencode Go) | `opencode-go-messages/minimax-m3` |
 | MiniMax M2.7 (opencode Go) | `opencode-go-messages/minimax-m2.7` |
 | MiniMax M2.5 (opencode Go) | `opencode-go-messages/minimax-m2.5` |
@@ -437,11 +572,12 @@ the operator explicitly selects them.
 | Qwen3.7 Max (opencode Go) | `opencode-go-messages/qwen3.7-max` |
 | Qwen3.7 Plus (opencode Go) | `opencode-go-messages/qwen3.7-plus` |
 | Qwen3.6 Plus (opencode Go) | `opencode-go-messages/qwen3.6-plus` |
+| Qwen3.5 Plus (opencode Go, legacy) | `opencode-go/qwen3.5-plus` |
 | GPT 5.6 Luna (opencode Go) | `opencode-go-responses/gpt-5.6-luna` |
 
 `opencode-go` carries the Chat Completions models, `opencode-go-messages` the
 Anthropic Messages models, `opencode-go-responses` the Responses models
-(including Grok 4.5), and
+(including Grok 4.5 and Grok 4.6), and
 `opencode-zen` the pay-per-use Zen endpoint (no preselected models — curate
 the ones you want). All four are one selectable family: they share a single
 stored key, and enabling or disabling any of them toggles all of them
@@ -492,6 +628,10 @@ the router refuses paid IDs and shows traffic-only usage when no quota header
 has been observed. Kilo's general SDK setup guide still asks external SDK
 users for an API key; this entry intentionally covers only the gateway's
 documented anonymous `:free` path.
+
+Kilo's catalog also advertises `tencent/hy4-preview`, but that ID is paid: it
+does not end in `:free`. The Kilo Free route deliberately filters it out rather
+than presenting HY4 as an anonymous model.
 
 ### Custom: one provider, many endpoints
 
@@ -575,7 +715,6 @@ CLI session.
 
 | Picker label | Model ID |
 | --- | --- |
-| Ox Alpha (Command Code) | `commandcode/ox-alpha` |
 | DeepSeek V4 Flash (Command Code) | `commandcode/deepseek-v4-flash` |
 | DeepSeek V4 Pro (Command Code) | `commandcode/deepseek-v4-pro` |
 | GLM-5.2 (Command Code) | `commandcode/glm-5.2` |
@@ -592,6 +731,7 @@ CLI session.
 | GPT 5.5 (Command Code) | `commandcode/gpt-5.5` |
 | Gemini 3.5 Flash (Command Code) | `commandcode/gemini-3.5-flash` |
 | Hy3 (Command Code) | `commandcode/hy3-paid` |
+| Hy4 Preview (Command Code) | `commandcode/hy4-preview` |
 | Step 3.7 Flash (Command Code) | `commandcode/step-3.7-flash` |
 | Claude Sonnet 5 (Command Code) | `commandcode-messages/claude-sonnet-5` |
 | Claude Opus 4.8 (Command Code) | `commandcode-messages/claude-opus-4.8` |
@@ -613,26 +753,31 @@ that route is unavailable.
 
 Ox Alpha is a stealth reasoning model for coding and long-horizon agentic work:
 a 1,048,576-token context window, 131,072 tokens of output, text and image
-input, and tool calling. **The free preview was withdrawn from OpenCode Zen,
-OpenCode Go, OpenRouter, and Nous Research as of 2026-08-26.** It remains
-available under the Ox Alpha name on Command Code and Venice. On OpenCode Go,
-the preview graduated to the named, metered `glm-5.3-flash` model.
+input, and tool calling. No checked-in Ox Alpha route remains. OpenCode Go
+graduated the preview to the named, metered `glm-5.3-flash` model; direct
+exact-route probes also certified that named model on OpenRouter and Z.ai
+Coding.
 
 | Picker label | Model ID | Needs a key | Status |
 | --- | --- | --- | --- |
-| Ox Alpha (Command Code) | `commandcode/ox-alpha` | Command Code | Available |
-| Ox Alpha (Venice) | `venice/ox-alpha` | Venice | Available |
+| ~~Ox Alpha (Command Code)~~ | `commandcode/ox-alpha` | ~~Command Code~~ | Not shipped — upstream reported model unavailable |
+| ~~Ox Alpha (Venice)~~ | `venice/ox-alpha` | ~~Venice~~ | Not shipped — wire verification was billing-blocked |
 | ~~Ox Alpha (OpenCode Free)~~ | `opencode-free/ox-alpha` | ~~no~~ | Withdrawn |
 | GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` | opencode | Named replacement |
+| GLM-5.3-Flash (OpenRouter) | `openrouter/glm-5.3-flash` | OpenRouter | Available |
+| GLM-5.3-Flash (Z.ai Coding) | `zai-coding/glm-5.3-flash` | Z.ai Coding | Available |
 | ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
 | ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
 
-The checked-in OpenCode Free pin (`opencode-free/ox-alpha`, upstream
-`x-preview-f-free`) is stale versus the live `/models` catalog; the endpoint may
-still answer or start failing without notice.
+The exact-route certification run sent basic, streaming, forced-tool,
+stateless tool-result, and compact requests without failover. Command Code's
+`stealth/ox-alpha` rejected every surface as unavailable. The available Venice
+account stopped at its API billing gate before `stealth-ox-alpha` could be
+wire-certified. Publishing either preset would therefore claim more than the
+evidence supports.
 
-Reasoning effort is **low · high · max** on the remaining routes and the named
-OpenCode Go replacement, defaulting to `max`. Only three rungs exist because
+Reasoning effort is **low · high · max** on the certified named Flash routes,
+defaulting to `max`. Only three rungs exist because
 the model always thinks and its upstream says so outright — anything else comes
 back as `400 — This model always engages in thinking and cannot be disabled;
 please use low, high, or max`. Codex has more rungs than that, and a Codex older
@@ -648,18 +793,19 @@ threshold avoids presenting those blank turns as usable context. OpenCode Go's
 content moderation still applies to the compaction request itself, so a
 sensitive transcript may be rejected even when the ordinary task turn worked.
 
-For the remaining routes, store the key and enable the provider:
+Command Code and Venice still expose their live catalogs to explicit curation.
+An operator with an entitled account can inspect and select whatever those
+catalogs currently publish:
 
 ```sh
-./bin/model-router codex provider-key venice set
-./bin/model-router codex providers enable venice
+./bin/curate-models commandcode
+./bin/curate-models venice
 ```
 
-> **The free preview is a preview.** No lab has claimed this model, the routes
-> that serve it can narrow or withdraw it without notice, and the retention
-> terms differ per provider — OpenCode advertised zero data retention, Venice
-> anonymizes, and other resellers say less. Treat it as a way to try a model,
-> not as something to depend on.
+That creates a per-machine route from provider catalog metadata; it does not
+turn the repository's failed or blocked compatibility result into a guarantee.
+The withdrawn OpenCode Free pin is likewise no longer published, although an
+older local curation may still contain its stale upstream id.
 
 ### Meta Model API
 
@@ -699,21 +845,20 @@ often for the repository to pin and live-verify individual entries:
 | GitHub Copilot | `github-copilot` | Account-specific GitHub Copilot endpoint |
 | Chutes | `chutes` | `https://llm.chutes.ai/v1` |
 | OrcaRouter | `orca` | `https://api.orcarouter.ai/v1` |
-| NanoGPT | `nano-gpt` | `https://nano-gpt.com/api/v1` |
 
 `devin-cli` is the OAuth exception to this API-key table. After `devin auth
 login`, the Control Center and `./bin/curate-models devin-cli` read the model
 configuration available to that account through the installed Devin CLI; the
 provider still ships no preselected models.
 
-Three more providers work the same way but arrive with the single checked-in
-[Ox Alpha](#ox-alpha) entry (which is currently available on Command Code and
-Venice but has been withdrawn from OpenCode, OpenRouter, and Nous), so their
-picker is not empty once a key is stored:
+OpenRouter, NanoGPT, Venice, and Nous Research are ordinary API-key providers with
+live-reviewed checked-in routes in the model table. Use `bin/curate-models` for
+anything else their current account catalogs expose:
 
 | Provider | Provider ID | Base URL | Key from |
 | --- | --- | --- | --- |
 | OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| NanoGPT | `nano-gpt` | `https://nano-gpt.com/api/v1` | [nano-gpt.com](https://nano-gpt.com) |
 | Venice | `venice` | `https://api.venice.ai/api/v1` | [venice.ai/settings/api](https://venice.ai/settings/api) |
 | Nous Research (Hermes) | `nousresearch` | `https://inference-api.nousresearch.com/v1` | [portal.nousresearch.com](https://portal.nousresearch.com) |
 
@@ -822,6 +967,17 @@ on the loopback socket and bytes produced after decompression. The defaults are
 64 MiB encoded and 256 MiB decoded. Override them with
 `MODEL_ROUTER_MAX_BODY_BYTES` and `MODEL_ROUTER_MAX_DECODED_BODY_BYTES`
 respectively when a deliberately larger local workload requires it.
+
+The router admits at most 64 simultaneous inference requests by default. It
+keeps tray activity records for 15 minutes without releasing truthful in-flight
+accounting, and applies a separate conservative 24-hour execution deadline.
+Override those bounds with `MODEL_ROUTER_MAX_ACTIVE_REQUESTS`,
+`MODEL_ROUTER_ACTIVITY_RECORD_RETENTION_MS`, and
+`MODEL_ROUTER_REQUEST_EXECUTION_TIMEOUT_MS`; buffered upstream error bodies use
+an 8 MiB ceiling configurable through `MODEL_ROUTER_MAX_BUFFERED_RESPONSE_BYTES`.
+The caller-authenticated health endpoint reports these limits, aggregate
+in-flight counts, bounded-buffer ceilings, and encrypted-relay cache metrics;
+the public health endpoint omits that resource detail.
 
 For routed external models, old textual tool results larger than 32 KiB are
 compacted after the model has acted on them. The four newest tool results stay
@@ -938,7 +1094,23 @@ wire_api = "responses"
 ```
 
 The generated path is local caller authentication. Do not paste the complete
-managed URL into an issue.
+managed URL into an issue. If that capability may have been exposed, rotate it
+through the supported transaction instead of deleting state files by hand:
+
+```sh
+./bin/model-router codex caller-key rotate
+```
+
+On Windows use `./codex-router.ps1 caller-key rotate`. Rotation acquires the
+router's mutation locks, refuses partial managed client state, and refreshes only
+the caller URL/key fields of integrations that are already installed. A running
+router is stopped before the key swap, restarted afterward, and accepted only
+after the new capability returns a valid model list while the old one returns
+exactly `401`. An installed-but-stopped service stays stopped. A protected phase
+journal and rollback generation make an interrupted rotation recoverable without
+printing either key. Fully quit and reopen Codex (and restart a running Gemini
+CLI session) after success so cached client configuration cannot keep using the
+previous route.
 
 ### Run GPT-5.6 Sol at its documented 1M context window
 
@@ -1050,9 +1222,12 @@ mapped external provider. Models beyond the available native slots stay listed
 under their own slugs, and signing back in restores the native catalog
 untouched.
 
-Turning the switch off restores the exact root `model` and `model_provider`
-values that were present before the mode was enabled. The router does not
-modify or delete ChatGPT credentials. Native GPT models, ChatGPT usage, cloud
+For custom providers, the switch preserves the root `model_provider`,
+temporarily owns that provider's complete table, and restores the exact table
+plus the prior root `model`. Codex reserves the built-in `openai` provider id,
+so root-OpenAI configurations use the compatible `codex-router` provider while
+login-free mode is active and restore the prior provider afterward. The router
+does not modify or delete ChatGPT credentials. Native GPT models, ChatGPT usage, cloud
 tasks, and other account-backed features still require OpenAI authentication
 and are not available while signed out. The equivalent local control command is
 `./bin/control auth-mode on` or `./bin/control auth-mode off`; when using the
@@ -1061,7 +1236,7 @@ command directly, restart Codex yourself.
 ### Native ChatGPT account switching
 
 Codex Router can keep multiple ChatGPT subscription logins in isolated
-profiles. Select an account in Control Center or the tray; the selection is
+profiles. Select an account in Control Center; the selection is
 applied to native Codex after Codex is closed and restarted. The previous
 login remains saved, and switching never removes another account's session.
 
@@ -1120,11 +1295,11 @@ For reading images only — cannot code:
   moondream            1.7 GB  captions-only
 ```
 
-The tray's **View more** panel also exposes the full 201-tag snapshot captured
-from the official Ollama pages for Gemma 4, Qwen 3.5/3.6/3.8, Nemotron 3 Super,
-Ornith, Nemotron 3, and Muse Glimmer, including quantized and MLX variants.
-Cloud aliases are listed for completeness but marked cloud-only and cannot be
-downloaded as local weights.
+The tray's **View more** panel also exposes the full 213-tag snapshot: official
+Ollama tags for Gemma 4, Qwen 3.5/3.6/3.8, Nemotron 3 Super, Ornith, Nemotron 3,
+and Muse Glimmer, plus the Ollama-compatible Unsloth GGUF variants of GLM-5.3
+and GLM-5.3-Flash. Cloud aliases are listed for completeness but marked
+cloud-only and cannot be downloaded as local weights.
 
 A tool template is a floor, not a prediction — it has been wrong in both
 directions here. What settles it is running the real client:
@@ -1668,9 +1843,10 @@ and rebuild notes.
 The app can also place a Dynamic-Island-style overlay at the top center of the
 active display. It follows the provider handling the latest request, reveals
 usage on hover, and expands on click. It is off on a new install; enable it
-under **Dynamic Island** in the tray Settings. The menu-bar panel is the
+under **Dynamic Island** in the tray Settings. Choose **Desktop** there instead
+for the movable quota-and-activity desktop widget. The menu-bar panel is the
 primary surface for the all-provider overview and configuration, and stays
-available whether or not the overlay is on.
+available whether or not either optional surface is on.
 
 ## Unified desktop app
 
@@ -1695,8 +1871,9 @@ the window.
 .\codex-router.ps1 tray install
 ```
 
-Tagged releases provide unsigned Windows and Linux tester packages for this
-unified application family: `model-router-<version>-windows-x64.exe` and
+[Download the latest Windows or Linux desktop package](https://github.com/duolahypercho/codex-router/releases/latest).
+Tagged releases provide unsigned tester packages for this unified application
+family: `model-router-<version>-windows-x64.exe` and
 `model-router-<version>-linux-x64.tar.gz` (containing the executable AppImage).
 They are frontends, so install the matching Codex Router version first. The
 universal macOS bundle remains an ad-hoc-signed CI artifact until Developer ID
@@ -1734,9 +1911,24 @@ name collision with an existing skill of your own is skipped, not
 overwritten. To install or remove them by hand:
 
 ```sh
-node src/skills-install.mjs install
-node src/skills-install.mjs uninstall
+./bin/model-router codex skills install
+./bin/model-router codex skills uninstall
 ```
+
+If another manager owns a skill with the same name, review that complete
+directory and explicitly approve its exact contents instead of transferring
+ownership to codex-router:
+
+```sh
+./bin/model-router codex skills approve-external codex-router
+./bin/model-router codex skills revoke-external codex-router
+```
+
+Approval records digests of both the external directory and this checkout's
+matching skill. Any change to either side requires review and re-approval.
+Symlinks, special files, unreadable trees, and oversized trees are refused.
+Approval never authorizes codex-router to replace or remove the external
+directory; uninstall preserves it.
 
 `./bin/model-router codex doctor` checks the pack: installed, current
 against the checkout, free of name collisions, and matching the app

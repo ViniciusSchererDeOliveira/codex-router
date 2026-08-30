@@ -372,21 +372,208 @@ enum MenuBarRouterMarkImage {
 @main
 struct ModelRouterTrayApp: App {
   @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
-  @ObservedObject private var store = RouterStore.shared
 
   var body: some Scene {
-    // The insertion binding is read-only from our side: visibility is decided
-    // by the presence mode, not by the system writing back.
-    MenuBarExtra(isInserted: Binding(
-      get: { store.surfacesVisible },
-      set: { _ in }
-    )) {
-      TrayView(store: store)
-        .frame(width: 352, height: 560)
-    } label: {
-      StatusItemLabel(store: store)
+    // MenuBarExtra(.window) re-anchors from a SwiftUI-driven status item on
+    // every RouterStore publish, which parks the panel on opposite screen
+    // corners. The AppDelegate owns one fixed NSStatusItem and NSPanel instead.
+    // This empty Settings scene is only here to satisfy App.
+    Settings { EmptyView() }
+  }
+}
+
+@MainActor
+final class TrayMenuController: NSObject {
+  private let store: RouterStore
+  private let statusItem: NSStatusItem
+  private let panel: NSPanel
+  private let statusHostingView: NSHostingView<StatusItemLabel>
+  private var displayModeCancellable: AnyCancellable?
+  private var localEventMonitor: Any?
+  private var globalEventMonitor: Any?
+  private var screenObserver: NSObjectProtocol?
+
+  init(store: RouterStore) {
+    self.store = store
+    let length = MenuBarLayoutMetrics.statusItemWidth(displayMode: store.menuBarDisplayMode)
+    statusItem = NSStatusBar.system.statusItem(withLength: length)
+    let hosting = NSHostingView(rootView: StatusItemLabel(store: store))
+    hosting.sizingOptions = []
+    hosting.translatesAutoresizingMaskIntoConstraints = true
+    hosting.autoresizingMask = []
+    hosting.wantsLayer = true
+    hosting.layer?.masksToBounds = true
+    statusHostingView = hosting
+    panel = NSPanel(
+      contentRect: NSRect(origin: .zero, size: TrayPanelPlacement.panelSize),
+      styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+      backing: .buffered,
+      defer: false
+    )
+    super.init()
+    configureStatusItem()
+    configurePanel()
+    displayModeCancellable = store.$menuBarDisplayMode
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] _ in
+        guard let self else { return }
+        self.applyStatusItemMetrics()
+        if self.panel.isVisible {
+          self.reposition()
+        }
+      }
+  }
+
+  func setVisible(_ visible: Bool) {
+    statusItem.isVisible = visible
+    if !visible {
+      closePanel()
     }
-    .menuBarExtraStyle(.window)
+  }
+
+  func tearDown() {
+    closePanel()
+    removeMonitors()
+    if let screenObserver {
+      NotificationCenter.default.removeObserver(screenObserver)
+    }
+    screenObserver = nil
+    NSStatusBar.system.removeStatusItem(statusItem)
+  }
+
+  private func configureStatusItem() {
+    guard let button = statusItem.button else { return }
+    button.title = ""
+    button.image = nil
+    button.autoresizesSubviews = false
+    button.addSubview(statusHostingView)
+    button.target = self
+    button.action = #selector(statusItemClicked(_:))
+    button.sendAction(on: [.leftMouseUp])
+    statusItem.isVisible = store.surfacesVisible
+    applyStatusItemMetrics()
+  }
+
+  private func configurePanel() {
+    panel.isOpaque = false
+    panel.backgroundColor = .clear
+    panel.hasShadow = true
+    panel.level = .statusBar
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+    panel.isMovable = false
+    panel.hidesOnDeactivate = false
+    panel.becomesKeyOnlyIfNeeded = true
+  }
+
+  private func installPanelContentIfNeeded() {
+    guard panel.contentViewController == nil else { return }
+    let content = NSHostingController(
+      rootView: TrayView(store: store)
+        .frame(
+          width: TrayPanelPlacement.panelSize.width,
+          height: TrayPanelPlacement.panelSize.height
+        )
+    )
+    content.sizingOptions = []
+    content.view.frame = NSRect(origin: .zero, size: TrayPanelPlacement.panelSize)
+    content.view.wantsLayer = true
+    content.view.layer?.cornerRadius = 12
+    content.view.layer?.masksToBounds = true
+    panel.contentViewController = content
+    panel.setContentSize(TrayPanelPlacement.panelSize)
+  }
+
+  private func applyStatusItemMetrics() {
+    let width = MenuBarLayoutMetrics.statusItemWidth(displayMode: store.menuBarDisplayMode)
+    let height = MenuBarLayoutMetrics.statusItemHeight(displayMode: store.menuBarDisplayMode)
+    statusItem.length = width
+    statusHostingView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+  }
+
+  @objc private func statusItemClicked(_ sender: Any?) {
+    if panel.isVisible {
+      closePanel()
+    } else {
+      showPanel()
+    }
+  }
+
+  private func showPanel() {
+    guard statusItem.isVisible, statusItem.button?.window != nil else { return }
+    installPanelContentIfNeeded()
+    reposition()
+    panel.orderFrontRegardless()
+    panel.makeKey()
+    statusItem.button?.highlight(true)
+    installMonitors()
+  }
+
+  private func closePanel() {
+    panel.orderOut(nil)
+    statusItem.button?.highlight(false)
+    removeMonitors()
+  }
+
+  private func reposition() {
+    guard let buttonWindow = statusItem.button?.window else { return }
+    let buttonRect = buttonWindow.frame
+    // A status-item window sits in the menu-bar strip, outside visibleFrame.
+    // Ask AppKit which screen owns that window instead of hit-testing a point
+    // that no screen's visible frame is expected to contain.
+    let visible = buttonWindow.screen?.visibleFrame
+      ?? NSScreen.main?.visibleFrame
+      ?? buttonRect
+    let frame = TrayPanelPlacement.frame(
+      buttonScreenRect: buttonRect,
+      visibleFrame: visible
+    )
+    panel.setFrame(NSRect(origin: frame.origin, size: TrayPanelPlacement.panelSize), display: false)
+  }
+
+  private func installMonitors() {
+    removeMonitors()
+    globalEventMonitor = NSEvent.addGlobalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown]
+    ) { [weak self] _ in
+      Task { @MainActor in self?.closePanel() }
+    }
+    localEventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown, .keyDown]
+    ) { [weak self] event in
+      guard let self else { return event }
+      if event.type == .keyDown, event.keyCode == 53 {
+        self.closePanel()
+        return nil
+      }
+      if event.type == .leftMouseDown || event.type == .rightMouseDown {
+        if event.window == self.statusItem.button?.window {
+          return event
+        }
+        if event.window != self.panel {
+          self.closePanel()
+        }
+      }
+      return event
+    }
+    screenObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeScreenParametersNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor in
+        guard let self, self.panel.isVisible else { return }
+        self.reposition()
+      }
+    }
+  }
+
+  private func removeMonitors() {
+    if let globalEventMonitor { NSEvent.removeMonitor(globalEventMonitor) }
+    if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+    globalEventMonitor = nil
+    localEventMonitor = nil
+    if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+    screenObserver = nil
   }
 }
 
@@ -395,22 +582,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   let store = RouterStore.shared
   private var islandController: IslandWindowController?
   private var desktopPanelController: DesktopPanelWindowController?
+  private var trayMenuController: TrayMenuController?
   private var surfaceVisibility: AnyCancellable?
+  private var widgetSnapshotPublishing: AnyCancellable?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
+    trayMenuController = TrayMenuController(store: store)
     islandController = IslandWindowController(store: store)
     desktopPanelController = DesktopPanelWindowController(store: store)
     surfaceVisibility = store.$surfacesVisible
       .combineLatest(store.$islandMode)
       .sink { [weak self] visible, mode in
         // Publishing from a refresh can happen while SwiftUI is evaluating the
-        // MenuBarExtra tree. Defer AppKit window/layout work until that render
-        // transaction has finished, otherwise relaunches can recurse through
-        // layoutSubtreeIfNeeded.
+        // island/desktop hosting trees. Defer AppKit window/layout work until
+        // that render transaction has finished, otherwise relaunches can
+        // recurse through layoutSubtreeIfNeeded.
         Task { @MainActor [weak self] in
           self?.islandController?.setVisible(visible && mode == .notch)
           self?.desktopPanelController?.setVisible(visible && mode == .desktop)
+          self?.trayMenuController?.setVisible(visible)
+        }
+      }
+    widgetSnapshotPublishing = store.objectWillChange
+      .debounce(for: .milliseconds(450), scheduler: RunLoop.main)
+      .sink { [weak store] _ in
+        Task { @MainActor in
+          // ObservableObject announces immediately before it mutates. Yield so
+          // the Widget snapshot reads the committed values, not the old turn.
+          await Task<Never, Never>.yield()
+          store?.publishWidgetSnapshot()
         }
       }
     store.retireLoginItem()
@@ -419,6 +620,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Task { await store.startActivityPolling() }
     Task { await store.startAccountUsagePolling() }
     Task { await store.startProviderPolling() }
+    store.publishWidgetSnapshot()
     if Self.launchedByUser {
       store.revealForUserLaunch()
       ControlCenterLauncher.open()
@@ -435,6 +637,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return true
   }
 
+  func application(_ application: NSApplication, open urls: [URL]) {
+    guard let navigation = urls.compactMap(ControlCenterNavigationRequest.init(url:)).first else { return }
+    store.revealForUserLaunch()
+    ControlCenterLauncher.open(navigation: navigation)
+  }
+
   // launchd passes --supervised (see src/tray-service-macos.mjs) so a login
   // start is distinguishable from a person opening the app. Without the
   // distinction every login would force the surfaces visible and quietly
@@ -444,12 +652,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    trayMenuController?.tearDown()
     ControlCenterLauncher.terminateEmbeddedApplication()
     store.restoreServiceOnQuit()
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     store.applicationTerminationReply()
+  }
+}
+
+enum ControlCenterDestination: String, Equatable {
+  case usage
+  case usageResets = "usage-resets"
+
+}
+
+struct ControlCenterNavigationRequest: Equatable {
+  static let scheme = "codex-router"
+  static let host = "control-center"
+  static let sourcePattern = try! NSRegularExpression(pattern: "^[a-z0-9][a-z0-9-]{0,63}$")
+
+  let destination: ControlCenterDestination
+  let sourceID: String?
+
+  init?(url: URL) {
+    guard url.scheme == Self.scheme,
+          url.host == Self.host,
+          url.user == nil,
+          url.password == nil,
+          url.port == nil,
+          url.fragment == nil
+    else { return nil }
+    let rawDestination: String
+    switch url.path {
+    case "/usage": rawDestination = "usage"
+    case "/usage-resets": rawDestination = "usage-resets"
+    default: return nil
+    }
+    guard let destination = ControlCenterDestination(rawValue: rawDestination),
+          let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    else { return nil }
+    let items = components.queryItems ?? []
+    guard items.allSatisfy({ $0.name == "source" }), items.count <= 1 else { return nil }
+    let sourceID = items.first?.value
+    if let sourceID {
+      let range = NSRange(sourceID.startIndex..<sourceID.endIndex, in: sourceID)
+      guard Self.sourcePattern.firstMatch(in: sourceID, range: range)?.range == range else { return nil }
+    }
+    self.destination = destination
+    self.sourceID = sourceID
+  }
+
+  var arguments: [String] {
+    var result = ["--router-destination", destination.rawValue]
+    if let sourceID { result += ["--router-source", sourceID] }
+    return result
+  }
+
+  var url: URL {
+    var components = URLComponents()
+    components.scheme = Self.scheme
+    components.host = Self.host
+    components.path = "/\(destination.rawValue)"
+    if let sourceID { components.queryItems = [URLQueryItem(name: "source", value: sourceID)] }
+    return components.url!
   }
 }
 
@@ -464,7 +731,7 @@ enum ControlCenterLauncher {
     return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
   }
 
-  static func open() {
+  static func open(navigation: ControlCenterNavigationRequest? = nil) {
     guard let application = bundledApplicationURL else {
       RouterStore.shared.reportControlCenterLaunchFailure(
         "The embedded Control Center is missing. Rebuild Codex Router."
@@ -474,7 +741,7 @@ enum ControlCenterLauncher {
     Task { @MainActor in
       do {
         try await retireSupersededControlCenters(except: application)
-        openBundledApplication(application)
+        openBundledApplication(application, navigation: navigation)
       } catch {
         RouterStore.shared.reportControlCenterLaunchFailure(error.localizedDescription)
       }
@@ -506,20 +773,41 @@ enum ControlCenterLauncher {
     )
   }
 
-  private static func openBundledApplication(_ application: URL) {
+  private static func openBundledApplication(
+    _ application: URL,
+    navigation: ControlCenterNavigationRequest?
+  ) {
     let configuration = NSWorkspace.OpenConfiguration()
     configuration.activates = true
-    configuration.environment = embeddedEnvironment(
-      processEnvironment: ProcessInfo.processInfo.environment
-    )
-    NSWorkspace.shared.openApplication(at: application, configuration: configuration) { _, error in
+    configuration.environment = embeddedEnvironment(processEnvironment: ProcessInfo.processInfo.environment)
+    let completion: @Sendable (NSRunningApplication?, (any Error)?) -> Void = { _, error in
       guard let error else { return }
+      let message = error.localizedDescription
       Task { @MainActor in
         RouterStore.shared.reportControlCenterLaunchFailure(
-          "Control Center could not open: \(error.localizedDescription)"
+          "Control Center could not open: \(message)"
         )
       }
     }
+    if let navigation {
+      // Launch arguments are deterministic for a cold Electron start, while
+      // LaunchServices drops them when it merely activates a running process.
+      // The URL Apple Event covers that warm path, so carry both forms of the
+      // same validated, idempotent navigation request.
+      configuration.arguments = navigation.arguments
+      NSWorkspace.shared.open(
+        [navigation.url],
+        withApplicationAt: application,
+        configuration: configuration,
+        completionHandler: completion
+      )
+      return
+    }
+    NSWorkspace.shared.openApplication(
+      at: application,
+      configuration: configuration,
+      completionHandler: completion
+    )
   }
 
   nonisolated static func embeddedEnvironment(
@@ -680,6 +968,7 @@ final class RouterStore: ObservableObject {
   private struct DailyUsageCacheBucket: Hashable {
     let startDate: String
     let tokens: Int64
+    let isRouterFallback: Bool
   }
 
   private struct DailyUsageCacheKey: Hashable {
@@ -1968,34 +2257,53 @@ final class RouterStore: ObservableObject {
   }
 
   func dailyUsage(days: Int) -> [DailyUsagePoint] {
+    dailyUsage(for: selectedUsageProviderID, days: days)
+  }
+
+  func dailyFallbackDays(days: Int) -> Int {
+    guard selectedUsageUsesChatGPT else { return 0 }
+    return dailyUsage(days: days).filter(\.isRouterFallback).count
+  }
+
+  func dailyUsage(for providerID: String, days: Int) -> [DailyUsagePoint] {
     let buckets: [DailyUsageCacheBucket]
-    if selectedUsageUsesChatGPT {
-      buckets = accountUsage?.dailyUsageBuckets.map {
-        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens)
-      } ?? []
+    if providerID == "openai" {
+      // OpenAI's account stream is authoritative whenever it contains a date.
+      // The local OpenAI provider stream is narrower router telemetry, so it
+      // only fills an absent account date and never replaces an explicit zero.
+      buckets = mergeAccountUsageBuckets(
+        account: accountUsage?.dailyUsageBuckets ?? [],
+        router: providerUsage(for: "openai")?.dailyUsageBuckets ?? []
+      ).map {
+        DailyUsageCacheBucket(
+          startDate: $0.startDate,
+          tokens: $0.tokens,
+          isRouterFallback: $0.isRouterFallback
+        )
+      }
     } else {
-      buckets = selectedProviderUsage?.dailyUsageBuckets.map {
-        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens)
+      buckets = providerUsage(for: providerID)?.dailyUsageBuckets.map {
+        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens, isRouterFallback: false)
       } ?? []
     }
     let calendar = Calendar.current
     let today = calendar.startOfDay(for: .now)
     let cacheKey = DailyUsageCacheKey(
-      providerID: selectedUsageProviderID,
+      providerID: providerID,
       days: days,
       today: today,
       buckets: buckets
     )
     if let cached = dailyUsageCache[cacheKey] { return cached }
 
-    let indexed = Dictionary(uniqueKeysWithValues: buckets.map {
-      ($0.startDate, Double($0.tokens))
-    })
+    let indexed = Dictionary(uniqueKeysWithValues: buckets.map { ($0.startDate, $0) })
     let points = (0..<days).map { offset in
       let date = calendar.date(byAdding: .day, value: offset - (days - 1), to: today) ?? today
+      let bucket = indexed[Self.dayKeyFormatter.string(from: date)]
       return DailyUsagePoint(
         date: date,
-        tokens: indexed[Self.dayKeyFormatter.string(from: date)] ?? 0
+        tokens: Double(bucket?.tokens ?? 0),
+        isRouterFallback: bucket?.isRouterFallback ?? false
       )
     }
     if dailyUsageCache.count >= 24 { dailyUsageCache.removeAll(keepingCapacity: true) }
@@ -3831,7 +4139,7 @@ enum TokenDisplayUnit: String, CaseIterable, Identifiable {
     let normalized = value.isFinite ? max(0, value) : 0
     switch self {
     case .full:
-      return Int64(normalized.rounded()).formatted(.number.grouping(.automatic))
+      return RouterWidgetTokenCount.from(normalized).formatted(.number.grouping(.automatic))
     case .millions:
       return "\(String(format: "%.1f", normalized / 1_000_000))M"
     }
@@ -3888,6 +4196,7 @@ struct CodexDailyUsageBucket: Decodable, Equatable {
 struct DailyUsagePoint: Identifiable, Equatable {
   let date: Date
   let tokens: Double
+  let isRouterFallback: Bool
   var id: Date { date }
 }
 
@@ -3979,6 +4288,38 @@ struct ProviderDailyUsageBucket: Decodable, Equatable {
   let startDate: String
   let tokens: Int64
   let requests: Int
+}
+
+/// The account stream is the only source that can describe the user's global
+/// OpenAI usage. Router telemetry is local to this installation, so it is
+/// allowed to fill a date the account stream omitted, but it must never replace
+/// an account bucket (including an explicit zero).
+struct DailyUsageDisplayBucket: Equatable {
+  let startDate: String
+  let tokens: Int64
+  let isRouterFallback: Bool
+}
+
+func mergeAccountUsageBuckets(
+  account: [CodexDailyUsageBucket],
+  router: [ProviderDailyUsageBucket]
+) -> [DailyUsageDisplayBucket] {
+  var merged: [String: DailyUsageDisplayBucket] = [:]
+  for bucket in router {
+    merged[bucket.startDate] = DailyUsageDisplayBucket(
+      startDate: bucket.startDate,
+      tokens: bucket.tokens,
+      isRouterFallback: true
+    )
+  }
+  for bucket in account {
+    merged[bucket.startDate] = DailyUsageDisplayBucket(
+      startDate: bucket.startDate,
+      tokens: bucket.tokens,
+      isRouterFallback: false
+    )
+  }
+  return merged.values.sorted { $0.startDate < $1.startDate }
 }
 
 struct RouterTarget: Decodable {
@@ -8738,6 +9079,13 @@ private struct ProviderUsageSection: View {
         .id("\(store.selectedUsageProviderID)-\(range.rawValue)-\(self.tokenDisplayUnit.rawValue)")
         .frame(height: 88)
 
+      if fallbackDays > 0 {
+        Text(fallbackNotice)
+          .font(.system(size: 9))
+          .foregroundStyle(routerYellow)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
       HStack {
         Text(rangeCaption)
         Spacer()
@@ -8829,9 +9177,22 @@ private struct ProviderUsageSection: View {
         ? "\(formattedTotal) token · \(requests) 个请求 · 近 \(range.rawValue) 天"
         : "\(formattedTotal) tokens · \(requests) requests over \(range.rawValue) days"
     }
-    return RouterLanguage.isSimplifiedChinese
+    let caption = RouterLanguage.isSimplifiedChinese
       ? "\(formattedTotal) token · 近 \(range.rawValue) 天"
       : "\(formattedTotal) tokens over \(range.rawValue) days"
+    guard fallbackDays > 0 else { return caption }
+    let suffix = fallbackDays == 1
+      ? routerLocalized("1 local fallback date")
+      : routerFormat("%d local fallback dates", fallbackDays)
+    return "\(caption) · \(suffix)"
+  }
+
+  private var fallbackDays: Int {
+    store.dailyFallbackDays(days: range.rawValue)
+  }
+
+  private var fallbackNotice: String {
+    routerLocalized("OpenAI supplied no account bucket for these dates; local router traffic fills the gap. These are not global account totals.")
   }
 
   private var usageError: String? {
@@ -9281,6 +9642,12 @@ struct UsageBarChart: View {
                 RoundedRectangle(cornerRadius: min(2.5, width / 2), style: .continuous)
                   .fill(point.tokens == 0 ? Color.primary.opacity(0.07) : tint.opacity(0.86))
                   .frame(height: max(2, chartHeight * CGFloat(point.tokens / maximum)))
+                  .overlay {
+                    if point.isRouterFallback {
+                      RoundedRectangle(cornerRadius: min(2.5, width / 2), style: .continuous)
+                        .stroke(routerYellow, style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                    }
+                  }
               }
               .frame(width: width, height: chartHeight)
               .contentShape(Rectangle())
@@ -9352,7 +9719,9 @@ struct UsageBarChart: View {
   private func hoverText(for point: DailyUsagePoint) -> String {
     let date = point.date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
     let tokens = self.tokenDisplayUnit.format(point.tokens)
-    return RouterLanguage.isSimplifiedChinese ? "\(date) · \(tokens) token" : "\(date) · \(tokens) tokens"
+    let text = RouterLanguage.isSimplifiedChinese ? "\(date) · \(tokens) token" : "\(date) · \(tokens) tokens"
+    guard point.isRouterFallback else { return text }
+    return "\(text) · \(routerLocalized("local fallback"))"
   }
 }
 

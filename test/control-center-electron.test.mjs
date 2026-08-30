@@ -43,6 +43,12 @@ import {
   writeLifecycleState,
 } from "../apps/control-center/electron/lifecycle-state.mjs";
 import { openBrowserCommand } from "../apps/control-center/electron/ipc.mjs";
+import {
+  controlCenterDestination,
+  controlCenterNavigationURL,
+  NAVIGATION_ARGUMENT,
+  NAVIGATION_SOURCE_ARGUMENT,
+} from "../apps/control-center/electron/navigation.mjs";
 
 test("ChatGPT browser login waits for the OAuth URL after child close", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "router-browser-login-"));
@@ -72,20 +78,63 @@ test("ChatGPT browser login waits for the OAuth URL after child close", async ()
   }
 });
 
+test("Control Center navigation accepts only one fixed widget destination", () => {
+  assert.deepEqual(controlCenterDestination(["electron", ".", NAVIGATION_ARGUMENT, "usage"]), {
+    destination: "usage",
+    sourceId: undefined,
+  });
+  assert.deepEqual(
+    controlCenterDestination(["electron", ".", NAVIGATION_ARGUMENT, "usage-resets"]),
+    { destination: "usage-resets", sourceId: undefined },
+  );
+  assert.deepEqual(
+    controlCenterDestination([
+      "electron", ".", NAVIGATION_ARGUMENT, "usage", NAVIGATION_SOURCE_ARGUMENT, "deepseek",
+    ]),
+    { destination: "usage", sourceId: "deepseek" },
+  );
+  assert.equal(controlCenterDestination(["electron", ".", NAVIGATION_ARGUMENT, "settings"]), undefined);
+  assert.equal(controlCenterDestination(["electron", ".", NAVIGATION_ARGUMENT]), undefined);
+  assert.equal(controlCenterDestination([
+    "electron", ".", NAVIGATION_ARGUMENT, "usage", NAVIGATION_SOURCE_ARGUMENT, "deep_seek",
+  ]), undefined);
+  assert.equal(controlCenterDestination([
+    "electron", ".", NAVIGATION_ARGUMENT, "usage", NAVIGATION_ARGUMENT, "usage-resets",
+  ]), undefined);
+});
+
+test("Control Center navigation URLs are exact and source bounded", () => {
+  assert.deepEqual(controlCenterNavigationURL(
+    "codex-router://control-center/usage-resets?source=openai",
+  ), { destination: "usage-resets", sourceId: "openai" });
+  assert.deepEqual(controlCenterNavigationURL(
+    "codex-router://control-center/usage",
+  ), { destination: "usage", sourceId: undefined });
+  for (const value of [
+    "https://control-center/usage",
+    "codex-router://other/usage",
+    "codex-router://control-center//usage",
+    "codex-router://control-center/settings",
+    "codex-router://control-center/usage?source=deep_seek",
+    "codex-router://control-center/usage?source=openai&source=deepseek",
+    "codex-router://control-center/usage?next=settings",
+    "codex-router://control-center/usage#reset",
+  ]) assert.equal(controlCenterNavigationURL(value), undefined, value);
+});
+
 test("Control Center groups provider routes under one model family", () => {
   const families = groupModelFamilies([
-    { slug: "opencode-free/ox-alpha", displayName: "Ox Alpha (OpenCode Free)", provider: "opencode-free", visible: false, enabled: true },
     { slug: "opencode-go/glm-5.3-flash", displayName: "GLM-5.3-Flash (opencode Go)", provider: "opencode-go", visible: true, enabled: true },
-    { slug: "opencode-free/x-preview-f-free", displayName: "Ox Alpha Free", provider: "opencode-free", visible: true, enabled: true },
+    { slug: "opencode-go/glm-5.3", displayName: "GLM-5.3 (opencode Go)", provider: "opencode-go", visible: true, enabled: true },
     { slug: "deepseek/deepseek-v4-pro", displayName: "DeepSeek V4 Pro (API)", provider: "deepseek", visible: true, enabled: true },
   ]);
   assert.equal(families.length, 3);
-  const ox = families.find((family) => family.id === "ox-alpha");
-  assert.equal(ox.displayName, "Ox Alpha");
-  assert.deepEqual(ox.routes.map((route) => route.slug), [
-    "opencode-free/ox-alpha",
-    "opencode-free/x-preview-f-free",
-  ]);
+  const glmFlash = families.find((family) => family.id === "glm-5-3-flash");
+  assert.equal(glmFlash.displayName, "GLM-5.3-Flash");
+  assert.deepEqual(glmFlash.routes.map((route) => route.slug), ["opencode-go/glm-5.3-flash"]);
+  const glm = families.find((family) => family.id === "glm-5-3");
+  assert.equal(glm.displayName, "GLM-5.3");
+  assert.deepEqual(glm.routes.map((route) => route.slug), ["opencode-go/glm-5.3"]);
   assert.equal(modelFamilyKey({ displayName: "Kimi K3 (OAuth)" }), "kimi-k3");
   assert.equal(modelFamilyKey({ displayName: "Kimi K3 (opencode Go)" }), "kimi-k3");
 });
@@ -851,6 +900,10 @@ test("background usage polling is conservative while manual refresh stays immedi
   assert.doesNotMatch(source, /usageTimer = window\.setInterval\(\(\) => void refreshUsage\(\), 30_000\)/);
   assert.match(source, /Promise\.allSettled\(\[refreshCore\(\), refreshUsage\(\)\]\)/);
   assert.match(source, /Promise\.allSettled\(\[[\s\S]*api\.getSnapshot\(\)[\s\S]*api\.getHealth\(\)/);
+  assert.match(source, /settleRead\("snapshot", api\.getSnapshot\(\), setSnapshot\)/);
+  assert.match(source, /settleRead\("providers", api\.getProviders\(\), setProviders\)/);
+  assert.match(source, /settleRead\("providerUsage", api\.getProviderUsage\(\), setProviderUsage\)/);
+  assert.doesNotMatch(source, /loading \? <LoadingState \/> : page/);
   assert.match(source, /downloadPollInFlight\.current/);
   assert.match(source, /healthPollInFlight\.current/);
   assert.match(source, /document\.visibilityState !== "visible"/);
@@ -1248,6 +1301,11 @@ test("the model directory combines provider setup with de-duplicated model-famil
   assert.doesNotMatch(models, /<select[\s\S]{0,200}subagent thinking effort/);
   assert.match(models, /<dt>Model id<\/dt>/);
   assert.match(providerModelsCss, /\.pm-model-details\s*\{/);
+  assert.match(models, /<dd className="pm-model-details-controls">/);
+  assert.match(
+    providerModelsCss,
+    /\.pm-model-details dd\.pm-model-details-controls\s*\{[^}]*overflow:\s*visible/,
+  );
 
   // Adding republishes the whole catalog to every installed client and is the
   // slowest thing this page starts. Placeholder rows carrying the chosen slugs
@@ -1318,7 +1376,8 @@ test("the model directory combines provider setup with de-duplicated model-famil
   assert.match(models, /const effortOptions = model\.reasoningLevels \?\? \[\]/);
   assert.doesNotMatch(models, /reasoningLevels\?\.map\(\(level\) => level\.effort\)/);
   assert.doesNotMatch(models, /<dt>Available<\/dt>/);
-  assert.match(catalogSearch, /x-preview-f-free[^\n]+Ox Alpha Free/);
+  assert.match(catalogSearch, /export function catalogModelName\(modelId\)/);
+  assert.doesNotMatch(catalogSearch, /if \(modelId === "x-preview-f-free"\)/);
 
   const components = await readFile(new URL("../apps/control-center/src/components.tsx", import.meta.url), "utf8");
   assert.match(components, /export function SkeletonBlock/);
@@ -1350,7 +1409,7 @@ test("the model directory combines provider setup with de-duplicated model-famil
   }
   assert.match(branding, /"lmstudio": "lmstudio"/);
   assert.match(branding, /ornith[^\n]+BRANDS\.deepreinforce/);
-  assert.match(branding, /hy3[^\n]+BRANDS\.tencent/);
+  assert.match(branding, /hy\(\?:3\|4\)[^\n]+BRANDS\.tencent/);
   assert.match(branding, /laguna[^\n]+BRANDS\.poolside/);
   assert.match(branding, /export function brandForLocalModel/);
   const sources = await readFile(new URL("../apps/control-center/src/assets/providers/SOURCES.md", import.meta.url), "utf8");
@@ -1362,6 +1421,8 @@ test("the model directory combines provider setup with de-duplicated model-famil
   assert.doesNotMatch(sources, /avatars\.githubusercontent\.com/);
   assert.match(branding, /cognition:[^\n]+name: "Devin"/);
   assert.match(branding, /deepreinforce:[^\n]+name: "Ornith"/);
+  assert.match(branding, /nanogpt:[^\n]+name: "NanoGPT"/);
+  assert.match(branding, /tencent:[^\n]+name: "Tencent"/);
   const local = await readFile(new URL("../apps/control-center/src/pages/LocalPage.tsx", import.meta.url), "utf8");
   assert.match(local, /brandForLocalModel/);
   assert.match(local, /<BrandLogo brand=\{brandForLocalModel\(model\)\}/);

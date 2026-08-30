@@ -23,10 +23,13 @@ import { kimiOAuthStatus } from "./oauth-status.mjs";
 import {
   apiProvider,
   credentialLabel,
-  credentialStatus,
   removeProviderCredential,
   writeProviderCredential,
 } from "./provider-credentials.mjs";
+import {
+  effectiveProviderCredentialStatus,
+  providerApiKeyAuthoritySnapshot,
+} from "./provider-api-key-routing.mjs";
 import { disableProvider } from "./provider-selection.mjs";
 import {
   npmGlobalBinary,
@@ -99,6 +102,7 @@ export function providerOnboardingSnapshot() {
   // Protocol variants share their parent's key and selection, so onboarding
   // surfaces (tray, guided setup) offer one entry per family.
   const selectable = [...PROVIDERS.values()].filter((provider) => !provider.variantOf);
+  const poolAuthoritySnapshot = providerApiKeyAuthoritySnapshot();
   return {
     providers: selectable.map((provider) => {
       const catalogSources = providerCatalogSources(provider.id);
@@ -148,7 +152,10 @@ export function providerOnboardingSnapshot() {
       }
       const configured = providerNeedsNoKey(provider)
         ? true
-        : credentialStatus(provider, { persistent: true }).configured;
+        : effectiveProviderCredentialStatus(provider, {
+            persistent: true,
+            poolAuthoritySnapshot,
+          }).configured;
       const entry = {
         id: provider.id,
         displayName: provider.displayName,
@@ -304,7 +311,7 @@ export async function removeApiCredential(providerId) {
   const provider = apiProvider(providerId);
   const removedFiles = removeProviderCredential(provider);
   if (removedFiles) disableProvider(provider.id);
-  const remaining = credentialStatus(provider, { persistent: true });
+  const remaining = effectiveProviderCredentialStatus(provider, { persistent: true });
   return {
     provider: provider.id,
     displayName: provider.displayName,

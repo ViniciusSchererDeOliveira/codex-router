@@ -40,16 +40,6 @@ test("userModelEntry fills conservative picker metadata", () => {
   assert.ok(entry.description.length > 0);
 });
 
-test("OpenCode's opaque free preview id is presented as Ox Alpha Free", () => {
-  const entry = userModelEntry({
-    providerId: "opencode-free",
-    upstreamId: "x-preview-f-free",
-    priority: 100,
-  });
-  assert.equal(entry.slug, "opencode-free/x-preview-f-free");
-  assert.equal(entry.upstreamModel, "x-preview-f-free");
-  assert.equal(entry.displayName, "Ox Alpha Free");
-});
 
 test("curation metadata can set sizing and the effort ladder", () => {
   const entry = userModelEntry({
@@ -242,11 +232,13 @@ test("registry merges valid user models and skips collisions", async () => {
   const slugs = registry.MODELS.map((model) => model.slug);
   assert.ok(slugs.includes("deepseek/deepseek-user-test"));
   assert.equal(slugs.filter((slug) => slug === "deepseek/deepseek-v4-pro").length, 1);
-  assert.equal(slugs.filter((slug) => slug === "opencode-free/ox-alpha").length, 1);
-  assert.ok(!slugs.includes("opencode-free/x-preview-f-free"));
+  assert.equal(slugs.includes("opencode-free/ox-alpha"), false);
+  assert.equal(slugs.filter((slug) => slug === "opencode-free/x-preview-f-free").length, 1);
+  assert.equal(registry.MODEL_SLUG_ALIASES.has("opencode-free/x-preview-f-free"), false);
+  // Historical user state keeps x-preview-f-free under its opaque id with curated suffix.
   assert.equal(
-    registry.MODEL_SLUG_ALIASES.get("opencode-free/x-preview-f-free"),
-    "opencode-free/ox-alpha",
+    registry.MODEL_BY_SLUG.get("opencode-free/x-preview-f-free").displayName,
+    "x-preview-f-free (curated)",
   );
   assert.equal(registry.MODEL_SLUG_ALIASES.has("deepseek/deepseek-v4-pro"), false);
   assert.equal(registry.MODEL_BY_SLUG.get("deepseek/deepseek-v4-pro").provider, "deepseek");
@@ -288,10 +280,10 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.ok(registry.USER_MODEL_WARNINGS.length >= 4);
   assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => /may not declare multiAgentVersion v2/.test(warning)));
   assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => (
-    /alias deepseek\/deepseek-v4-pro/.test(warning) && /collides with an existing model or alias/.test(warning)
+    /deepseek\/deepseek-v4-pro/.test(warning) && /duplicates checked-in route/.test(warning)
   )));
   assert.ok(registry.USER_MODEL_WARNINGS.some((warning) => (
-    /alias opencode-go\/grok-4\.5/.test(warning) && /collides with an existing model or alias/.test(warning)
+    /opencode-go\/grok-4\.5/.test(warning) && /collides with an existing model alias/.test(warning)
   )));
   const merged = registry.MODEL_BY_SLUG.get("deepseek/deepseek-user-test");
   assert.equal(merged.listed, true);

@@ -155,6 +155,34 @@ test("a saved account identity is bound before a later switch", async () => {
   assert.equal(readFileSync(path.join(primaryHome, "auth.json"), "utf8"), firstAuth);
 });
 
+test("malformed switch state retains durable rollback evidence and fails closed", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-profile-corrupt-state-"));
+  const switchPath = path.join(root, "switch.json");
+  const transactionDirectory = path.join(root, "chatgpt-profile", "switch-transaction");
+  const evidencePath = path.join(transactionDirectory, "primary-auth.json");
+  mkdirSync(transactionDirectory, { recursive: true });
+  writeFileSync(evidencePath, '{"tokens":{"account_id":"rollback-account"}}', { mode: 0o600 });
+  writeFileSync(switchPath, '{"version":1,"phase":', { mode: 0o600 });
+
+  await assert.rejects(
+    requestChatGPTProfileSwitch("auto", { switchPath }),
+    /could not be read as JSON/i,
+  );
+  assert.equal(existsSync(evidencePath), true);
+  assert.equal(readFileSync(evidencePath, "utf8"), '{"tokens":{"account_id":"rollback-account"}}');
+
+  writeFileSync(switchPath, JSON.stringify({
+    version: 1,
+    pending: true,
+    phase: "future-phase",
+  }), { mode: 0o600 });
+  await assert.rejects(
+    requestChatGPTProfileSwitch("auto", { switchPath }),
+    /phase is invalid/i,
+  );
+  assert.equal(existsSync(evidencePath), true);
+});
+
 test("profile detection fails closed across desktop process names", () => {
   assert.equal(codexDesktopRunning({ platform: "darwin", processList: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" }), true);
   assert.equal(codexDesktopRunning({ platform: "darwin", processList: "/usr/bin/codex app-server" }), false);

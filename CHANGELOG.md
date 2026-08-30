@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **Reinstalling over a state directory owned by another checkout no longer
+  deadlocks.** The installers recorded the state directory's new owner only
+  after the background service reported healthy, while the service itself
+  refuses to boot for as long as the record still names another checkout
+  (`foreign_state_owner`): an install that followed one from a different
+  checkout crash-looped for the full 300-second readiness budget, rolled
+  back, and repeated on every retry, and deleting the whole state directory
+  -- every stored provider key with it -- was the only escape. The record now
+  precedes the service step it describes, so the service boots against its
+  own ownership. The ownership override the installers run under is scoped
+  to that full, ownership-transferring install on both platforms: a
+  prepare-only run meets the guard like any other writer (and the Windows
+  installer restores the caller's environment when it finishes). Linux
+  readiness also fails fast once the service manager's restart counter shows
+  a crash loop, instead of waiting out the whole budget, and names the
+  journal and the router log in the error; the counter query itself is
+  killed inside a bounded slice of the remaining budget, so a blocked
+  `systemctl` cannot stretch the wait, and a health answer that lands as the
+  threshold is crossed still wins over the crash-loop verdict.
+
+- **OpenCode Go Kimi K2.7 Code now accepts current Codex tool schemas.** Its
+  Moonshot-backed validator receives the same bounded decorated-`$defs` repair
+  as the first-party Kimi routes. The compatibility gate names only this
+  observed Console Go model, so unrelated OpenCode Go routes keep their tool
+  payloads unchanged.
+
+- **Translated tool streams no longer expose bridge-only assistant turns.**
+  Bounded, fail-open normalization removes only empty assistant envelopes that
+  LiteLLM's Chat Completions and Anthropic Messages bridges corroborate with a
+  completed tool lifecycle, then compacts the affected output indexes. Real
+  text, reasoning, refusals, malformed or ambiguous streams, and native
+  Responses routes remain untouched. Non-streaming bodies receive equivalent
+  bounded, fail-open handling under an exact terminal-output proof. Direct
+  DeepSeek keeps its narrower provider-specific proof: the historical
+  no-prelude bridge drops its corroborated private-reasoning blank, while the
+  current bridge reconstructs candidate-attached reasoning under the terminal
+  reasoning ID and removes only the separately corroborated blank output.
+
+- **Live model certification now proves the requested route.** Compatibility
+  and smoke probes disable router failover, so a healthy alternate can no
+  longer certify a broken preset. Direct probes retained GLM-5.3-Flash on
+  OpenCode Go, OpenRouter, and Z.ai Coding; the unproved Command Code, Nous
+  Research, and Venice Flash presets were withdrawn. Command Code's Ox Alpha
+  id returned `model_unavailable` on every exact surface, while the available
+  Venice account was billing-blocked before its Ox route could be certified,
+  so neither Ox preset ships. Provider discovery remains available for explicit
+  per-machine curation without presenting catalog presence as wire proof.
+  Curated models now inherit a request profile only when every checked-in route
+  in that provider family has the same non-empty profile, so a model-specific
+  repair such as OpenRouter Flash's `ox-alpha` profile cannot leak onto an
+  unrelated model selected from the same catalog.
+
+- **Router retention and concurrency now stay bounded without crossing native accounts.**
+  Request bodies and buffered upstream errors have explicit byte ceilings,
+  active turns retain truthful accounting after tray records expire, and a
+  separate 24-hour execution deadline protects abandoned work. Encrypted
+  collaboration relays coalesce only within the same resolved native account;
+  one canceled waiter cannot stop another, while the shared read is aborted
+  when every waiter leaves. Aggregate limits and cache counters are visible
+  only through caller-authenticated health.
+
+- **Qwen3.8 Flash and GLM-5.3 full are now pinned on listed providers.**
+  Live catalogs confirmed 2026-08-27: OpenRouter `qwen/qwen3.8-flash` and
+  `z-ai/glm-5.3`; Command Code `Qwen/Qwen3.8-Flash` and `zai-org/GLM-5.3`;
+  QwenCloud/DashScope `qwen3.8-flash`; Nous Research `qwen/qwen3.8-flash`;
+  Venice `z-ai-glm-5-3`; Z.ai API `glm-5.3-flash`. GLM-5.3-Flash was already
+  shipped in #466; this adds the full GLM-5.3 on OpenRouter, Command Code, and
+  Venice, plus Qwen3.8 Flash on OpenRouter, Command Code, Nous Research, and
+  Qwen Plan, plus GLM-5.3-Flash on zai-api.
+
 - **OpenCode Go's Ox Alpha preview has graduated to GLM-5.3-Flash.** The
   authenticated catalog now publishes `glm-5.3-flash` and reports the old
   `ox-alpha-free` ID unavailable, matching OpenCode's current Chat Completions
@@ -14,10 +84,17 @@
   large live multimodal histories returned empty completions before the generic
   85% point of its advertised 1M window.
 
-- **README: Ox Alpha availability updated.** The preview was withdrawn from
-  OpenCode Zen, OpenCode Go, OpenRouter, and Nous Research as of 2026-08-26.
-  It remains available on Command Code and Venice. The checked-in
-  `opencode-free/ox-alpha` pin is now stale versus the live catalog.
+- **OpenRouter now ships Grok 4.6 as a listed route.** The checked-in pin is
+  `openrouter/grok-4.6`, upstream id `x-ai/grok-4.6`, 500,000 context with
+  auto-compact at 440,000, text+image input, and the low/medium/high reasoning
+  ladder (matching Command Code, not Nous Research's xhigh-ladder route).
+
+- **README: Ox Alpha availability updated.** No checked-in Ox Alpha preset
+  remains. The withdrawn OpenCode Free, OpenRouter, and Nous routes are gone;
+  Command Code directly reported its id unavailable, and Venice could not be
+  wire-certified through the available account's billing gate. OpenCode Go,
+  OpenRouter, and Z.ai Coding retain their direct-proven named
+  GLM-5.3-Flash routes.
 
 ## 0.5.0
 

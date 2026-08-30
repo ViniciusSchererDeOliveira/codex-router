@@ -96,6 +96,59 @@ function normalizeAccount(raw, id) {
   };
 }
 function emptyState() { return { version: CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION, policy: normalizePolicy(), accounts: {}, sessions: {} }; }
+function plainObject(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
+
+function invalidPoolState(reason) {
+  throw new Error(`The saved ChatGPT account list is invalid: ${reason}.`);
+}
+
+function validatePersistedState(raw) {
+  if (!plainObject(raw)) invalidPoolState("the document root must be an object");
+  if (raw.version !== CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION) {
+    invalidPoolState(`unsupported schema version ${String(raw.version)}`);
+  }
+  if (!plainObject(raw.policy)) invalidPoolState("policy must be an object");
+  if (typeof raw.policy.enabled !== "boolean" || raw.policy.mode !== "switch") {
+    invalidPoolState("policy is malformed");
+  }
+  if (
+    raw.policy.selectedAccountId !== undefined
+    && !isChatGPTAccountId(raw.policy.selectedAccountId)
+  ) invalidPoolState("the selected account id is malformed");
+  if (!plainObject(raw.accounts)) invalidPoolState("accounts must be an object");
+  if (!plainObject(raw.sessions)) invalidPoolState("sessions must be an object");
+  const entries = Object.entries(raw.accounts);
+  if (entries.length > MAX_ACCOUNTS) invalidPoolState(`more than ${MAX_ACCOUNTS} accounts are present`);
+  for (const [id, account] of entries) {
+    if (!isChatGPTAccountId(id) || !plainObject(account) || account.id !== id) {
+      invalidPoolState("an account record is malformed");
+    }
+    if (!["active", "paused", "revoked"].includes(account.state)) {
+      invalidPoolState(`account ${id} has an invalid state`);
+    }
+    if (typeof account.paused !== "boolean" || !Number.isFinite(account.priority)) {
+      invalidPoolState(`account ${id} has invalid routing metadata`);
+    }
+    if (!plainObject(account.health) || !["healthy", "cooldown", "reauth-required", "failed"].includes(account.health.state)) {
+      invalidPoolState(`account ${id} has invalid health metadata`);
+    }
+    if (!Number.isFinite(account.turns) || !Number.isFinite(account.requests)) {
+      invalidPoolState(`account ${id} has invalid counters`);
+    }
+    if (account.identity !== undefined && !normalizeIdentity(account.identity)) {
+      invalidPoolState(`account ${id} has an invalid identity`);
+    }
+    if (account.subscription !== undefined && !plainObject(account.subscription)) {
+      invalidPoolState(`account ${id} has invalid subscription metadata`);
+    }
+  }
+  if (
+    raw.policy.selectedAccountId !== undefined
+    && !Object.hasOwn(raw.accounts, raw.policy.selectedAccountId)
+  ) invalidPoolState("the selected account is not registered");
+  return raw;
+}
+
 function normalizeState(raw) {
   const result = emptyState();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return result;
@@ -108,8 +161,23 @@ function normalizeState(raw) {
   return result;
 }
 export function readChatGPTAccountPoolState(filePath = CHATGPT_ACCOUNT_POOL_PATH) {
-  if (!existsSync(filePath)) return emptyState();
-  try { return normalizeState(JSON.parse(readFileSync(filePath, "utf8"))); } catch { return emptyState(); }
+  let file;
+  try {
+    file = lstatSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return emptyState();
+    throw new Error("The saved ChatGPT account list could not be inspected.", { cause: error });
+  }
+  if (file.isSymbolicLink() || !file.isFile()) {
+    invalidPoolState("the state path is not a regular file");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error("The saved ChatGPT account list could not be read as JSON.", { cause: error });
+  }
+  return normalizeState(validatePersistedState(parsed));
 }
 export function writeChatGPTAccountPoolState(state, filePath = CHATGPT_ACCOUNT_POOL_PATH) {
   const normalized = normalizeState({ ...state, version: CHATGPT_ACCOUNT_POOL_SCHEMA_VERSION });
@@ -306,7 +374,7 @@ export function sanitizeChatGPTAccount(account) {
   return {
     id: account.id, state: account.state, paused: account.paused === true, priority: account.priority,
     ...(account.label ? { label: account.label } : {}), ...(account.createdAt ? { createdAt: account.createdAt } : {}),
-    ...(account.identity ? { identity: { ...account.identity } } : {}), ...(account.subscription ? { subscription: { ...account.subscription } } : {}),
+    ...(account.subscription ? { subscription: { ...account.subscription } } : {}),
     health: { ...account.health, ...(account.health?.lastError ? { lastError: "[redacted]" } : {}) }, turns: account.turns, requests: account.requests,
   };
 }

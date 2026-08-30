@@ -163,6 +163,52 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+test("rejects an omitted forced Claude tool locally before OAuth or upstream work", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "antigravity-local-shape-"));
+  let upstreamCalls = 0;
+  const upstream = await startMockUpstream((_request, response) => {
+    upstreamCalls += 1;
+    response.writeHead(500);
+    response.end();
+  });
+  const port = await openPort();
+  const missingTokenPath = path.join(directory, "missing-token.json");
+  const child = startForwarder(port, upstream.url, missingTokenPath);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitForForwarder(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-6-thinking",
+        messages: [{ role: "user", content: "use impossible" }],
+        tool_choice: { type: "function", function: { name: "impossible" } },
+        tools: [{
+          type: "function",
+          function: {
+            name: "impossible",
+            parameters: { type: "object", properties: { value: false } },
+          },
+        }],
+      }),
+    });
+    assert.equal(response.status, 400);
+    const payload = await response.json();
+    assert.equal(payload.error.type, "invalid_request_error");
+    assert.equal(payload.error.code, "unsupported_forced_tool_schema");
+    assert.match(payload.error.message, /impossible/);
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await stopChild(child);
+    await closeServer(upstream.server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("delivers an upstream SSE chunk before the delayed stream completes", async () => {
   let streamController;
   const body = new ReadableStream({

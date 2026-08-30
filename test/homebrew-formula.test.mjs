@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   lockedRequirements,
   EXCLUDED_OPTIONAL_RESOURCES,
+  HOMEBREW_PROVIDED_RESOURCES,
   markerApplies,
   pypiResource,
   renderFormula,
@@ -36,6 +37,7 @@ test("Homebrew lock selection follows its declared Python version", () => {
   assert.equal(versions.has("pywin32"), false);
   assert.equal(versions.has("uvloop"), true);
   assert.equal(EXCLUDED_OPTIONAL_RESOURCES.has("pyroscope-io"), true);
+  assert.equal(HOMEBREW_PROVIDED_RESOURCES.get("numpy"), "numpy");
 });
 
 test("PyPI resource resolution requires a checksummed source distribution", async () => {
@@ -142,10 +144,14 @@ test("the generated formula owns upgrades and preserves one-time setup", () => {
       },
     ],
     excludedResources: [{ name: "pyroscope-io", version: "0.8.16" }],
+    homebrewProvidedResources: [
+      { name: "numpy", version: "2.5.1", formula: "numpy" },
+    ],
   });
   assert.match(formula, /class CodexRouter < Formula/);
   assert.doesNotMatch(formula, /^\s*version\s+/m);
   assert.match(formula, /depends_on "libyaml"/);
+  assert.match(formula, /depends_on "numpy"/);
   assert.match(formula, /if OS\.mac\?/);
   assert.doesNotMatch(formula, /Formula\["node"\]\.opt_bin/);
   assert.match(formula, /install_plan\.exist\?/);
@@ -170,8 +176,11 @@ test("the generated formula owns upgrades and preserves one-time setup", () => {
   assert.match(formula, /exec "\$source_root\/bin\/install" "\$@"/);
   assert.match(formula, /manifest\.dig\("current", "packageManager"\) != "homebrew"/);
   assert.match(formula, /codex-router setup --guided/);
+  assert.match(formula, /router and CLI only/);
+  assert.match(formula, /does not build or\s+download the Electron Control Center/);
   assert.match(formula, /codex-router uninstall/);
   assert.match(formula, /codex-router providers list --json/);
   assert.match(formula, /resource "litellm" do/);
+  assert.doesNotMatch(formula, /resource "numpy" do/);
   assert.match(formula, /pyroscope-io==0\.8\.16/);
 });

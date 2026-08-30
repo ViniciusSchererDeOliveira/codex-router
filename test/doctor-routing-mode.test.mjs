@@ -136,14 +136,19 @@ wire_api = "responses"
         0,
       );
 
+      const nativeCapturePath = path.join(stateDir, "native-models.json");
+      const nativeCapture = JSON.parse(readFileSync(nativeCapturePath, "utf8"));
+      nativeCapture.captured_with = "codex-cli 98.0.0";
+      writeFileSync(nativeCapturePath, `${JSON.stringify(nativeCapture)}\n`, { mode: 0o600 });
+
       const doctor = child("doctor.mjs", ["--json"], env);
       const report = JSON.parse(doctor.stdout);
       const byName = new Map(report.checks.map((check) => [check.name, check]));
       assert.deepEqual(byName.get("Merged catalog"), {
-        status: "ok",
+        status: "warn",
         name: "Merged catalog",
-        detail: "native-only; routed transport is inactive",
-        fix: "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
+        detail: "native catalog captured by codex-cli 98.0.0; installed codex-cli 99.0.0",
+        fix: "Run ./bin/refresh-catalog, then fully quit and reopen Codex.",
       });
       assert.equal(byName.get("Catalog matches gateway routes").status, "ok");
       assert.equal(byName.get("Catalog matches gateway routes").detail, "0 routed models");

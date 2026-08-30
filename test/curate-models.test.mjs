@@ -22,6 +22,7 @@ const {
   parseRequestProfile,
   planCuration,
   renderRows,
+  uniformProviderFamilyRequestProfile,
 } =
   await import("../src/curate-models.mjs");
 const {
@@ -92,9 +93,13 @@ test("OpenCode curation keeps each endpoint family on its documented protocol", 
     "opencode-go-messages",
     "opencode-go-responses",
   ]);
-  assert.equal(curatedModelProviderId("opencode-go", "minimax-m2.5"), "opencode-go-messages");
-  assert.equal(curatedModelProviderId("opencode-go", "grok-4.5"), "opencode-go-responses");
-  assert.equal(curatedModelProviderId("opencode-go", "deepseek-v4-flash-vision-exp"), "opencode-go");
+  for (const model of CHECKED_IN_MODELS.filter(({ provider }) => provider.startsWith("opencode-go"))) {
+    assert.equal(
+      curatedModelProviderId("opencode-go", model.upstreamModel),
+      model.provider,
+      model.slug,
+    );
+  }
   assert.equal(
     curatedModelProviderId("opencode-free", "muse-spark-1.2-contributor-free"),
     "opencode-free-responses",
@@ -102,10 +107,6 @@ test("OpenCode curation keeps each endpoint family on its documented protocol", 
   assert.equal(
     curatedModelProviderId("opencode-zen", "muse-spark-1.2"),
     "opencode-zen",
-  );
-  assert.equal(
-    curatedModelProviderId("opencode-free", "x-preview-f-free"),
-    "opencode-free",
   );
   assert.equal(curatedModelBlockReason("opencode-go", "grok-4.5"), undefined);
   assert.match(
@@ -243,10 +244,6 @@ test("OpenCode Free curation knows the documented windows its live catalog omits
     curatedModelContextLength("opencode-free", "muse-spark-1.2-contributor-free"),
     1_048_576,
   );
-  assert.equal(
-    curatedModelContextLength("opencode-free", "x-preview-f-free"),
-    1_000_000,
-  );
   assert.equal(curatedModelContextLength("opencode-free", "mimo-v2.5-free"), undefined);
 });
 
@@ -298,18 +295,6 @@ test("OpenCode protocol normalization preserves metadata and deduplicates old ro
     normalizeCurationModels([old, correct], "opencode-free"),
     [correct],
   );
-
-  const defaultOx = userModelEntry({
-    providerId: "opencode-free",
-    upstreamId: "x-preview-f-free",
-    priority: 149,
-  });
-  const [sizedOx] = normalizeCurationModels([defaultOx], "opencode-free");
-  assert.equal(sizedOx.contextWindow, 1_000_000);
-  assert.equal(sizedOx.autoCompact, 850_000);
-
-  const tunedOx = { ...defaultOx, autoCompact: 100_000 };
-  assert.strictEqual(normalizeCurationModels([tunedOx], "opencode-free")[0], tunedOx);
 });
 
 test("an additive model run keeps unrelated curated metadata", () => {
@@ -447,6 +432,13 @@ test("a curated model can opt into the auto tool-choice profile", () => {
   assert.equal(parseRequestProfile("auto-tool-choice"), "auto-tool-choice");
 });
 
+test("a curated model can opt into the narrow encrypted-schema profile", () => {
+  assert.equal(
+    parseRequestProfile("codex-encrypted-schema"),
+    "codex-encrypted-schema",
+  );
+});
+
 test("an unknown request profile is rejected by name", () => {
   // Nothing validates requestProfile downstream — the forwarder just runs no
   // branch — so a typo would store a model that silently keeps failing.
@@ -461,6 +453,157 @@ test("an empty request profile leaves the model without one", () => {
 
 test("request profile whitespace and casing are tolerated", () => {
   assert.equal(parseRequestProfile(" Auto-Tool-Choice "), "auto-tool-choice");
+});
+
+test("mixed provider families do not lend a model-specific request profile", () => {
+  for (const providerId of [
+    "openrouter",
+    "commandcode",
+    "opencode-go",
+    "ollama-cloud",
+    "deepseek",
+  ]) {
+    assert.equal(
+      uniformProviderFamilyRequestProfile(
+        CHECKED_IN_MODELS,
+        curationProviderIds(providerId),
+      ),
+      undefined,
+      providerId,
+    );
+  }
+});
+
+test("one uniform profile can span internal protocol variants", () => {
+  const routes = [
+    { provider: "example", requestProfile: "provider-contract" },
+    { provider: "example-messages", requestProfile: "provider-contract" },
+    { provider: "example-responses", requestProfile: "provider-contract" },
+  ];
+  assert.equal(
+    uniformProviderFamilyRequestProfile(
+      routes,
+      ["example", "example-messages", "example-responses"],
+    ),
+    "provider-contract",
+  );
+  assert.equal(
+    uniformProviderFamilyRequestProfile(
+      CHECKED_IN_MODELS,
+      curationProviderIds("qwen-plan"),
+    ),
+    "qwen-plan",
+  );
+});
+
+test("a missing or different family profile prevents automatic inheritance", () => {
+  assert.equal(
+    uniformProviderFamilyRequestProfile([
+      { provider: "example", requestProfile: "provider-contract" },
+      { provider: "example-messages" },
+    ], ["example", "example-messages"]),
+    undefined,
+  );
+  assert.equal(
+    uniformProviderFamilyRequestProfile([
+      { provider: "example", requestProfile: "one" },
+      { provider: "example-responses", requestProfile: "two" },
+    ], ["example", "example-responses"]),
+    undefined,
+  );
+});
+
+test("scripted curation never projects a mixed family's profile onto a new model", () => {
+  for (const { providerId, upstreamModel } of [
+    { providerId: "openrouter", upstreamModel: "vendor/generic" },
+    { providerId: "commandcode", upstreamModel: "stealth/ox-alpha" },
+    { providerId: "opencode-go", upstreamModel: "x-preview-f" },
+    { providerId: "ollama-cloud", upstreamModel: "vendor/generic" },
+  ]) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), `curate-profile-${providerId}-`));
+    const file = path.join(dir, "user-models.json");
+    const fixture = path.join(dir, "models.json");
+    writeFileSync(fixture, JSON.stringify({ data: [{ id: upstreamModel }] }));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.join(root, "src", "curate-models.mjs"),
+          providerId,
+          "--models",
+          upstreamModel,
+          "--fixture",
+          fixture,
+          "--no-apply",
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CODEX_HOME: path.join(dir, "codex"),
+            MODEL_ROUTER_STATE_DIR: dir,
+            MODEL_ROUTER_USER_MODELS: file,
+            MODEL_ROUTER_MODEL_PICKER_STATE: path.join(dir, "model-picker.json"),
+            OPENROUTER_API_KEY: "",
+            COMMAND_CODE_API_KEY: "",
+            OPENCODE_API_KEY: "",
+            OPENCODE_GO_API_KEY: "",
+            OLLAMA_API_KEY: "",
+          },
+        },
+      );
+      assert.equal(result.status, 0, `${providerId}: ${result.stderr}`);
+      const stored = JSON.parse(readFileSync(file, "utf8")).models.find(
+        (model) => model.upstreamModel === upstreamModel,
+      );
+      assert.ok(stored, `${providerId} did not store ${upstreamModel}`);
+      assert.equal(stored.requestProfile, undefined, providerId);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an explicit request profile still wins when family inheritance is withheld", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-profile-explicit-"));
+  const file = path.join(dir, "user-models.json");
+  const fixture = path.join(dir, "models.json");
+  const upstreamModel = "vendor/explicit";
+  writeFileSync(fixture, JSON.stringify({ data: [{ id: upstreamModel }] }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openrouter",
+        "--models",
+        upstreamModel,
+        "--request-profile",
+        "auto-tool-choice",
+        "--fixture",
+        fixture,
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_HOME: path.join(dir, "codex"),
+          MODEL_ROUTER_STATE_DIR: dir,
+          MODEL_ROUTER_USER_MODELS: file,
+          MODEL_ROUTER_MODEL_PICKER_STATE: path.join(dir, "model-picker.json"),
+          OPENROUTER_API_KEY: "",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const [stored] = JSON.parse(readFileSync(file, "utf8")).models;
+    assert.equal(stored.requestProfile, "auto-tool-choice");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("the picker marks selection and existing curation separately", () => {
@@ -545,7 +688,7 @@ test("scripted curation stores the advertised window, not the conservative guess
   }
 });
 
-test("OpenCode Free curation migrates Muse to Responses while Ox stays on Chat", () => {
+test("OpenCode Free curation migrates Muse to Responses", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "curate-opencode-free-protocol-"));
   const file = path.join(dir, "user-models.json");
   const pickerFile = path.join(dir, "model-picker.json");
@@ -623,10 +766,8 @@ test("OpenCode Free curation migrates Muse to Responses while Ox stays on Chat",
     const first = run();
     assert.equal(first.status, 0, first.stderr);
     const stored = JSON.parse(readFileSync(file, "utf8"));
-    // Only Muse is curated now. Ox Alpha ships as a checked-in entry, so
-    // curation must leave it alone rather than write a second copy of it into
-    // the user's models -- the stronger claim, and the one that would break if
-    // the checked-in fragment ever stopped taking precedence.
+    // The request is explicitly scoped to Muse. A withdrawn Ox id that remains
+    // in a stale fixture must not be persisted as an accidental side effect.
     assert.equal(stored.models.length, 1);
     const muse = stored.models.find((model) => model.upstreamModel === museId);
     assert.equal(stored.models.some((model) => model.upstreamModel === oxId), false);
@@ -636,9 +777,6 @@ test("OpenCode Free curation migrates Muse to Responses while Ox stays on Chat",
     assert.equal(muse.contextWindow, oldMuse.contextWindow);
     assert.deepEqual(muse.inputModalities, oldMuse.inputModalities);
     assert.equal(muse.requestProfile, oldMuse.requestProfile);
-    const oxEntry = MODEL_BY_SLUG.get("opencode-free/ox-alpha");
-    assert.equal(oxEntry.provider, "opencode-free");
-    assert.equal(oxEntry.upstreamModel, oxId);
 
     const picker = JSON.parse(readFileSync(pickerFile, "utf8"));
     assert.deepEqual(picker.visible, [muse.slug]);
@@ -666,12 +804,6 @@ test("OpenCode Free curation migrates Muse to Responses while Ox stays on Chat",
       /model: "openai\/responses\/opencode-free-responses-muse-spark-1-2-contributor-free"/,
     );
     assert.doesNotMatch(museBlock, /use_chat_completions_api/);
-    // Ox still reaches Chat Completions -- now from the checked-in entry rather
-    // than from a curated one, which is what "Ox stays on Chat" has to mean
-    // once it ships checked in.
-    const oxBlock = blockFor(oxEntry.gatewayModel);
-    assert.match(oxBlock, /model: "openai\/opencode-free-ox-alpha"/);
-    assert.match(oxBlock, /use_chat_completions_api: true/);
 
     const beforeRepeat = readFileSync(file, "utf8");
     const pickerBeforeRepeat = readFileSync(pickerFile, "utf8");
@@ -765,7 +897,7 @@ test("curation publishes through the overlay finalizer, never the installer", ()
 // checked-in precedent is config/zai/coding/glm-5.3.json, whose description
 // records the probe that justified 1M. Curated entries have the same field.
 test("a documented OpenCode Free window ships with the sourcing that justifies it", () => {
-  for (const id of ["muse-spark-1.2-contributor-free", "x-preview-f-free"]) {
+  for (const id of ["muse-spark-1.2-contributor-free"]) {
     const description = curatedModelDescription("opencode-free", id);
     assert.equal(typeof description, "string", `${id} has no sourcing note`);
     // Naming the figure, and naming what published it, is the whole point.
@@ -789,35 +921,12 @@ test("the Responses variant resolves the same sourcing as its base provider", ()
   );
 });
 
-test("upgrading an untuned window replaces the note that called it a default", () => {
-  const defaultOx = userModelEntry({
-    providerId: "opencode-free",
-    upstreamId: "x-preview-f-free",
-    priority: 149,
-  });
-  assert.equal(defaultOx.description, defaultUserModelDescription("opencode-free"));
-  const [sized] = normalizeCurationModels([defaultOx], "opencode-free");
-  assert.equal(sized.contextWindow, 1_000_000);
-  assert.equal(sized.description, curatedModelDescription("opencode-free", "x-preview-f-free"));
-
-  // A description the operator wrote is theirs; the sizing upgrade still runs.
-  const annotated = { ...defaultOx, description: "My own note." };
-  const [keptNote] = normalizeCurationModels([annotated], "opencode-free");
-  assert.equal(keptNote.description, "My own note.");
-  assert.equal(keptNote.contextWindow, 1_000_000);
-
-  // A tuned window is not upgraded, so its description is not rewritten either.
-  const tuned = { ...defaultOx, autoCompact: 100_000 };
-  assert.strictEqual(normalizeCurationModels([tuned], "opencode-free")[0], tuned);
-});
-
 test("scripted OpenCode Free curation stores the documented window and its sourcing", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "curate-opencode-free-sourcing-"));
   const file = path.join(dir, "user-models.json");
   const fixture = path.join(dir, "models.json");
-  // Ox Alpha used to stand in for the documented-window case here. It ships as
-  // a checked-in entry now, so curation refuses it as a candidate -- the point
-  // being tested is the sourcing, and Nemotron 3 Ultra Free carries the same
+  // Ox Alpha used to stand in for the documented-window case here, but that
+  // OpenCode Free id was withdrawn. Nemotron 3 Ultra Free carries the same
   // shape (a published 1M window with a declared output limit) and is still
   // reached through curation.
   const oxId = "nemotron-3-ultra-free";
@@ -895,7 +1004,7 @@ test("every documented OpenCode Free window reserves room for its output limit",
         `which leaves less than its ${output}-token output limit`,
     );
   }
-  assert.ok(declared >= 4, "the documented windows regressed");
+  assert.ok(declared >= 1, "the documented windows regressed");
 });
 
 test("documented OpenCode Free effort ladders are real Codex efforts", () => {
@@ -913,7 +1022,7 @@ test("documented OpenCode Free effort ladders are real Codex efforts", () => {
     assert.deepEqual(parsed.reasoningLevels.map((level) => level.effort), efforts);
     assert.equal(parsed.defaultEffort, "high");
   }
-  assert.ok(ladders >= 4, "the documented effort ladders regressed");
+  assert.ok(ladders >= 1, "the documented effort ladders regressed");
 });
 
 test("an untuned entry gains the documented ladder while a tuned one is untouched", () => {
