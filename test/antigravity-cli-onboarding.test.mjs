@@ -103,6 +103,36 @@ test("a signed-in but unverified session remains disabled and names the live pro
   }
 });
 
+test("direct Antigravity login refuses a rejected client until explicit disconnect", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-rejected-client-"));
+  const stateDir = path.join(testRoot, "state");
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  writePrivateJson(path.join(stateDir, "antigravity-oauth.json"), {
+    version: 3,
+    managed_by: "codex-router",
+    session_generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    project_revision: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    client_id: "operator-owned.apps.googleusercontent.com",
+    client_secret: "rejected-client-secret",
+    access_token: "",
+    refresh_token: "",
+    expires_at: 0,
+    expires_in: 0,
+    rejection_reason: "invalid_client",
+  });
+  try {
+    const login = runNode(
+      ["src/providers.mjs", "login", "antigravity-oauth"],
+      isolatedEnvironment(testRoot),
+    );
+    assert.equal(login.status, 1, login.stderr);
+    assert.match(login.stderr, /rejected.*disconnect.*valid operator-owned/i);
+    assert.doesNotMatch(login.stdout, /127\.0\.0\.1|oauth-start|oauth-client/);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("the Antigravity probe cannot make a network request without explicit live consent", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "antigravity-cli-consent-"));
   try {

@@ -217,6 +217,13 @@ function unauthorizedError(message, { providerCode } = {}) {
   });
 }
 
+function rejectedClientError() {
+  return unauthorizedError(
+    "Google rejected the stored Antigravity OAuth client. Disconnect it before signing in with a valid operator-owned Google Desktop app client.",
+    { providerCode: "invalid_client" },
+  );
+}
+
 function transientError(message, cause) {
   return oauthError(message, { code: "oauth_transient", status: 503, cause });
 }
@@ -493,6 +500,7 @@ export function readAntigravityOAuthClient({ optional = false } = {}) {
   try {
     const value = safeReadJsonFile(tokenPath, "Antigravity OAuth client credential");
     validateOwnedAntigravityRecord(value);
+    if (value?.rejection_reason === "invalid_client") throw rejectedClientError();
     return validateAntigravityOAuthClient(value);
   } catch (error) {
     if (error?.code === "oauth_unauthorized") throw error;
@@ -624,6 +632,7 @@ export async function saveAntigravityToken(
       try {
         existing = safeReadJsonFile(target, "Antigravity OAuth credential");
         validateOwnedAntigravityRecord(existing);
+        if (existing?.rejection_reason === "invalid_client") throw rejectedClientError();
       } catch (error) {
         if (error?.code === "oauth_unauthorized") throw error;
         throw unauthorizedError(

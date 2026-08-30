@@ -209,6 +209,36 @@ async function withToken(token, run) {
   }
 }
 
+test("a rejected OAuth client cannot be overwritten before explicit disconnect", async () => {
+  await withToken(
+    {
+      project_revision: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      access_token: "",
+      refresh_token: "",
+      expires_at: 0,
+      expires_in: 0,
+      rejection_reason: "invalid_client",
+    },
+    async (_write, tokenPath) => {
+      const before = readFileSync(tokenPath, "utf8");
+      await assert.rejects(
+        saveAntigravityToken({
+          ...CLIENT,
+          access_token: "replacement-access",
+          refresh_token: "replacement-refresh",
+          expires_at: 2_000_000_000,
+          expires_in: 3600,
+        }),
+        (error) =>
+          error?.code === "oauth_unauthorized" &&
+          error?.providerCode === "invalid_client" &&
+          /rejected.*disconnect/i.test(error.message),
+      );
+      assert.equal(readFileSync(tokenPath, "utf8"), before);
+    },
+  );
+});
+
 test("keeps an active Antigravity token without refreshing", async () => {
   await withToken(
     {
