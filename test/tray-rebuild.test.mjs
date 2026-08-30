@@ -1437,6 +1437,22 @@ test("the status item keeps native square geometry in icon-only mode", () => {
   assert.doesNotMatch(source, /\.frame\(minWidth: 18\)/);
 });
 
+test("the tray panel uses the status item's actual screen", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  const repositionStart = source.indexOf("private func reposition()");
+  assert.ok(repositionStart > 0, "TrayMenuController still owns panel placement");
+  const reposition = source.slice(
+    repositionStart,
+    source.indexOf("private func installMonitors()", repositionStart),
+  );
+  assert.match(reposition, /buttonWindow\.screen\?\.visibleFrame/);
+  assert.doesNotMatch(reposition, /NSScreen\.screens\.map\(\\\.visibleFrame\)/);
+  assert.doesNotMatch(reposition, /TrayPanelPlacement\.visibleFrame/);
+});
+
 test("the active router status is baked into one SVG template image", () => {
   const source = readFileSync(
     path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),

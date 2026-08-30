@@ -5,6 +5,10 @@ import {
   genericProviderRuntimeDescriptor,
   readGenericProviders,
 } from "./generic-provider-state.mjs";
+import {
+  normalizeSupportedEndpoints,
+  providerModelEndpoint,
+} from "./openai-endpoint-policy.mjs";
 import { instructionOverlayExists } from "./instruction-overlays.mjs";
 import { SOURCE_ROOT } from "./paths.mjs";
 import { officialModelDisplayName, readUserModels } from "./user-models.mjs";
@@ -569,6 +573,23 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   }
   if (model.requestProfile !== undefined && !requestProfileKnown(model.requestProfile)) {
     return `model ${model.slug} has an invalid requestProfile`;
+  }
+  if (model.supportedEndpoints !== undefined) {
+    let supported;
+    try {
+      supported = normalizeSupportedEndpoints(model.supportedEndpoints, {
+        field: `model ${model.slug}.supportedEndpoints`,
+      });
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    const conversational = providerModelEndpoint(provider);
+    if (!conversational && supported.includes("/embeddings")) {
+      return `model ${model.slug} cannot declare OpenAI endpoints for provider protocol ${provider.protocol}`;
+    }
+    if (model.listed && (!conversational || !supported.includes(conversational))) {
+      return `listed model ${model.slug} must support its provider's conversational endpoint`;
+    }
   }
   if (
     provider.generic === true &&

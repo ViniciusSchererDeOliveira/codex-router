@@ -487,6 +487,26 @@ forced choice for that model only (`--request-profile auto-tool-choice` in the
 which models exist. Curated models are local to your machine and are not
 vetted by the repository's compatibility tests.
 
+The same managed OpenAI base URL also serves `/v1/embeddings`, but only for a
+model whose local or checked-in metadata explicitly names the capability. A
+model that is both conversational and embedding-capable declares its normal
+provider route plus `"/embeddings"`, for example:
+
+```json
+"supportedEndpoints": ["/chat/completions", "/embeddings"]
+```
+
+A dedicated embedding model uses only `"/embeddings"` and must set
+`"listed": false` so it never appears as a conversational Codex model. Live
+catalog discovery does not infer this capability. Requests and responses are
+bounded to 8 MiB by default, caller cancellation reaches the provider, query
+parameters on the secret-bearing capability URL are dropped, and embedding
+requests are never retried or passed through a chat adapter. Redirects are
+refused on both internal and provider hops so 307/308 cannot replay the POST.
+The provider's normal credential isolation and generic-provider DNS checks
+still apply. Messages-native provider protocols cannot opt into this OpenAI
+endpoint.
+
 ### opencode (Go subscription and Zen)
 
 The opencode provider family covers both of opencode's endpoints with one
@@ -1101,7 +1121,23 @@ wire_api = "responses"
 ```
 
 The generated path is local caller authentication. Do not paste the complete
-managed URL into an issue.
+managed URL into an issue. If that capability may have been exposed, rotate it
+through the supported transaction instead of deleting state files by hand:
+
+```sh
+./bin/model-router codex caller-key rotate
+```
+
+On Windows use `./codex-router.ps1 caller-key rotate`. Rotation acquires the
+router's mutation locks, refuses partial managed client state, and refreshes only
+the caller URL/key fields of integrations that are already installed. A running
+router is stopped before the key swap, restarted afterward, and accepted only
+after the new capability returns a valid model list while the old one returns
+exactly `401`. An installed-but-stopped service stays stopped. A protected phase
+journal and rollback generation make an interrupted rotation recoverable without
+printing either key. Fully quit and reopen Codex (and restart a running Gemini
+CLI session) after success so cached client configuration cannot keep using the
+previous route.
 
 ### Run GPT-5.6 Sol at its documented 1M context window
 
@@ -1785,10 +1821,11 @@ one run; `GEMINI_MODEL` in the block is the default for the rest. Pass
 out entirely, in which case the CLI falls back to its own Gemini default — which
 this router does not route, so a turn without `--model` will be refused by name.
 
-**What is not served.** Embeddings (`:embedContent`) are refused with a named
-501: no routed provider exposes an embedding endpoint through the router, and a
-fabricated vector would be worse than an error. `:countTokens` is answered from
-a byte-count estimate rather than by spending a real turn upstream.
+**What is not served.** Gemini embeddings (`:embedContent`) are refused with a
+named 501. The separate OpenAI-compatible `/v1/embeddings` surface is explicitly
+model-gated and is not translated into Gemini's contract; a fabricated vector
+would be worse than an error. `:countTokens` is answered from a byte-count
+estimate rather than by spending a real turn upstream.
 
 **Native GPT models** publish here under the same rule as the harness, described
 above: after the one-time shared-plane authorization, while this machine has a

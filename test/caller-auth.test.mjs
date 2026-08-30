@@ -16,6 +16,7 @@ import {
   callerBaseUrl,
   geminiBaseUrl,
   isManagedCallerBaseUrl,
+  isManagedCodexBaseUrl,
   isManagedGeminiBaseUrl,
   redactCallerUrl,
 } from "../src/caller-auth.mjs";
@@ -53,6 +54,20 @@ test("caller capability helpers accept only the secret-bearing path and redact i
   );
 });
 
+test("managed Codex base accepts secret-bearing and plain authenticated loopback endpoints", () => {
+  assert.equal(isManagedCodexBaseUrl(callerBaseUrl(46192, CALLER_KEY), 46192), true);
+  assert.equal(isManagedCodexBaseUrl("http://127.0.0.1:46192/v1", 46192), true);
+  assert.equal(isManagedCodexBaseUrl("http://127.0.0.1:46192/v1/", 46192), true);
+  assert.equal(isManagedCodexBaseUrl("http://127.0.0.1:4102/v1", 46192), false);
+  assert.equal(isManagedCodexBaseUrl("https://127.0.0.1:46192/v1", 46192), false);
+  assert.equal(isManagedCodexBaseUrl("http://127.0.0.1:46192/gemini", 46192), false);
+});
+
+test("caller capability redaction works inside quoted config documents", () => {
+  const baseUrl = callerBaseUrl(46192, CALLER_KEY);
+  const document = `openai_base_url = ${JSON.stringify(baseUrl)}\n`;
+  assert.equal(redactCallerUrl(document), 'openai_base_url = "http://127.0.0.1:46192/_codex-router/[REDACTED]/v1"\n');
+});
 test("the gemini leaf sits behind the same capability and is redacted with it", () => {
   // Gemini CLI appends `/v1beta/models/...` to whatever base URL it is given,
   // so the capability has to be a path prefix here exactly as it is for `/v1`.

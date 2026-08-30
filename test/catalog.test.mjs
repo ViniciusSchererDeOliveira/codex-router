@@ -102,6 +102,12 @@ openai_base_url = "http://127.0.0.1:4102/_codex-router/test-caller-secret-with-s
   );
   assert.equal(
     routedCatalogConfigured(`model_provider = "openai"
+openai_base_url = "http://127.0.0.1:4202/v1"
+`),
+    true,
+  );
+  assert.equal(
+    routedCatalogConfigured(`model_provider = "openai"
 note = """
 [fake.table]
 """
@@ -124,6 +130,15 @@ openai_base_url = "https://foreign.invalid/v1"
 
 [model_providers.custom]
 base_url = "http://127.0.0.1:4102/_codex-router/test-caller-secret-with-sufficient-length/v1"
+wire_api = "responses"
+`),
+    true,
+  );
+  assert.equal(
+    routedCatalogConfigured(`model_provider = "custom"
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:4202/v1"
 wire_api = "responses"
 `),
     true,

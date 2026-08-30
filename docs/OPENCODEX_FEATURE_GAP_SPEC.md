@@ -164,7 +164,8 @@ The Codex route remains the priority. Optional future forwarding may cover:
 | `/v1/models` | P0 | Discovery and health only; never erase user models. |
 | `/v1/responses` and `/v1/chat/completions` | P0 | Main model-routing contracts. |
 | `/v1/messages` | P0 | Only for providers with a verified Messages contract. |
-| Legacy completions, embeddings, media, moderation, files, batches | P1/P2 | Advertise only when the provider and caller contract support them. |
+| Embeddings | Shipped focused slice | Explicit per-model declaration, caller capability, bounded JSON, cancellation, and no retry. |
+| Legacy completions, media, moderation, files, batches | P1/P2 | Advertise only when the provider and caller contract support them. |
 
 Non-chat endpoints must not be advertised as chat models. Multipart limits,
 idempotency, cancellation, request IDs, and non-idempotent retry boundaries are

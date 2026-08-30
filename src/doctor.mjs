@@ -2,14 +2,16 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
-import { validCallerSecret } from "./caller-auth.mjs";
-import { codexAuthStatus, findCodexBinary, runCodex } from "./codex-binary.mjs";
+import { redactCallerUrl, validCallerSecret } from "./caller-auth.mjs";
+import { codexAuthStatus, codexVersion, findCodexBinary, runCodex } from "./codex-binary.mjs";
 import { commandOnPath, spawnableCommand } from "./spawnable-command.mjs";
 import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
 import { privateFileIsProtected } from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { routedCatalogConfigured } from "./catalog.mjs";
+import { nativeCatalogVersionDrift } from "./native-catalog-freshness.mjs";
+import { readNativeCatalogSource } from "./native-catalog-source.mjs";
 import {
   MODEL_BY_SLUG,
   MODELS,
@@ -44,6 +46,7 @@ import {
   INTERNAL_SECRET_PATH,
   LITELLM_CONFIG_PATH,
   MERGED_CATALOG_PATH,
+  NATIVE_CATALOG_PATH,
   PORTS,
   SEARCH_SIDECARS_PATH,
   SOURCE_ROOT,
@@ -72,6 +75,7 @@ import {
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
 import { resolveVisionEngine } from "./vision-bridge.mjs";
+import { installedNativeVisionEngines } from "./vision-engines.mjs";
 import {
   readVisionBridgeSettings,
   visionBridgeConfigured,
@@ -368,8 +372,9 @@ if (codexTarget) {
       : undefined,
   );
 }
-// Both clients hold the managed base URL, which is a local caller capability,
-// so both documents are held to the same privacy bound.
+// Gemini and DSH still carry the caller capability in their private documents.
+// Modern Codex providers obtain it from an auth command instead, so Codex's
+// config does not need to be a credential store. Legacy capability configs do.
 const privacyTarget = codexTarget
   ? CONFIG_PATH
   : TARGET === "gemini"
@@ -378,7 +383,14 @@ const privacyTarget = codexTarget
 const configMode = existsSync(privacyTarget)
   ? statSync(privacyTarget).mode & 0o777
   : undefined;
-const configProtected = privateFileIsProtected(privacyTarget);
+const codexConfigText = codexTarget && existsSync(CONFIG_PATH)
+  ? readFileSync(CONFIG_PATH, "utf8")
+  : "";
+const codexConfigCarriesCallerCapability =
+  codexTarget && redactCallerUrl(codexConfigText) !== codexConfigText;
+const privacyRequired = !codexTarget || codexConfigCarriesCallerCapability;
+const configProtected =
+  configMode !== undefined && (!privacyRequired || privateFileIsProtected(privacyTarget));
 add(
   configProtected ? "ok" : "fail",
   codexTarget
@@ -388,10 +400,16 @@ add(
       : "Harness settings privacy",
   configMode === undefined
     ? "missing"
-    : process.platform === "win32"
-      ? "current-user Windows ACL"
-      : `mode ${configMode.toString(8)}`,
-  "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
+    : codexTarget && !privacyRequired
+      ? "router credentials stay outside config.toml"
+      : process.platform === "win32"
+        ? configProtected
+          ? "current-user Windows ACL"
+          : "Windows ACL is broader than the current user"
+        : `mode ${configMode.toString(8)}`,
+  configProtected
+    ? undefined
+    : "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
 );
 
 let selection = { providers: [], explicit: false };
@@ -467,22 +485,44 @@ const catalogOk =
     ? requiredModels.size > 0 &&
       [...requiredModels].every((slug) => catalogModels.some((model) => model.slug === slug))
     : !catalogModels.some((model) => MODEL_BY_SLUG.has(String(model.slug))));
+let nativeCaptureDrift;
+if (codexTarget && codex && existsSync(NATIVE_CATALOG_PATH)) {
+  let adopted = false;
+  try {
+    adopted = Boolean(readNativeCatalogSource());
+  } catch {
+    // Invalid source state is not adoption proof; keep checking the router-owned capture.
+  }
+  try {
+    nativeCaptureDrift = nativeCatalogVersionDrift(
+      JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8")),
+      codexVersion(),
+      { adopted },
+    );
+  } catch {
+    // The merged-catalog check below remains authoritative for unreadable files.
+  }
+}
 // The merged catalog is the file Codex reads. A harness install has no
 // equivalent: its offer is the settings route, checked by "Harness routing
 // config" below. An idle install deliberately publishes no routed models, so
 // its catalog is held to the same standard as inactive transport: nothing
 // routable may be offered.
 if (codexTarget) add(
-  catalogOk ? "ok" : "fail",
+  !catalogOk ? "fail" : nativeCaptureDrift ? "warn" : "ok",
   "Merged catalog",
-  catalogOk
-    ? idleInstall
-      ? "idle install; no routed models"
-      : routedTransportActive
-        ? `${requiredModels.size} routed models`
-        : "native-only; routed transport is inactive"
-    : MERGED_CATALOG_PATH,
-  "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
+  !catalogOk
+    ? MERGED_CATALOG_PATH
+    : nativeCaptureDrift
+      ? `native catalog captured by ${nativeCaptureDrift.captured}; installed ${nativeCaptureDrift.current}`
+      : idleInstall
+        ? "idle install; no routed models"
+        : routedTransportActive
+          ? `${requiredModels.size} routed models`
+          : "native-only; routed transport is inactive",
+  nativeCaptureDrift
+    ? "Run ./bin/refresh-catalog, then fully quit and reopen Codex."
+    : "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
 );
 // The catalog tells Codex which models to offer; the gateway config decides
 // which it can actually route. When a second checkout writes one of them the
@@ -539,21 +579,24 @@ add(
 // DeepSeek-only install for a feature nobody switched on. It still reports what
 // is true, just at the severity the situation has.
 //
-// This check sees routed models only, so a native (ChatGPT-plan) engine is
-// invisible to it and a signed-in install may well read images fine while this
-// says nothing resolves.
+// Codex may spend a signed-in native vision engine on the caller's behalf.
+// The same installed-native gate used by catalog/control keeps this diagnostic
+// aligned with what the running Codex route can actually resolve.
 const visionSettings = readVisionBridgeSettings();
-const visionEngine = resolveVisionEngine(() => requiredRoutedModels, visionSettings);
+const visionCandidates = codexTarget && codexAuth?.authenticated === true
+  ? [...requiredRoutedModels, ...installedNativeVisionEngines({ hidden: readHiddenModels() })]
+  : requiredRoutedModels;
+const visionEngine = resolveVisionEngine(() => visionCandidates, visionSettings);
 if (visionSettings.enabled && !visionEngine) {
   const asked = visionBridgeConfigured();
   add(
     asked ? "warn" : "ok",
     "Vision bridge",
-    visionSettings.engine
+    visionSettings.engine && !visionSettings.defaulted
       ? `pinned engine ${visionSettings.engine} is not an enabled model that reads images`
       : asked
-        ? "enabled, but no enabled provider offers a model that reads images"
-        : "on by default, but no enabled provider offers a model that reads images yet",
+        ? "enabled, but no enabled vision engine is available"
+        : "on by default, but no enabled vision engine is available yet",
     "Enable a provider with a vision model, sign in to ChatGPT, or run ./bin/model-router codex control vision-bridge setup for a local reader.",
   );
 } else if (visionEngine?.local) {
@@ -614,8 +657,8 @@ if (!failoverSettings.enabled) {
     "ok",
     "Model failover",
     failoverCounts.free
-      ? `on, ${failoverCounts.free} free model(s) first then ${failoverCounts.subscription} of your own`
-      : `on, ${failoverCounts.subscription} of your own providers -- no free model is curated, so nothing cheaper is tried first`,
+      ? `on, ${failoverCounts.free} free model(s) first then ${failoverCounts.subscription} model(s) on your own providers`
+      : `on, ${failoverCounts.subscription} model(s) on your own providers -- no free model is curated, so nothing cheaper is tried first`,
     failoverCounts.free
       ? "Run ./bin/model-router codex control failover chain <model-slug,...> to choose the order yourself."
       : "Free catalogs change without notice so none are checked in. Run ./bin/model-router codex curate-models opencode-free to give failover a free first stop.",

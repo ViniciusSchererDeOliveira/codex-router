@@ -159,6 +159,24 @@ redact it, while Codex config and all snapshots are current-user-only files.
 The router additionally requires JSON content, rejects browser-origin headers,
 and never grants CORS access.
 
+### Capability-gated embeddings
+
+The caller-capability `/v1/embeddings` edge resolves a registered routed model
+and refuses it unless that exact model declares `/embeddings` in
+`supportedEndpoints`. It rewrites only the public slug to the gateway model,
+then re-enters the credential-owning API forwarder; that forwarder rewrites the
+gateway model to the upstream id and otherwise preserves the embeddings JSON.
+The body never enters LiteLLM or a chat/Responses adapter. Unknown, hidden, and
+undeclared models fail before an upstream request.
+
+Both directions have an 8 MiB default bound. Client cancellation aborts the
+internal and provider requests, caller query parameters are not relayed, and
+the route performs no automatic retry because a provider may already have
+billed the input before a transport failure. Endpoint-only models stay
+unlisted so the Codex picker cannot advertise them as conversational models.
+Both hops refuse redirects so a 307/308 cannot replay the POST, and
+Messages-native providers cannot declare this OpenAI endpoint.
+
 ## Credential boundaries
 
 | Route | Incoming Codex credential | Upstream credential |
@@ -168,6 +186,7 @@ and never grants CORS access.
 | Kimi API | Discarded | Kimi Platform API key |
 | DeepSeek | Discarded | DeepSeek API key |
 | GitHub Copilot | Discarded | Stored fine-grained GitHub token, after Copilot entitlement and endpoint validation |
+| Capability-gated embeddings | Router caller capability is consumed locally | The selected routed provider's isolated credential |
 
 The Codex-to-router and internal-service trust boundaries use two different
 random keys, each stored with mode `600` or a current-user Windows ACL. Neither
@@ -246,10 +265,15 @@ citations, endpoints, or credentials.
 
 ## Transport and compaction
 
-Current Codex builds first attempt a Responses WebSocket. The router responds
-with HTTP 426, and Codex falls back to HTTP. Request bodies may use Zstandard,
-gzip, deflate, or Brotli; the router safely decompresses them before inspecting
-the model ID.
+Current Codex builds use the Responses WebSocket v2 transport. The router
+authenticates the caller capability before upgrading, accepts
+`response.create` messages, reconstructs full history when Codex sends a
+`previous_response_id` delta, and re-enters its own caller-authenticated HTTP
+Responses route. SSE response events are translated back to WebSocket JSON
+frames. The WebSocket edge never selects or contacts a provider itself, and
+the caller capability is never relayed to an upstream. HTTP request bodies may
+use Zstandard, gzip, deflate, or Brotli; the router safely decompresses them
+before inspecting the model ID.
 
 Codex can compact history through `/responses/compact` or a
 `compaction_trigger`. External Chat Completions providers cannot create OpenAI's

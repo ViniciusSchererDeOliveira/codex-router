@@ -99,7 +99,7 @@ function probe(target, providers, usageEvents = [], options = {}) {
     const ownershipId = "00000000000000000000000000000000";
     writeFileSync(
       path.join(stateDir, "config.toml"),
-      `model = ${JSON.stringify(options.selectedModel || "deepseek/deepseek-v4-pro")}\nmodel_provider = ${JSON.stringify(loginFreeProvider)}\n\n# codex-router-signed-provider-tree-slot ${ownershipId} 0\n# BEGIN codex-router-signed-provider-managed\n[model_providers.${loginFreeProvider}]\nname = "Codex Router (external models)"\nbase_url = "http://127.0.0.1:4202/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_standalone_web_search = true\nsupports_websockets = false\n# END codex-router-signed-provider-managed\n`,
+      `model = ${JSON.stringify(options.selectedModel || "deepseek/deepseek-v4-pro")}\nmodel_provider = ${JSON.stringify(loginFreeProvider)}\n\n# codex-router-signed-provider-tree-slot ${ownershipId} 0\n# BEGIN codex-router-signed-provider-managed\n[model_providers.${loginFreeProvider}]\nname = "Codex Router (external models)"\nbase_url = "http://127.0.0.1:4202/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_standalone_web_search = true\nsupports_websockets = false\n[model_providers.${loginFreeProvider}.auth]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(path.join(root, "src", "caller-key-auth-command.mjs"))}, ${JSON.stringify(path.join(stateDir, "caller-secret"))}]\ntimeout_ms = 5000\nrefresh_interval_ms = 0\n# END codex-router-signed-provider-managed\n`,
       { mode: 0o600 },
     );
     writePrivateJson(

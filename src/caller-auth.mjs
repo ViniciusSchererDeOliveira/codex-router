@@ -105,6 +105,26 @@ export function isManagedCallerBaseUrl(value, port) {
   return isManagedLeafBaseUrl(value, port, "v1");
 }
 
+// Codex can authenticate the router either with the legacy path capability or
+// with a bearer sent to the plain loopback Responses endpoint.
+export function isManagedCodexBaseUrl(value, port) {
+  if (isManagedCallerBaseUrl(value, port)) return true;
+  if (typeof value !== "string" || !value) return false;
+  try {
+    const url = new URL(value);
+    const expectedPort = port === undefined ? undefined : Number(port) === 80 ? "" : String(port);
+    return (
+      url.protocol === "http:" &&
+      url.hostname === "127.0.0.1" &&
+      (port === undefined || url.port === expectedPort) &&
+      !url.username && !url.password && !url.search && !url.hash &&
+      /^\/v1\/?$/.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 // The base URL the Gemini integration writes. Checked separately from the
 // Responses one because the two are not interchangeable: a client pointed at
 // `/v1` speaks Responses and a client pointed at `/gemini` speaks Gemini, so
@@ -122,7 +142,7 @@ export function isManagedGeminiBaseUrl(value, port) {
 export function redactCallerUrl(value) {
   if (typeof value !== "string") return value;
   return value.replace(
-    new RegExp(`(${CALLER_PATH_PREFIX}/)[A-Za-z0-9_-]+(?=/(?:v1|panel|gemini)(?:/|$))`, "g"),
+    new RegExp(`(${CALLER_PATH_PREFIX}/)[A-Za-z0-9_-]+(?=/(?:v1|panel|gemini)(?:/|$|[^A-Za-z0-9_-]))`, "g"),
     "$1[REDACTED]",
   );
 }
