@@ -24,14 +24,22 @@ const provider = {
   allowPrivate: false,
   enabled: true,
 };
+const tavilyProvider = {
+  ...provider,
+  id: "tavily-sidecar",
+  displayName: "Tavily Search",
+  baseUrl: "https://api.tavily.com",
+  credentialRef: "cred_tavily_sidecar_01",
+};
 
 function dependencies(output, calls) {
   return {
     output,
     modelForSlug: (slug) => slug === model.slug ? model : undefined,
     providerForId: (id) => {
-      if (id !== provider.id) throw new Error(`Unknown generic provider: ${id}`);
-      return provider;
+      if (id === provider.id) return provider;
+      if (id === tavilyProvider.id) return tavilyProvider;
+      throw new Error(`Unknown generic provider: ${id}`);
     },
     providerReady: () => true,
     transact: async ({ mutate, applyPublication }) => {
@@ -84,6 +92,19 @@ test("search sidecar control validates, republishes, and manages the exact model
   assert.deepEqual(readSearchSidecarState().bindings, []);
 });
 
+test("search sidecar control infers and persists the Tavily adapter", async () => {
+  const output = { write() { return true; } };
+  await runSearchSidecarControl([
+    "set",
+    model.slug,
+    tavilyProvider.id,
+    "--adapter",
+    "tavily-search",
+  ], dependencies(output, []));
+  assert.equal(readSearchSidecarState().bindings[0].adapter, "tavily-search");
+  await runSearchSidecarControl(["remove", model.slug], dependencies(output, []));
+});
+
 test("search sidecar control rejects unknown options and unsafe or ineligible bindings", async () => {
   const output = { write() { return true; } };
   await assert.rejects(
@@ -91,7 +112,7 @@ test("search sidecar control rejects unknown options and unsafe or ineligible bi
       ["set", model.slug, provider.id, "--unknown", "1"],
       dependencies(output, []),
     ),
-    /supported integer option/,
+    /supported option/,
   );
   await assert.rejects(
     () => runSearchSidecarControl(
@@ -101,7 +122,14 @@ test("search sidecar control rejects unknown options and unsafe or ineligible bi
         providerForId: () => ({ ...provider, allowPrivate: true }),
       },
     ),
-    /enabled credential-bound.*Perplexity/i,
+    /supported trusted search endpoint/i,
+  );
+  await assert.rejects(
+    () => runSearchSidecarControl(
+      ["set", model.slug, tavilyProvider.id, "--adapter", "perplexity-search"],
+      dependencies(output, []),
+    ),
+    /perplexity-search.*trusted public endpoint/i,
   );
   await assert.rejects(
     () => runSearchSidecarControl(

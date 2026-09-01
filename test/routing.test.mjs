@@ -1887,6 +1887,210 @@ undici.fetch = async (url, options = {}) => {
   }
 });
 
+test("a Tavily binding translates each Codex query without counting fan-out as retries", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "router-tavily-sidecar-"));
+  const providerId = "tavily-sidecar";
+  const credentialRef = "cred_tavily_sidecar_01";
+  const credentialSecret = "tvly-0123456789abcdefghijklmnopqrstuv";
+  const transportAudit = path.join(testRoot, "search-transport-audit.json");
+  const transportPreload = path.join(testRoot, "search-transport-preload.cjs");
+  writeFileSync(
+    path.join(testRoot, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(testRoot, "generic-providers.json"),
+    `${JSON.stringify({
+      version: 1,
+      providers: [{
+        id: providerId,
+        displayName: "Tavily Search",
+        baseUrl: "https://api.tavily.com",
+        adapter: "openai-chat",
+        headers: {},
+        credentialRef,
+        allowPrivate: false,
+        enabled: true,
+      }],
+    })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(testRoot, "search-sidecars.json"),
+    `${JSON.stringify({
+      version: 1,
+      bindings: [{
+        model: "deepseek/deepseek-v4-pro",
+        providerId,
+        adapter: "tavily-search",
+        enabled: true,
+        timeoutMs: 1_000,
+        maxResults: 4,
+        cacheTtlMs: 60_000,
+        cacheMaxEntries: 128,
+        maxAttempts: 2,
+        retryDelayMs: 100,
+      }],
+    })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(testRoot, "provider-credentials.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      credentials: [{
+        id: credentialRef,
+        providerId,
+        providerType: "generic",
+        kind: "api_key",
+        secretRef: { type: "provider-file", providerId, target: "codex" },
+        state: "active",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-01T00:00:00.000Z",
+      }],
+    })}\n`,
+    { mode: 0o600 },
+  );
+  mkdirSync(path.join(testRoot, "generic-provider-credentials"), { mode: 0o700 });
+  writeFileSync(
+    path.join(testRoot, "generic-provider-credentials", `${providerId}.key`),
+    `${credentialSecret}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(transportPreload, `
+const dns = require("node:dns");
+const fs = require("node:fs");
+const undici = require(${JSON.stringify(path.join(root, "node_modules", "undici"))});
+const originalLookup = dns.promises.lookup.bind(dns.promises);
+dns.promises.lookup = async (hostname, options) => {
+  if (hostname === "api.tavily.com") {
+    const address = { address: "93.184.216.34", family: 4 };
+    return options?.all ? [address] : address;
+  }
+  return originalLookup(hostname, options);
+};
+const audits = [];
+const originalFetch = undici.fetch;
+undici.fetch = async (url, options = {}) => {
+  if (String(url) !== "https://api.tavily.com/search") {
+    return originalFetch(url, options);
+  }
+  const headers = Object.fromEntries(new undici.Headers(options.headers));
+  const body = JSON.parse(String(options.body));
+  audits.push({
+    url: String(url),
+    method: options.method,
+    authorizationMatchesFixture: headers.authorization === ${JSON.stringify(`Bearer ${credentialSecret}`)},
+    body,
+  });
+  fs.writeFileSync(process.env.CODEX_ROUTER_SEARCH_TRANSPORT_AUDIT, JSON.stringify(audits), { mode: 0o600 });
+  const suffix = body.query === "OpenAI news" ? "openai" : "codex";
+  return new undici.Response(JSON.stringify({
+    results: [{
+      title: body.query + " result",
+      url: "https://93.184.216.34/" + suffix,
+      content: "Tavily fixture for " + body.query,
+      published_date: "2026-09-01",
+    }, {
+      title: "Shared result",
+      url: "https://93.184.216.34/shared",
+      content: "Deduplicated fixture",
+    }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+};
+`, { mode: 0o600 });
+  let nativeRequests = 0;
+  const native = await mockServer(async (request, response) => {
+    nativeRequests += 1;
+    await bodyJson(request);
+    json(response, 200, { output: "unexpected native response" });
+  });
+  const routerPort = await openPort();
+  const router = run(
+    "router.mjs",
+    {
+      CODEX_ROUTER_PORT: String(routerPort),
+      CODEX_ROUTER_STATE_DIR: testRoot,
+      CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+      CODEX_ROUTER_NATIVE_SESSION_FALLBACK: "0",
+      CODEX_ROUTER_QUIET: "1",
+      CODEX_ROUTER_SEARCH_TRANSPORT_AUDIT: transportAudit,
+    },
+    { nodeArgs: ["--require", transportPreload] },
+  );
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/alpha/search?source=codex`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CALLER_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "deepseek/deepseek-v4-pro",
+        commands: { search_query: [{ q: "OpenAI news" }, { q: "Codex Router" }] },
+      }),
+    });
+    const responseText = await response.text();
+    assert.equal(response.status, 200, `${router.testErrors()}\n${responseText}`);
+    const payload = JSON.parse(responseText);
+    assert.deepEqual(payload.results.map(({ title, snippet, published_at: publishedAt }) => ({
+      title,
+      snippet,
+      ...(publishedAt ? { publishedAt } : {}),
+    })), [{
+      title: "OpenAI news result",
+      snippet: "Tavily fixture for OpenAI news",
+      publishedAt: "2026-09-01",
+    }, {
+      title: "Shared result",
+      snippet: "Deduplicated fixture",
+    }, {
+      title: "Codex Router result",
+      snippet: "Tavily fixture for Codex Router",
+      publishedAt: "2026-09-01",
+    }]);
+    assert.deepEqual(payload.query, ["OpenAI news", "Codex Router"]);
+    const expectedBody = (query) => ({
+      query,
+      search_depth: "basic",
+      max_results: 2,
+      include_answer: false,
+      include_raw_content: false,
+      include_images: false,
+      auto_parameters: false,
+    });
+    assert.deepEqual(JSON.parse(readFileSync(transportAudit, "utf8")), [
+      {
+        url: "https://api.tavily.com/search",
+        method: "POST",
+        authorizationMatchesFixture: true,
+        body: expectedBody("OpenAI news"),
+      },
+      {
+        url: "https://api.tavily.com/search",
+        method: "POST",
+        authorizationMatchesFixture: true,
+        body: expectedBody("Codex Router"),
+      },
+    ]);
+    const usage = await waitForUsageEvent(
+      testRoot,
+      (event) => event.provider === `search:${providerId}` && event.status === 200,
+      router,
+    );
+    assert.equal(usage.retries, undefined, "ordinary Tavily fan-out must not be metered as a retry");
+    assert.equal(usage.searchResults, 3);
+    assert.equal(nativeRequests, 0);
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("an ineligible bound search is attributed to its sidecar provider", async () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "router-search-sidecar-attribution-"));
   const requestedModel = "deepseek/not-a-registered-route";

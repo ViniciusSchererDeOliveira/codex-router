@@ -11,7 +11,7 @@ import {
 test("effective search mode follows exact model or ready sidecar evidence", () => {
   const model = { slug: "generic/plain" };
   const sidecarOptions = {
-    bindingForModel: () => ({ providerId: "perplexity" }),
+    bindingForModel: () => ({ providerId: "perplexity", adapter: "perplexity-search" }),
     providers: new Map([["perplexity", {
       id: "perplexity",
       generic: true,
@@ -27,6 +27,10 @@ test("effective search mode follows exact model or ready sidecar evidence", () =
   assert.equal(routedModelSearchMode(model, { ...sidecarOptions, providerReady: () => false }), undefined);
   assert.equal(routedModelSearchMode(model, sidecarOptions), "standalone");
   assert.equal(routedModelSearchAvailable(model, sidecarOptions), true);
+  assert.equal(routedModelSearchAvailable(model, {
+    ...sidecarOptions,
+    bindingForModel: () => ({ providerId: "perplexity", adapter: "tavily-search" }),
+  }), false);
   assert.equal(
     routedModelSearchMode({ ...model, searchTool: { mode: "hosted" } }, sidecarOptions),
     "hosted",
@@ -41,7 +45,7 @@ test("a disappearing sidecar invalidates a snapshotted failover contract", () =>
   let ready = true;
   const model = { slug: "generic/plain" };
   const options = {
-    bindingForModel: () => ({ providerId: "perplexity" }),
+    bindingForModel: () => ({ providerId: "perplexity", adapter: "perplexity-search" }),
     providers: new Map([["perplexity", {
       id: "perplexity",
       generic: true,

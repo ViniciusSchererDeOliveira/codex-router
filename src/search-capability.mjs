@@ -16,7 +16,10 @@ export function sidecarSearchAvailable(model, {
   }
   if (!binding || model?.searchTool !== undefined) return false;
   const provider = providers.get(binding.providerId);
-  return trustedSearchProviderDescriptor(provider, { requireGeneric: true }) && providerReady(provider.id);
+  return trustedSearchProviderDescriptor(provider, {
+    requireGeneric: true,
+    adapter: binding.adapter,
+  }) && providerReady(provider.id);
 }
 
 // The catalog and the last provider-facing hop must answer this question from

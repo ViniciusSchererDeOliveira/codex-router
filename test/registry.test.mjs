@@ -168,6 +168,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-messages/qwen3.6-plus",
       "opencode-go-messages/qwen3.7-max",
       "opencode-go-messages/qwen3.7-plus",
+      "opencode-go-messages/qwen3.8-flash",
       "opencode-go-messages/qwen3.8-max",
       "opencode-go-responses/gpt-5.6-luna",
       "opencode-go-responses/grok-4.5",
@@ -1664,12 +1665,14 @@ test("opencode's DeepSeek models never receive a forced tool_choice", () => {
     "opencode-go/deepseek-v4-flash",
     "opencode-go/deepseek-v4-pro",
     // Same class, observed 2026-08-15 in the full sweep: 400 on required
-    // (Kimi K2.7 Code on the chat route; the four Qwens on the messages
-    // route answer a bare {"model": ...} echo), clean probe calls under auto.
+    // (Kimi K2.7 Code on the chat route; the Messages-routed Qwens answer a
+    // bare {"model": ...} echo), clean probe calls under auto. Qwen3.8 Flash
+    // follows the same provider protocol repair documented for the family.
     "opencode-go/kimi-k2.7-code",
     "opencode-go-messages/qwen3.6-plus",
     "opencode-go-messages/qwen3.7-max",
     "opencode-go-messages/qwen3.7-plus",
+    "opencode-go-messages/qwen3.8-flash",
     "opencode-go-messages/qwen3.8-max",
   ]) {
     assert.equal(MODEL_BY_SLUG.get(slug).requestProfile, "auto-tool-choice", slug);

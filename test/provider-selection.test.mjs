@@ -144,6 +144,7 @@ test("opencode Go protocol variants follow their parent as one family", () => {
     const slugs = selectedConfiguredListedModels().map((model) => model.slug);
     assert.ok(slugs.includes("opencode-go-responses/grok-4.5"));
     assert.ok(slugs.includes("opencode-go-messages/minimax-m3"));
+    assert.ok(slugs.includes("opencode-go-messages/qwen3.8-flash"));
     assert.ok(slugs.includes("opencode-go-messages/qwen3.8-max"));
     assert.ok(slugs.includes("opencode-go-responses/gpt-5.6-luna"));
 

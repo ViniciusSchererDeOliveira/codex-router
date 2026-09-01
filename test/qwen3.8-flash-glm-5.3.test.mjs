@@ -18,6 +18,7 @@ const QWEN_FLASH_ROUTES = [
   ["commandcode/qwen3.8-flash", "Qwen/Qwen3.8-Flash", 1_000_000, 900_000],
   ["qwen-plan/qwen3.8-flash", "qwen3.8-flash", 983_616, 900_000],
   ["nousresearch/qwen3.8-flash", "qwen/qwen3.8-flash", 1_000_000, 900_000],
+  ["opencode-go-messages/qwen3.8-flash", "qwen3.8-flash", 1_000_000, 900_000],
 ];
 
 // The first three GLM-5.3 full routes were confirmed 2026-08-27. The Ollama
@@ -71,7 +72,7 @@ test("zai-api/glm-5.3-flash records the upstream id and window", () => {
 
 test("Qwen3.8 Flash input modalities match catalog documentation", () => {
   // All Qwen3.8 Flash routes document text+image.
-  for (const slug of ["openrouter/qwen3.8-flash", "commandcode/qwen3.8-flash", "qwen-plan/qwen3.8-flash", "nousresearch/qwen3.8-flash"]) {
+  for (const [slug] of QWEN_FLASH_ROUTES) {
     const model = MODEL_BY_SLUG.get(slug);
     assert.deepEqual(model.inputModalities, ["text", "image"]);
   }
@@ -99,7 +100,7 @@ test("GLM-5.3 full reasoning ladders use low/high/max", () => {
 
 test("Qwen3.8 Flash reasoning uses single high level", () => {
   // All Qwen3.8 Flash routes use a single high reasoning level.
-  for (const slug of ["openrouter/qwen3.8-flash", "commandcode/qwen3.8-flash", "qwen-plan/qwen3.8-flash", "nousresearch/qwen3.8-flash"]) {
+  for (const [slug] of QWEN_FLASH_ROUTES) {
     const model = MODEL_BY_SLUG.get(slug);
     assert.deepEqual(
       model.reasoningLevels.map((level) => level.effort),

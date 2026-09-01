@@ -245,7 +245,7 @@ does not ask for or infer search mode from an upstream catalog claim.
 
 ### Per-model search sidecar
 
-A model without `searchTool` can be opted into the Perplexity Search sidecar.
+A model without `searchTool` can be opted into a Perplexity or Tavily Search sidecar.
 The model catalog advertises search only while the exact binding, trusted
 generic-provider descriptor, and protected credential are all ready. Codex's
 authenticated `/alpha/search` request is then handled locally and never falls
@@ -254,14 +254,17 @@ native behavior above.
 
 The sidecar does not accept an arbitrary destination. Its provider must be an
 enabled, public-only generic `openai-chat` descriptor whose base URL is exactly
-`https://api.perplexity.ai`, and the request path is fixed to `/search`. The
+`https://api.perplexity.ai` or `https://api.tavily.com`, and the binding's
+adapter must match that origin. The request path is fixed to `/search`. The
 generic-provider transport resolves and pins the destination, refuses private
 addresses and redirects, and attaches the credential inside that boundary.
 Returned citations receive their own public-DNS and credential checks before
 they become model-visible data.
 
 The accepted wire subset is deliberately smaller than a general browser:
-one through four `search_query` entries, each containing only `q`. Results,
+one through four `search_query` entries, each containing only `q`. Perplexity
+receives the query set in one bounded request; Tavily receives one Basic Search
+request per query, and the merged results are URL-deduplicated. Results,
 body size, text length, retry count, timeout, backoff, and cache size/TTL are
 bounded by the versioned per-model policy. One operation deadline covers the
 adapter, response read, result DNS checks, retries, and backoff. Cancellation

@@ -3,11 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { withAtomicStateLock } from "./atomic-state-lock.mjs";
 import { writePrivateJson } from "./file-security.mjs";
 import { SEARCH_SIDECARS_PATH } from "./paths.mjs";
+import { TRUSTED_SEARCH_ADAPTERS } from "./search-sidecar-policy.mjs";
 
 export { SEARCH_SIDECARS_PATH } from "./paths.mjs";
 
 export const SEARCH_SIDECAR_SCHEMA_VERSION = 1;
 export const SEARCH_SIDECAR_ADAPTER = "perplexity-search";
+export const SEARCH_SIDECAR_ADAPTERS = Object.freeze(Object.keys(TRUSTED_SEARCH_ADAPTERS));
 export const SEARCH_SIDECAR_DEFAULTS = Object.freeze({
   timeoutMs: 10_000,
   maxResults: 8,
@@ -62,8 +64,8 @@ export function normalizeSearchSidecarBinding(value) {
   if (!MODEL_SLUG.test(model)) throw new Error("Search sidecar model must be a routed model slug.");
   if (!PROVIDER_ID.test(providerId)) throw new Error("Search sidecar providerId is invalid.");
   const adapter = value.adapter === undefined ? SEARCH_SIDECAR_ADAPTER : value.adapter;
-  if (adapter !== SEARCH_SIDECAR_ADAPTER) {
-    throw new Error(`Search sidecar adapter must be ${SEARCH_SIDECAR_ADAPTER}.`);
+  if (!SEARCH_SIDECAR_ADAPTERS.includes(adapter)) {
+    throw new Error(`Search sidecar adapter must be one of ${SEARCH_SIDECAR_ADAPTERS.join(", ")}.`);
   }
   const enabled = value.enabled === undefined ? true : value.enabled;
   if (typeof enabled !== "boolean") throw new Error("Search sidecar enabled must be a boolean.");

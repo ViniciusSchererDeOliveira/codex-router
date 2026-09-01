@@ -4587,7 +4587,7 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
           provider: servingProvider,
           status: 200,
           durationMs: Date.now() - startedAt,
-          retries: Math.max(0, (sidecar.telemetry?.attempts || 1) - 1),
+          retries: sidecar.telemetry?.retries ?? Math.max(0, (sidecar.telemetry?.attempts || 1) - 1),
           searchSidecar: true,
           searchCacheHit: sidecar.telemetry?.cacheHit === true,
           searchResults: sidecar.telemetry?.results,
@@ -4732,7 +4732,7 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
         provider: servingProvider,
         status,
         durationMs: Date.now() - startedAt,
-        retries: Math.max(0, (error.telemetry?.attempts || 1) - 1),
+        retries: error.telemetry?.retries ?? Math.max(0, (error.telemetry?.attempts || 1) - 1),
         searchSidecar: true,
         searchCacheHit: false,
       });

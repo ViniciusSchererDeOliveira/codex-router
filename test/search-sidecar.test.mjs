@@ -15,6 +15,7 @@ const {
 } = await import("../src/search-sidecar.mjs");
 const {
   parseSearchSidecarDocument,
+  normalizeSearchSidecarBinding,
   readSearchSidecarState,
   removeSearchSidecarBinding,
   removeSearchSidecarBindingsForProvider,
@@ -46,6 +47,18 @@ const provider = {
   allowPrivate: false,
   enabled: true,
 };
+const tavilyBinding = {
+  ...binding,
+  providerId: "tavily-sidecar",
+  adapter: "tavily-search",
+};
+const tavilyProvider = {
+  ...provider,
+  id: "tavily-sidecar",
+  displayName: "Tavily Search",
+  baseUrl: "https://api.tavily.com",
+  credentialRef: "cred_tavily_search_01",
+};
 const publicResolution = async () => ["93.184.216.34"];
 
 function response(payload, status = 200, headers = {}) {
@@ -74,6 +87,11 @@ test("sidecar state is closed, versioned, private, and keyed by exact model slug
   assert.throws(
     () => parseSearchSidecarDocument({ version: 2, bindings: [] }),
     /version 1/,
+  );
+  assert.equal(normalizeSearchSidecarBinding(tavilyBinding).adapter, "tavily-search");
+  assert.throws(
+    () => normalizeSearchSidecarBinding({ ...binding, adapter: "arbitrary-search" }),
+    /perplexity-search, tavily-search/,
   );
   assert.deepEqual(setSearchSidecarBinding(binding), binding);
   assert.equal(privateFileIsProtected(SEARCH_SIDECARS_PATH), true);
@@ -116,14 +134,16 @@ test("query parsing is bounded and rejects unsupported commands and filters", ()
   );
 });
 
-test("only the trusted credential-bound Perplexity generic provider is accepted", () => {
+test("only trusted credential-bound Perplexity and Tavily providers are accepted", () => {
   assert.equal(trustedSearchProvider(provider), true);
+  assert.equal(trustedSearchProvider(tavilyProvider), true);
   assert.equal(trustedSearchProvider({ ...provider, baseUrl: "https://search.example.test" }), false);
   assert.equal(trustedSearchProvider({ ...provider, baseUrl: "http://api.perplexity.ai" }), false);
   assert.equal(trustedSearchProvider({ ...provider, baseUrl: "https://api.perplexity.ai/v1" }), false);
   assert.equal(trustedSearchProvider({ ...provider, credentialRef: undefined }), false);
   assert.equal(trustedSearchProvider({ ...provider, adapter: "openai-responses" }), false);
   assert.equal(trustedSearchProvider({ ...provider, allowPrivate: true }), false);
+  assert.equal(trustedSearchProvider({ ...tavilyProvider, baseUrl: "https://tavily.example.test" }), false);
 });
 
 test("authorized search sends a bounded raw Perplexity request and sanitizes results", async () => {
@@ -178,6 +198,71 @@ test("authorized search sends a bounded raw Perplexity request and sanitizes res
   assert.deepEqual(result.response.query, ["latest AI", "AI safety"]);
   assert.equal(result.telemetry.cacheHit, false);
   assert.equal(result.telemetry.results, 2);
+});
+
+test("Tavily executes one bounded request per query and normalizes content results", async () => {
+  const calls = [];
+  const result = await executeSearchSidecar({
+    binding: { ...tavilyBinding, maxResults: 4 },
+    payload: { commands: { search_query: [{ q: "latest AI" }, { q: "AI safety" }] } },
+    accountScope: "account-a",
+    cache: new Map(),
+    providerForId: () => tavilyProvider,
+    providerReady: () => true,
+    resolveResultHost: publicResolution,
+    requestProvider: async (providerId, requestPath, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ providerId, requestPath, options: { ...options, body } });
+      return {
+        response: response({
+          results: [
+            {
+              title: `${body.query} result`,
+              url: `https://example.com/${encodeURIComponent(body.query)}`,
+              content: `Tavily content for ${body.query}`,
+              published_date: "2026-09-01",
+            },
+            {
+              title: "Shared result",
+              url: "https://example.org/shared",
+              content: "Shared content",
+            },
+          ],
+        }),
+      };
+    },
+  });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(({ providerId, requestPath, options }) => ({
+    providerId,
+    requestPath,
+    body: options.body,
+  })), ["latest AI", "AI safety"].map((query) => ({
+    providerId: tavilyProvider.id,
+    requestPath: "/search",
+    body: {
+      query,
+      search_depth: "basic",
+      max_results: 2,
+      include_answer: false,
+      include_raw_content: false,
+      include_images: false,
+      auto_parameters: false,
+    },
+  })));
+  assert.equal(result.response.results.length, 3);
+  assert.deepEqual(result.response.results[0], {
+    type: "text_result",
+    ref_id: "turn0search0",
+    title: "latest AI result",
+    url: "https://example.com/latest%20AI",
+    snippet: "Tavily content for latest AI",
+    published_at: "2026-09-01",
+  });
+  assert.equal(result.response.results.filter(({ url }) => url.endsWith("/shared")).length, 1);
+  assert.equal(result.telemetry.attempts, 2);
+  assert.equal(result.telemetry.requests, 2);
+  assert.equal(result.telemetry.retries, 0);
 });
 
 test("authorization and cache scopes cannot cross accounts or provider credentials", async () => {
@@ -290,6 +375,11 @@ test("private DNS, malformed JSON, oversized bodies, and unavailable credentials
       url: "https://example.com/result?reference=pplx-0123456789abcdefghijklmnopqrstuv",
       snippet: "ordinary summary",
     },
+    {
+      title: "credential in Tavily snippet",
+      url: "https://example.com/result",
+      snippet: "Leaked tvly-0123456789abcdefghijklmnopqrstuv",
+    },
   ]) {
     await assert.rejects(
       () => executeSearchSidecar({
@@ -339,6 +429,8 @@ test("retry policy is bounded by one operation deadline and cancellation", async
   });
   assert.equal(attempts, 2);
   assert.equal(success.telemetry.attempts, 2);
+  assert.equal(success.telemetry.requests, 1);
+  assert.equal(success.telemetry.retries, 1);
 
   const controller = new AbortController();
   const pending = executeSearchSidecar({

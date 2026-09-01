@@ -1076,7 +1076,10 @@ if (TARGET === "codex" && existsSync(SEARCH_SIDECARS_PATH)) {
         Boolean(model) &&
         model.searchTool === undefined &&
         Boolean(provider) &&
-        trustedSearchProviderDescriptor(provider, { requireGeneric: true }) &&
+        trustedSearchProviderDescriptor(provider, {
+          requireGeneric: true,
+          adapter: binding.adapter,
+        }) &&
         genericProviderConfigured(binding.providerId);
       add(
         ready ? "ok" : binding.enabled ? "fail" : "warn",

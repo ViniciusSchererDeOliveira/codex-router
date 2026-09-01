@@ -351,13 +351,14 @@ runtime-generic route anyway, the managed Responses boundary removes only
 those search extensions before the strict upstream sees them.
 
 For a routed model that has no verified standalone or provider-hosted search,
-Codex can instead use an explicit Perplexity Search sidecar. This is not a
-global fallback: the binding names one exact routed model, uses a separately
-stored Perplexity API key, and is refused for a model that already owns a
-search capability. The adapter implements Perplexity's raw
-[`POST /search`](https://docs.perplexity.ai/api-reference/search-post) API and
-accepts only Codex `search_query` commands; unsupported filters or other web
-commands fail by name.
+Codex can instead use an explicit Perplexity or Tavily Search sidecar. This is
+not a global fallback: the binding names one exact routed model, uses a
+separately stored search-provider API key, and is refused for a model that
+already owns a search capability. The adapters implement the providers' raw
+`POST /search` APIs and accept only Codex `search_query` commands; unsupported
+filters or other web commands fail by name. Perplexity can batch up to four
+queries in one request. Tavily receives one bounded Basic Search request per
+query and the router deduplicates the combined citations.
 
 Create the trusted provider descriptor, enter the key at the hidden terminal
 prompt, and bind the model:
@@ -369,6 +370,20 @@ prompt, and bind the model:
   --adapter openai-chat
 ./bin/model-router codex providers generic credential perplexity-search set
 ./bin/model-router codex search-sidecar set PROVIDER/MODEL perplexity-search
+./bin/model-router codex search-sidecar status PROVIDER/MODEL
+```
+
+Or configure Tavily. `--adapter` is optional when the trusted endpoint identifies
+the adapter unambiguously, but spelling it out keeps the binding self-documenting:
+
+```sh
+./bin/model-router codex providers generic add tavily-search \
+  --name "Tavily Search" \
+  --base-url https://api.tavily.com \
+  --adapter openai-chat
+./bin/model-router codex providers generic credential tavily-search set
+./bin/model-router codex search-sidecar set PROVIDER/MODEL tavily-search \
+  --adapter tavily-search
 ./bin/model-router codex search-sidecar status PROVIDER/MODEL
 ```
 
@@ -389,6 +404,9 @@ On Windows, the same commands are available through `codex-router.ps1`:
 .\codex-router.ps1 providers generic add perplexity-search --name "Perplexity Search" --base-url https://api.perplexity.ai --adapter openai-chat
 .\codex-router.ps1 providers generic credential perplexity-search set
 .\codex-router.ps1 search-sidecar set PROVIDER/MODEL perplexity-search
+.\codex-router.ps1 providers generic add tavily-search --name "Tavily Search" --base-url https://api.tavily.com --adapter openai-chat
+.\codex-router.ps1 providers generic credential tavily-search set
+.\codex-router.ps1 search-sidecar set PROVIDER/MODEL tavily-search --adapter tavily-search
 ```
 
 ```sh
@@ -682,6 +700,7 @@ the operator explicitly selects them.
 | MiniMax M2.7 (opencode Go) | `opencode-go-messages/minimax-m2.7` |
 | MiniMax M2.5 (opencode Go) | `opencode-go-messages/minimax-m2.5` |
 | Qwen3.8 Max (opencode Go) | `opencode-go-messages/qwen3.8-max` |
+| Qwen3.8 Flash (opencode Go) | `opencode-go-messages/qwen3.8-flash` |
 | Qwen3.7 Max (opencode Go) | `opencode-go-messages/qwen3.7-max` |
 | Qwen3.7 Plus (opencode Go) | `opencode-go-messages/qwen3.7-plus` |
 | Qwen3.6 Plus (opencode Go) | `opencode-go-messages/qwen3.6-plus` |

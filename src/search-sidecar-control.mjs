@@ -14,10 +14,14 @@ import {
   SEARCH_SIDECARS_PATH,
   setSearchSidecarBinding,
 } from "./search-sidecar-state.mjs";
-import { trustedSearchProviderDescriptor } from "./search-sidecar-policy.mjs";
+import {
+  trustedSearchAdapterForProvider,
+  trustedSearchProviderDescriptor,
+} from "./search-sidecar-policy.mjs";
 import { targetRestartHint } from "./target-integration.mjs";
 
 const SET_OPTIONS = new Map([
+  ["--adapter", "adapter"],
   ["--timeout-ms", "timeoutMs"],
   ["--max-results", "maxResults"],
   ["--cache-ttl-ms", "cacheTtlMs"],
@@ -32,11 +36,11 @@ function parseSetOptions(args) {
     const name = args[index];
     const field = SET_OPTIONS.get(name);
     const raw = args[index + 1];
-    if (!field || raw === undefined || !/^\d+$/.test(raw)) {
-      throw new Error(`${name || "Search sidecar option"} must be a supported integer option.`);
+    if (!field || raw === undefined || (field !== "adapter" && !/^\d+$/.test(raw))) {
+      throw new Error(`${name || "Search sidecar option"} must be a supported option.`);
     }
     if (field in values) throw new Error(`${name} may be specified only once.`);
-    values[field] = Number(raw);
+    values[field] = field === "adapter" ? raw : Number(raw);
   }
   return values;
 }
@@ -58,7 +62,9 @@ function diagnostics(binding, {
   else if (model.searchTool !== undefined) issues.push("model already owns native or hosted search");
   if (!provider) issues.push("generic search provider is missing");
   else {
-    if (!trustedSearchProviderDescriptor(provider)) issues.push("provider is not the trusted Perplexity Search endpoint");
+    if (!trustedSearchProviderDescriptor(provider, { adapter: binding.adapter })) {
+      issues.push(`provider does not match the trusted ${binding.adapter} endpoint`);
+    }
     if (!providerReady(provider.id)) issues.push("provider credential is unavailable");
   }
   return {
@@ -75,7 +81,7 @@ export function searchSidecarStatus(model, dependencies) {
   return { path: SEARCH_SIDECARS_PATH, bindings };
 }
 
-function assertConfigurable(modelSlug, providerId, {
+function assertConfigurable(modelSlug, providerId, adapter, {
   modelForSlug = (slug) => MODEL_BY_SLUG.get(slug),
   providerForId = getGenericProvider,
   providerReady = genericProviderConfigured,
@@ -86,9 +92,9 @@ function assertConfigurable(modelSlug, providerId, {
     throw new Error(`${modelSlug} already has ${model.searchTool.mode} search; sidecar override is refused.`);
   }
   const provider = providerForId(providerId);
-  if (!trustedSearchProviderDescriptor(provider)) {
+  if (!trustedSearchProviderDescriptor(provider, { adapter })) {
     throw new Error(
-      "The search provider must be an enabled credential-bound openai-chat generic provider at https://api.perplexity.ai.",
+      `The search provider must be an enabled credential-bound ${adapter} generic provider at its trusted public endpoint.`,
     );
   }
   if (!providerReady(provider.id)) {
@@ -99,7 +105,7 @@ function assertConfigurable(modelSlug, providerId, {
 function usage() {
   throw new Error(
     "Usage: search-sidecar status [MODEL] | set MODEL PROVIDER " +
-      "[--timeout-ms N] [--max-results N] [--cache-ttl-ms N] " +
+      "[--adapter perplexity-search|tavily-search] [--timeout-ms N] [--max-results N] [--cache-ttl-ms N] " +
       "[--cache-max-entries N] [--max-attempts N] [--retry-delay-ms N] | " +
       "enable MODEL | disable MODEL | remove MODEL",
   );
@@ -138,17 +144,25 @@ export async function runSearchSidecarControl(args = process.argv.slice(2), {
       }
       if (action === "enable" || action === "disable") {
         if (!existing) throw new Error(`No search sidecar binding exists for ${model}.`);
-        if (action === "enable") assertConfigurable(existing.model, existing.providerId, dependencies);
+        if (action === "enable") {
+          assertConfigurable(existing.model, existing.providerId, existing.adapter, dependencies);
+        }
         result = setSearchSidecarBinding({ ...existing, enabled: action === "enable" });
         return;
       }
       const providerId = String(args[2] || "").trim();
       if (!providerId) usage();
-      assertConfigurable(model, providerId, dependencies);
+      const provider = providerForId(providerId);
+      const adapter = setOptions.adapter || trustedSearchAdapterForProvider(provider);
+      if (!adapter) {
+        throw new Error("The search provider does not match a supported trusted search endpoint.");
+      }
+      assertConfigurable(model, providerId, adapter, dependencies);
       result = setSearchSidecarBinding({
         ...(existing || {}),
         model,
         providerId,
+        adapter,
         enabled: true,
         ...setOptions,
       });

@@ -219,8 +219,11 @@ capability mismatch, sticky session, and native catalog tests.
 ## 7. Implemented gap E: web-search sidecar
 
 The router preserves native standalone search and provider-specific hosted
-search. It also offers a concrete Perplexity Search adapter only as an explicit
-per-model opt-in for a model that does not already own either capability.
+search. It also offers concrete Perplexity Search and Tavily Search adapters
+only as an explicit per-model opt-in for a model that does not already own
+either capability. Perplexity accepts the bounded query batch directly; Tavily
+receives one bounded Basic search per query and the router deduplicates the
+combined result set.
 
 Requirements:
 
