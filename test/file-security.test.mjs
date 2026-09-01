@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -39,6 +39,20 @@ test("private JSON state uses one owner-only atomic writer", () => {
     assert.deepEqual(writePrivateJson(target, value, { directoryMode: 0o700 }), value);
     assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), value);
     if (process.platform !== "win32") assert.equal(statSync(target).mode & 0o777, 0o600);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("private writes never chmod an existing caller-owned parent directory", {
+  skip: process.platform === "win32" ? "POSIX mode assertion" : false,
+}, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-router-existing-parent-"));
+  const target = path.join(directory, "state.json");
+  try {
+    chmodSync(directory, 0o755);
+    writePrivateJson(target, { ok: true }, { directoryMode: 0o700 });
+    assert.equal(statSync(directory).mode & 0o777, 0o755);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -248,7 +262,6 @@ test(
     }
   },
 );
-
 test(
   "Windows request-path private writes use bounded ACL operations and preserve the atomic target ACL",
   { skip: process.platform !== "win32" },

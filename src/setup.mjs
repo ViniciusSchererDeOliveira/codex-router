@@ -38,6 +38,10 @@ import {
   readVisionBridgeSettings,
   visionBridgeConfigured,
 } from "./vision-bridge-state.mjs";
+import {
+  operationDeadlineFromEnvironment,
+  remainingOperationMs,
+} from "./process-tree.mjs";
 
 const args = process.argv.slice(2);
 const guided = args.includes("--guided");
@@ -335,7 +339,10 @@ function oauthSetupHint(provider) {
     const command = process.platform === "win32"
       ? ".\\codex-router.ps1 providers login antigravity-oauth"
       : "./bin/providers login antigravity-oauth";
-    return `run \`${command}\``;
+    const probe = process.platform === "win32"
+      ? ".\\codex-router.ps1 providers probe antigravity-oauth --live --yes"
+      : "./bin/providers probe antigravity-oauth --live --yes";
+    return `run \`${command}\`, then explicitly run \`${probe}\` after reviewing its quota cost`;
   }
   return "run `kimi login`";
 }
@@ -354,10 +361,38 @@ async function configureProvider(provider) {
       if (!confirm(`Open a browser to sign in to ${provider.displayName} now?`)) {
         throw incomplete(`${provider.displayName} sign-in was cancelled.`);
       }
-      const { signInAntigravity } = await import("./antigravity-oauth-onboarding.mjs");
-      await signInAntigravity();
-      if (!providerConfigured(provider)) {
+      const deadline = operationDeadlineFromEnvironment(process.env, {
+        timeoutMs: 10 * 60_000,
+        maximumMs: 10 * 60_000,
+      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        const error = new Error("Antigravity OAuth setup exceeded its absolute deadline.");
+        error.code = "router_operation_timeout";
+        controller.abort(error);
+      }, remainingOperationMs(deadline));
+      timer.unref?.();
+      try {
+        // Dependency setup and the browser callback share one deadline so a
+        // wedged npm child cannot consume an unbounded pre-auth phase or fail
+        // the setup only after the operator has authorized Google.
+        await ensureNodeDependencies({ signal: controller.signal, deadline });
+        const { signInAntigravity } = await import("./antigravity-oauth-onboarding.mjs");
+        await signInAntigravity({ signal: controller.signal, deadline });
+      } finally {
+        clearTimeout(timer);
+      }
+      const status = antigravityOAuthStatus();
+      if (!status.signedIn) {
         throw incomplete(`${provider.displayName} sign-in did not produce a usable credential.`);
+      }
+      if (!status.configured) {
+        const probe = process.platform === "win32"
+          ? ".\\codex-router.ps1 providers probe antigravity-oauth --live --yes"
+          : "./bin/providers probe antigravity-oauth --live --yes";
+        throw incomplete(
+          `${provider.displayName} is signed in but remains disabled until the explicit live compatibility test succeeds; run \`${probe}\` after reviewing its quota cost.`,
+        );
       }
       return;
     }
@@ -384,7 +419,7 @@ async function configureProvider(provider) {
     if (!confirm(`Enter ${prompt} securely now?`)) {
       throw incomplete(`${provider.displayName} setup was cancelled.`);
     }
-    ensureNodeDependencies();
+    await ensureNodeDependencies();
     run(process.execPath, [path.join(SOURCE_ROOT, "src", "provider-key.mjs"), provider.id, "set"]);
   }
 }
@@ -510,9 +545,33 @@ async function main() {
       // wrong thing. Let it out so the installer restores the checkout.
       if (isNodeDependencyFailure(error)) throw error;
       const reason = error instanceof Error ? error.message : String(error);
-      pendingCredentials.push({ provider, reason });
+      pendingCredentials.push({
+        provider,
+        reason,
+        // A normal API provider can remain selected while waiting for a key;
+        // Antigravity cannot: sign-in alone is deliberately insufficient and
+        // its explicit quota-consuming proof has deterministically not passed.
+        withdrawn: provider.id === "antigravity-oauth",
+      });
       process.stderr.write(`\nWarning: ${provider.displayName} was not configured (${reason})\n`);
+      if (provider.id === "antigravity-oauth") {
+        process.stderr.write(
+          "Antigravity remains unselected until its explicit live proof succeeds and the router confirms its forwarder.\n",
+        );
+      }
     }
+  }
+  const withdrawnProviders = new Set(
+    pendingCredentials.filter(({ withdrawn }) => withdrawn).map(({ provider }) => provider.id),
+  );
+  if (withdrawnProviders.size) {
+    providers = providers.filter((id) => !withdrawnProviders.has(id));
+    const withdrawnModelSlugs = new Set(
+      modelChoices
+        .filter((model) => withdrawnProviders.has(canonicalProviderId(model.provider)))
+        .map((model) => model.slug),
+    );
+    selectedModelSlugs = selectedModelSlugs.filter((slug) => !withdrawnModelSlugs.has(slug));
   }
   writeProviderSelection(providers);
   // Written on every run, not only idle ones: re-running setup without
@@ -695,8 +754,10 @@ async function main() {
     );
   }
   if (pendingCredentials.length) {
+    const retainedPending = pendingCredentials.filter(({ withdrawn }) => !withdrawn);
+    const withdrawnPending = pendingCredentials.filter(({ withdrawn }) => withdrawn);
     process.stdout.write(
-      `\nStill needs a credential:\n` +
+      `\nStill needs provider setup:\n` +
         pendingCredentials
           .map(({ provider }) => {
             if (provider.kind === "oauth") {
@@ -706,7 +767,12 @@ async function main() {
             return `  ${provider.displayName}: ${key}\n`;
           })
           .join("") +
-        `These providers stay selected and start working as soon as a key is stored.\n`,
+        (retainedPending.length
+          ? "Providers waiting only for a credential stay selected and start working as soon as it is stored.\n"
+          : "") +
+        (withdrawnPending.length
+          ? "Antigravity remains unselected until its explicit live proof succeeds and the router confirms its forwarder.\n"
+          : ""),
     );
   }
 }

@@ -140,6 +140,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "ollama-cloud/deepseek-v4-pro",
       "ollama-cloud/glm-5.2",
       "ollama-cloud/glm-5.3-flash",
+      "ollama-cloud/glm-5.3",
       "ollama-cloud/kimi-k2.7-code",
       "ollama-cloud/kimi-k3",
       "ollama-cloud/minimax-m3",
@@ -817,6 +818,17 @@ test("GLM-5.3-Flash on Ollama Cloud uses the :cloud tag and shared profile", () 
   assert.deepEqual(model?.reasoningLevels.map((level) => level.effort), ["low", "high", "max"]);
   assert.equal(model?.defaultEffort, "max");
   assert.deepEqual(model?.inputModalities, ["text", "image"]);
+});
+
+test("GLM-5.3 on Ollama Cloud uses the :cloud tag and shared profile", () => {
+  const model = MODEL_BY_SLUG.get("ollama-cloud/glm-5.3");
+  assert.equal(model?.upstreamModel, "glm-5.3:cloud");
+  assert.equal(model?.requestProfile, "ollama-cloud-glm-5-3");
+  assert.equal(model?.contextWindow, 1_000_000);
+  assert.equal(model?.autoCompact, 880_000);
+  assert.deepEqual(model?.reasoningLevels.map((level) => level.effort), ["low", "high", "max"]);
+  assert.equal(model?.defaultEffort, "max");
+  assert.deepEqual(model?.inputModalities, ["text"]);
 });
 
 test("four additional OpenCode Go Chat routes retain their documented limits and conservative controls", () => {

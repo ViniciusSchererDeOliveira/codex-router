@@ -2277,29 +2277,44 @@ final class RouterStore: ObservableObject {
     focusUsageProvider(providerID)
   }
 
-  // One click covers the whole route into an OAuth provider: install the
-  // official CLI when it is missing, then run its sign-in flow. Stopping after
-  // the install left a row that looked finished but still had no credential.
-  // install-cli is a no-op when the CLI is already present, so an unknown
-  // state costs a lookup rather than a wrong branch.
+  // One click covers the whole route into an OAuth provider. CLI-owned routes
+  // install and launch their official client; Antigravity uses this router's
+  // local browser flow and stops before its separately labelled live probe.
   func connectProvider(_ provider: String) async {
+    let setupAction = providerSetup[provider]?.action
+    if setupAction == "probe" {
+      await performProviderOperation(
+        provider,
+        successMessage: "Live compatibility verified and provider enabled. Restart Codex to refresh its model picker."
+      ) {
+        _ = try await runControl(arguments: ["probe-provider", provider, "--live", "--yes"])
+        try await updateProviderSelection(provider, enabled: true)
+      }
+      return
+    }
     let reconnecting = providerSetup[provider]?.configured == true
     let needsInstall = providerSetup[provider]?.cliInstalled != true
     let displayName = providerSetup[provider]?.displayName ?? provider
+    let awaitsAntigravityProbe = provider == "antigravity-oauth" && setupAction == "login"
     await performProviderOperation(
       provider,
       progressMessage: reconnecting
         ? "Opening \(displayName) sign-in in your browser…"
         : "Starting \(displayName) sign-in…",
-      successMessage: reconnecting
-        ? "Provider reconnected."
-        : "Provider connected. Restart Codex to refresh its model picker."
+      successMessage: awaitsAntigravityProbe
+        ? "Signed in. Run the live compatibility test before enabling this provider."
+        : reconnecting
+          ? "Provider reconnected."
+          : "Provider connected. Restart Codex to refresh its model picker."
     ) {
       if needsInstall {
         _ = try await runControl(arguments: ["install-cli", provider])
       }
       _ = try await runControl(arguments: ["login", provider])
-      if !reconnecting {
+      // Antigravity sign-in deliberately stops before the quota-consuming live
+      // compatibility test. The next, clearly labelled action performs that
+      // test and only then enables the route.
+      if !reconnecting && !awaitsAntigravityProbe {
         try await updateProviderSelection(provider, enabled: true)
       }
     }
@@ -2313,9 +2328,11 @@ final class RouterStore: ObservableObject {
       progressMessage: reconnecting
         ? "Opening \(displayName) sign-in in your browser…"
         : "Starting \(displayName) sign-in…",
-      successMessage: reconnecting
-        ? "Provider reconnected."
-        : "Provider connected. Restart Codex to refresh its model picker."
+      successMessage: provider == "antigravity-oauth"
+        ? "Signed in again. Run the live compatibility test before re-enabling this provider."
+        : reconnecting
+          ? "Provider reconnected."
+          : "Provider connected. Restart Codex to refresh its model picker."
     ) {
       _ = try await runControl(arguments: ["login", provider])
       if !reconnecting {
@@ -3578,6 +3595,11 @@ final class RouterStore: ObservableObject {
     environment["MODEL_ROUTER_SOURCE_ROOT"] = root.path
     environment["MODEL_ROUTER_TARGET"] = "codex"
     environment.removeValue(forKey: "CODEX_ROUTER_DEFER_TRAY_REBUILD")
+    environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_DEADLINE_MS")
+    environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_TIMEOUT_MS")
+    environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_CHILD")
+    environment.removeValue(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS")
+    environment.removeValue(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BARRIER_DIR")
     environment.removeValue(forKey: "ELECTRON_RUN_AS_NODE")
     task.environment = environment
     task.standardInput = FileHandle.nullDevice
@@ -3605,6 +3627,8 @@ final class RouterStore: ObservableObject {
       task.arguments = arguments
       task.currentDirectoryURL = root
       var environment = ProcessInfo.processInfo.environment
+      environment.removeValue(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS")
+      environment.removeValue(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BARRIER_DIR")
       let home = FileManager.default.homeDirectoryForCurrentUser.path
       let preferredPaths = [
         "\(home)/.npm-global/bin",
@@ -3613,6 +3637,23 @@ final class RouterStore: ObservableObject {
         "/usr/local/bin",
       ]
       environment["PATH"] = (preferredPaths + [environment["PATH"] ?? ""]).joined(separator: ":")
+      let controlTimeout = RouterScriptWatchdog.controlTimeout(arguments: arguments)
+      if !outlivesApplication {
+        let operationTimeout = RouterScriptWatchdog.operationTimeout(arguments: arguments)
+        let ownerTimeout = RouterScriptWatchdog.operationOwnerTimeout(arguments: arguments)
+        let deadlineMilliseconds = Int64(
+          (Date().timeIntervalSince1970 + ownerTimeout) * 1_000
+        )
+        environment["CODEX_ROUTER_OPERATION_TIMEOUT_MS"] = String(
+          Int(operationTimeout * 1_000)
+        )
+        environment["CODEX_ROUTER_OPERATION_DEADLINE_MS"] = String(deadlineMilliseconds)
+        environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_CHILD")
+      } else {
+        environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_DEADLINE_MS")
+        environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_TIMEOUT_MS")
+        environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_CHILD")
+      }
       if arguments == ["maintenance"] || arguments == ["doctor", "--fix"] {
         // The installer must return before it replaces the app that is waiting
         // for this mutation. A detached tray refresh below performs the
@@ -3672,7 +3713,10 @@ final class RouterStore: ObservableObject {
         input.fileHandleForWriting.write(stdin)
         try? input.fileHandleForWriting.close()
       }
+      let watchdog = RouterScriptWatchdog(task: task)
+      if !outlivesApplication { watchdog.arm(after: controlTimeout) }
       task.waitUntilExit()
+      if !outlivesApplication { watchdog.disarm() }
       let stdout = await stdoutReader?.value ?? Data()
       let stderr: Data
       if let durableErrorHandle {
@@ -3682,6 +3726,11 @@ final class RouterStore: ObservableObject {
         stderr = (try? durableErrorHandle.read(upToCount: 65_536)) ?? Data()
       } else {
         stderr = await stderrReader?.value ?? Data()
+      }
+      if watchdog.didTimeOut {
+        throw RouterError(
+          "Codex Router control command exceeded its absolute deadline and was stopped."
+        )
       }
       guard task.terminationStatus == 0 else {
         let detail = String(data: stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3726,6 +3775,18 @@ final class RouterStore: ObservableObject {
         "/usr/local/bin",
       ]
       environment["PATH"] = (preferredPaths + [environment["PATH"] ?? ""]).joined(separator: ":")
+      environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_DEADLINE_MS")
+      environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_TIMEOUT_MS")
+      environment.removeValue(forKey: "CODEX_ROUTER_OPERATION_CHILD")
+      environment.removeValue(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS")
+      environment.removeValue(forKey: "CODEX_ROUTER_OWNER_SIGNAL_BARRIER_DIR")
+      if script == "curate-models.mjs" {
+        let operationTimeout = RouterScriptWatchdog.catalogPublicationOperationTimeout
+        environment["CODEX_ROUTER_OPERATION_TIMEOUT_MS"] = String(Int(operationTimeout * 1_000))
+        environment["CODEX_ROUTER_OPERATION_DEADLINE_MS"] = String(
+          Int64((Date().timeIntervalSince1970 + operationTimeout) * 1_000)
+        )
+      }
       task.environment = environment
       let output = Pipe()
       let errors = Pipe()
@@ -3944,10 +4005,30 @@ final class RouterScriptWatchdog: @unchecked Sendable {
   /// Electron's discovery budget (`{ timeoutMs: 45_000 }` in
   /// apps/control-center/electron/ipc.mjs). One provider HTTP round trip.
   static let discoveryTimeout: TimeInterval = 45
-  /// Electron's `CATALOG_MUTATION_TIMEOUT_MS` (330_000). Curation waits on a
-  /// cross-process publish lock and rebuilds every installed client, so it
-  /// gets the same long budget rather than a discovery-sized one.
-  static let catalogMutationTimeout: TimeInterval = 330
+  /// Electron's `CATALOG_MUTATION_TIMEOUT_MS` (1_320_000). A restart-bearing
+  /// curation reserves two complete 640s forward/rollback epochs and keeps the
+  /// remaining owner margin for process-tree cleanup and UI reporting.
+  static let catalogMutationTimeout: TimeInterval = 1_320
+  /// Curation's internal transaction expires before its 1,320s UI owner.
+  static let catalogPublicationOperationTimeout: TimeInterval = 1_280
+  /// Generic control owns one more nested tree around the 1,280s transaction.
+  static let catalogControlOperationTimeout: TimeInterval = 1_300
+  /// The Node owner receives this margin beyond its cooperative child budget
+  /// to terminate a complete process tree before the UI watchdog fires.
+  static let processTreeCleanupReserve: TimeInterval = 10
+  /// Interactive Antigravity OAuth includes the browser wait, live request,
+  /// service readiness, and client publication under one absolute deadline.
+  static let antigravityOperationTimeout: TimeInterval = 600
+  /// The UI watchdog keeps a termination margin beyond the internal deadline,
+  /// so it cannot kill the group leader before that process kills its tree.
+  static let antigravityRunnerTimeout: TimeInterval = 660
+  /// Every other ordinary control mutation expires inside bin/control before
+  /// the outer Swift watchdog. The margin lets Node kill the full descendant
+  /// process group, which Process.terminate() alone cannot guarantee.
+  static let ordinaryOperationTimeout: TimeInterval = 840
+  /// A final safety ceiling for ordinary control calls that are expected to
+  /// return to the app. Self-replacing maintenance deliberately opts out.
+  static let defaultControlTimeout: TimeInterval = 900
   /// Grace period between SIGTERM and SIGKILL, for a child that traps TERM.
   static let terminationGrace: TimeInterval = 5
 
@@ -3956,10 +4037,52 @@ final class RouterScriptWatchdog: @unchecked Sendable {
   private var finished = false
   private var timedOut = false
   // Signalled by `disarm` so a deadline that is no longer needed stops waiting
-  // immediately instead of sleeping out a 330s curation budget.
+  // immediately instead of sleeping out a catalog-sized curation budget.
   private let gate = DispatchSemaphore(value: 0)
 
   init(task: Process) { self.task = task }
+
+  static func isBoundedAntigravityOperation(arguments: [String]) -> Bool {
+    (arguments.count >= 2 && arguments[0] == "login" && arguments[1] == "antigravity-oauth")
+      || (arguments.count >= 2 && arguments[0] == "probe-provider"
+        && arguments[1] == "antigravity-oauth")
+  }
+
+  static func isCatalogMutation(arguments: [String]) -> Bool {
+    guard let command = arguments.first else { return false }
+    return [
+      "set-apply",
+      "credential",
+      "auth-mode",
+      "subagents",
+      "picker",
+      "vision-bridge",
+      "local-models",
+      "signed-routing",
+    ].contains(command)
+  }
+
+  static func controlTimeout(arguments: [String]) -> TimeInterval {
+    if isBoundedAntigravityOperation(arguments: arguments) {
+      return antigravityRunnerTimeout
+    }
+    return isCatalogMutation(arguments: arguments)
+      ? catalogMutationTimeout
+      : defaultControlTimeout
+  }
+
+  static func operationTimeout(arguments: [String]) -> TimeInterval {
+    if isBoundedAntigravityOperation(arguments: arguments) {
+      return antigravityOperationTimeout
+    }
+    return isCatalogMutation(arguments: arguments)
+      ? catalogControlOperationTimeout
+      : ordinaryOperationTimeout
+  }
+
+  static func operationOwnerTimeout(arguments: [String]) -> TimeInterval {
+    operationTimeout(arguments: arguments) + processTreeCleanupReserve
+  }
 
   var didTimeOut: Bool {
     lock.lock()
@@ -5030,6 +5153,8 @@ struct ProviderSetupState: Decodable, Identifiable, Equatable {
   let cliInstalled: Bool?
   let action: String
   let credentialLabel: String?
+  let disconnectable: Bool?
+  let blockedNote: String?
   // Set when connecting successfully still leaves the account unable to use
   // the API, because its plan does not include one. Shown before the buttons
   // rather than after a 403 lands in Codex.
@@ -9103,9 +9228,16 @@ private struct ProviderSetupRow: View {
     }
     switch setup.action {
     case "install": return routerLocalized("Official CLI required")
-    case "login": return routerLocalized("Sign in with the official CLI")
+    case "login":
+      return setup.id == "antigravity-oauth"
+        ? routerLocalized("Operator-owned Google OAuth client required")
+        : routerLocalized("Sign in with the official CLI")
     case "add-key":
       return "\(credentialLabel) \(routerLocalized("required"))"
+    case "probe": return routerLocalized("Live test required · sends a small prompt and uses quota")
+    case "blocked":
+      return setup.blockedNote
+        ?? routerLocalized("Disconnect the incompatible router record before signing in")
     default: return routerLocalized("Setup required")
     }
   }
@@ -9176,6 +9308,8 @@ private struct ProviderSetupRow: View {
           )
           .disabled(controlsDisabled)
 
+        }
+        if setup?.kind == "api" || setup?.disconnectable == true {
           Button(action: { tapRemove() }) {
             Image(systemName: removalArmed ? "checkmark.circle.fill" : "trash")
               .font(.system(size: removalArmed ? 12 : 10, weight: .semibold))
@@ -9198,11 +9332,28 @@ private struct ProviderSetupRow: View {
       }
     } else {
       HStack(spacing: 10) {
-        Button(actionTitle) { performAction() }
+        if setup?.action != "blocked" {
+          Button(actionTitle) { performAction() }
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(routerAccent)
+            .disabled(controlsDisabled || setup == nil)
+        }
+        if setup?.disconnectable == true {
+          Button(action: { tapRemove() }) {
+            Image(systemName: removalArmed ? "checkmark.circle.fill" : "trash")
+              .font(.system(size: removalArmed ? 12 : 10, weight: .semibold))
+              .frame(width: 20, height: 20)
+          }
           .buttonStyle(.plain)
-          .font(.system(size: 10, weight: .medium))
-          .foregroundStyle(routerAccent)
-          .disabled(controlsDisabled || setup == nil)
+          .foregroundStyle(removalArmed ? routerRed : routerYellow)
+          .help(
+            removalArmed
+              ? routerLocalized("Click again to delete the stored credential")
+              : routerLocalized("Remove stored OAuth client and session")
+          )
+          .disabled(controlsDisabled)
+        }
       }
     }
   }
@@ -9216,6 +9367,7 @@ private struct ProviderSetupRow: View {
       return credentialLabel == routerLocalized("API key")
         ? routerLocalized("Add Key")
         : (RouterLanguage.isSimplifiedChinese ? "添加\(credentialLabel)" : "Add \(credentialLabel)")
+    case "probe": return routerLocalized("Test & Enable")
     default: return routerLocalized("Checking…")
     }
   }
@@ -9227,7 +9379,7 @@ private struct ProviderSetupRow: View {
 
   private func performAction() {
     switch setup?.action {
-    case "install", "login": onConnect()
+    case "install", "login", "probe": onConnect()
     case "add-key": toggleKeyField()
     default: break
     }

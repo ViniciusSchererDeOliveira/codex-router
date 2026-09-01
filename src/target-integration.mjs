@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,15 +20,54 @@ import {
 // imported; the markers are a compatibility surface that lives in users'
 // config files and cannot change without a migration anyway.
 import { clientRestartNotice } from "./client-restart-notice.mjs";
+import {
+  operationDeadlineFromEnvironment,
+  remainingOperationMs,
+  runOperationProcessTree,
+  runProcessTree,
+} from "./process-tree.mjs";
 
 const managedMarkerPattern = /^# BEGIN (?:kimi-)?codex-(?:router|proxy)-/m;
+const DEFAULT_TARGET_PUBLICATION_MS = 5 * 60_000;
+const MAX_TARGET_PUBLICATION_MS = 5 * 60_000;
 
-function run(script, args = []) {
-  execFileSync(process.execPath, [path.join(SOURCE_ROOT, "src", script), ...args], {
-    cwd: SOURCE_ROOT,
-    env: process.env,
-    stdio: ["ignore", "ignore", "inherit"],
+function targetPublicationDeadline(deadline, environment = process.env) {
+  const boundedEnvironment = Number.isSafeInteger(deadline)
+    ? { ...environment, CODEX_ROUTER_OPERATION_DEADLINE_MS: String(deadline) }
+    : environment;
+  return operationDeadlineFromEnvironment(boundedEnvironment, {
+    timeoutMs: DEFAULT_TARGET_PUBLICATION_MS,
+    maximumMs: MAX_TARGET_PUBLICATION_MS,
   });
+}
+
+export async function runTargetPublicationProcess(
+  script,
+  args = [],
+  {
+    signal,
+    deadline,
+    executable = process.execPath,
+    sourceRoot = SOURCE_ROOT,
+    environment = process.env,
+    run = runProcessTree,
+  } = {},
+) {
+  const operationDeadline = targetPublicationDeadline(deadline, environment);
+  const result = await runOperationProcessTree(
+    executable,
+    [path.join(sourceRoot, "src", script), ...args],
+    {
+      cwd: sourceRoot,
+      env: environment,
+      signal,
+      deadline: operationDeadline,
+      run,
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `Client publication exited with status ${result.status}.`);
+  }
 }
 
 export function targetCli(command) {
@@ -125,21 +163,35 @@ function codexIntegrationInstalled() {
   }
 }
 
-export function refreshTargetPickerIfInstalled() {
+export async function refreshTargetPickerIfInstalled({ signal, deadline } = {}) {
+  // Every publisher inherits the operation's one absolute deadline and runs
+  // in a separately terminable process tree. The initial check prevents an
+  // already-expired operation from touching the first client; each child then
+  // remains bounded even if it or one of its descendants wedges.
+  const operationDeadline = targetPublicationDeadline(deadline);
+  remainingOperationMs(operationDeadline, signal, {
+    message: "The router operation deadline expired before client publication completed.",
+  });
   let refreshed = false;
   // A managed Codex config is the integration marker. Keep the retained
   // native capture as a fallback for an uninstall/update transition, but do
   // not let a missing cache silently make a live Codex install the one client
   // that misses a shared picker mutation.
   if (codexIntegrationInstalled() || existsSync(NATIVE_CATALOG_PATH)) {
-    run("catalog.mjs");
+    await runTargetPublicationProcess("catalog.mjs", [], {
+      signal,
+      deadline: operationDeadline,
+    });
     refreshed = true;
   }
   // The snapshot in the router's own state directory is the marker, not the
   // user's settings document: it records that this router published there, and
   // it survives a user who edits or moves the document by hand.
   if (existsSync(DSH_CATALOG_PATH)) {
-    run("dsh-config-manager.mjs", ["install"]);
+    await runTargetPublicationProcess("dsh-config-manager.mjs", ["install"], {
+      signal,
+      deadline: operationDeadline,
+    });
     refreshed = true;
   }
   // Gemini CLI is served its model list live off the router's own catalog, so
@@ -147,7 +199,10 @@ export function refreshTargetPickerIfInstalled() {
   // a slug like any other, and a republish is what moves it off one the routable
   // set just lost.
   if (existsSync(GEMINI_CATALOG_PATH)) {
-    run("gemini-config-manager.mjs", ["install"]);
+    await runTargetPublicationProcess("gemini-config-manager.mjs", ["install"], {
+      signal,
+      deadline: operationDeadline,
+    });
     refreshed = true;
   }
   if (existsSync(CURSOR_CATALOG_PATH)) {

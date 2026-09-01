@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { realpathSync, symlinkSync } from "node:fs";
+import { EventEmitter, once } from "node:events";
+import { existsSync, realpathSync, symlinkSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,11 +11,13 @@ import {
   assertMutationCompatibility,
   detachedControlRuntime,
   discoverSourceRoot,
+  safeFailure,
   runControlDetached,
   runControl,
   runControlJson,
   runtimeEnvironment,
   standardSourceRoots,
+  windowsJobProcessInvocation,
 } from "../apps/control-center/electron/command-runner.mjs";
 import {
   groupModelFamilies,
@@ -651,14 +653,76 @@ async function makeProcessTreeControlRoot() {
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
       'const [pidFile, mode] = process.argv.slice(2);',
-      'const descendant = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });',
-      'writeFileSync(pidFile, String(descendant.pid));',
-      'if (mode === "overflow") process.stdout.write("x".repeat(4096));',
+      'const marker = `${pidFile}.survived`;',
+      'const worker = `const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); process.on("SIGINT", () => {}); setTimeout(() => writeFileSync(${JSON.stringify(marker)}, "unsafe"), 900); process.send?.("ready"); process.disconnect?.(); setInterval(() => {}, 1000)`;',
+      // Hold the command's stdout/stderr pipes open after its leader exits, so
+      // the runner has to act on `exit` rather than waiting forever for `close`.
+      'const descendant = spawn(process.execPath, ["-e", worker], { stdio: ["ignore", "inherit", "inherit", "ipc"] });',
+      'descendant.once("message", () => {',
+      '  writeFileSync(pidFile, String(descendant.pid));',
+      '  if (mode === "success") process.exit(0);',
+      '  if (mode === "failure") process.exit(7);',
+      '  if (mode === "overflow") process.stdout.write("x".repeat(4096));',
+      '});',
       'process.on("SIGTERM", () => {});',
+      'process.on("SIGINT", () => {});',
       'setInterval(() => {}, 1000);',
       '',
     ].join("\n"),
     { mode: 0o700 },
+  );
+  await writeFile(
+    path.join(root, "src", "windows-process-tree.ps1"),
+    await readFile(new URL("../src/windows-process-tree.ps1", import.meta.url), "utf8"),
+    { mode: 0o600 },
+  );
+  await writeFile(path.join(root, "bin", "control"), "#!/bin/sh\n", { mode: 0o700 });
+  if (process.platform !== "win32") await chmod(path.join(root, "bin", "control"), 0o700);
+  return root;
+}
+
+async function makeBarrierControlRoot() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "router-control-barrier-"));
+  await mkdir(path.join(root, "src"), { recursive: true });
+  await mkdir(path.join(root, "bin"), { recursive: true });
+  const processTreeModule = new URL("../src/process-tree.mjs", import.meta.url).href;
+  await writeFile(
+    path.join(root, "src", "control.mjs"),
+    [
+      'import { writeFileSync } from "node:fs";',
+      `import { runDuringOwnerSignalCleanup, runProcessTree, withOwnerSignalExitBarrier } from ${JSON.stringify(processTreeModule)};`,
+      "const [readyPath, completedPath, mode, rollbackText, barrierText, depthText = '0'] = process.argv.slice(2);",
+      "const rollbackMs = Number.parseInt(rollbackText, 10);",
+      "const barrierMs = Number.parseInt(barrierText, 10);",
+      "const depth = Number.parseInt(depthText, 10);",
+      "if (depth > 0) {",
+      "  await runProcessTree(process.execPath, [process.argv[1], readyPath, completedPath, mode, rollbackText, barrierText, String(depth - 1)], {",
+      "    childMayOwnProcessTrees: true,",
+      "    deadline: Date.now() + 10_000,",
+      "    env: { ...process.env, CODEX_ROUTER_OPERATION_CHILD: '1' },",
+      "  });",
+      "} else await withOwnerSignalExitBarrier(async (ownerSignal) => {",
+      "  writeFileSync(readyPath, String(process.pid));",
+      "  await new Promise((resolve) => {",
+      "    const hold = setInterval(() => {}, 1000);",
+      "    const finish = () => { clearInterval(hold); resolve(); };",
+      '    ownerSignal.addEventListener("abort", finish, { once: true });',
+      "    if (ownerSignal.aborted) finish();",
+      "  });",
+      "  await runDuringOwnerSignalCleanup(async () => {",
+      '    if (mode === "stuck") await new Promise(() => {});',
+      "    await new Promise((resolve) => setTimeout(resolve, rollbackMs));",
+      '    writeFileSync(completedPath, "restored");',
+      "  });",
+      "}, { timeoutMs: barrierMs });",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  await writeFile(
+    path.join(root, "src", "windows-process-tree.ps1"),
+    await readFile(new URL("../src/windows-process-tree.ps1", import.meta.url), "utf8"),
+    { mode: 0o600 },
   );
   await writeFile(path.join(root, "bin", "control"), "#!/bin/sh\n", { mode: 0o700 });
   if (process.platform !== "win32") await chmod(path.join(root, "bin", "control"), 0o700);
@@ -794,7 +858,16 @@ test("non-Windows detached refresh keeps the packaged Node-mode launch", { skip:
 });
 
 test("detached control resolves only after spawn and rejects a pre-spawn error", async () => {
-  const runtime = { executable: "/test/node", environment: {} };
+  const runtime = {
+    executable: "/test/node",
+    environment: {
+      CODEX_ROUTER_OPERATION_CHILD: "1",
+      CODEX_ROUTER_OPERATION_TIMEOUT_MS: "10",
+      CODEX_ROUTER_OPERATION_DEADLINE_MS: "20",
+      CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS: "9000",
+      CODEX_ROUTER_OWNER_SIGNAL_BARRIER_DIR: "/tmp/stale-owner-signal-barrier",
+    },
+  };
   const sourceRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
   const failedChild = new EventEmitter();
   failedChild.unref = () => assert.fail("a failed child must not be unreferenced as launched");
@@ -812,16 +885,51 @@ test("detached control resolves only after spawn and rejects a pre-spawn error",
   launchedChild.pid = 4242;
   let unreferenced = false;
   launchedChild.unref = () => { unreferenced = true; };
+  let launchedOptions;
   const launched = runControlDetached(["tray", "restart"], {
     sourceRoot,
     runtime,
-    spawnImpl: () => {
+    spawnImpl: (_command, _args, options) => {
+      launchedOptions = options;
       queueMicrotask(() => launchedChild.emit("spawn"));
       return launchedChild;
     },
   });
   assert.equal(await launched, 4242);
   assert.equal(unreferenced, true);
+  assert.equal(launchedOptions.env.CODEX_ROUTER_OPERATION_CHILD, undefined);
+  assert.equal(launchedOptions.env.CODEX_ROUTER_OPERATION_TIMEOUT_MS, undefined);
+  assert.equal(launchedOptions.env.CODEX_ROUTER_OPERATION_DEADLINE_MS, undefined);
+  assert.equal(launchedOptions.env.CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS, undefined);
+  assert.equal(launchedOptions.env.CODEX_ROUTER_OWNER_SIGNAL_BARRIER_DIR, undefined);
+});
+
+test("manual OAuth-record recovery remains actionable after UI redaction", () => {
+  const message =
+    "The incompatible Antigravity OAuth record path is a nonempty directory. " +
+    "Review and remove its contents and the directory manually, then disconnect again.";
+  assert.equal(safeFailure(message), message);
+});
+
+test("Electron starts a fresh bounded control epoch inside its process-tree owner", async () => {
+  const source = await readFile(
+    new URL("../apps/control-center/electron/command-runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const entrypoint = source.slice(
+    source.indexOf("function runEntrypoint("),
+    source.indexOf("export function runControlDetached("),
+  );
+  assert.match(entrypoint, /delete runtimeBaseline\.CODEX_ROUTER_OPERATION_DEADLINE_MS/);
+  assert.match(entrypoint, /delete runtimeBaseline\.CODEX_ROUTER_OPERATION_TIMEOUT_MS/);
+  assert.match(entrypoint, /delete runtimeBaseline\.CODEX_ROUTER_OPERATION_CHILD/);
+  assert.match(entrypoint, /delete runtimeBaseline\[OWNER_SIGNAL_BUDGET_ENV\]/);
+  assert.match(entrypoint, /delete runtimeBaseline\[OWNER_SIGNAL_BARRIER_DIR_ENV\]/);
+  assert.match(entrypoint, /childEnvironment\.CODEX_ROUTER_OPERATION_CHILD = "1"/);
+  assert.match(entrypoint, /childEnvironment\[OWNER_SIGNAL_BUDGET_ENV\] = String\(childSignalBudget\)/);
+  assert.match(entrypoint, /CODEX_ROUTER_OPERATION_DEADLINE_MS = String\(innerDeadline\)/);
+  assert.match(entrypoint, /terminateProcessTree\(child, \{/);
+  assert.match(entrypoint, /setTimeout\([\s\S]*boundedTimeoutMs\)/);
 });
 
 test("control center resolves a trusted router source root", async () => {
@@ -939,6 +1047,11 @@ test("trusted install provenance overrides contradictory package-manager environ
       path.join(owner, "src", "control.mjs"),
       "process.stdout.write(JSON.stringify({ packageManager: process.env.CODEX_ROUTER_PACKAGE_MANAGER ?? null }));\n",
       { mode: 0o700 },
+    );
+    await writeFile(
+      path.join(owner, "src", "windows-process-tree.ps1"),
+      await readFile(new URL("../src/windows-process-tree.ps1", import.meta.url), "utf8"),
+      { mode: 0o600 },
     );
     await writeFile(path.join(owner, "bin", "control"), "#!/bin/sh\n", { mode: 0o700 });
     process.env.CODEX_ROUTER_SOURCE_ROOT = owner;
@@ -1857,6 +1970,11 @@ test("credential input stays off argv and is delivered over stdin", async () => 
       "let input = ''; for await (const chunk of process.stdin) input += chunk; process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), input }));\n",
       { mode: 0o700 },
     );
+    await writeFile(
+      path.join(temporaryRoot, "src", "windows-process-tree.ps1"),
+      await readFile(new URL("../src/windows-process-tree.ps1", import.meta.url), "utf8"),
+      { mode: 0o600 },
+    );
     await writeFile(path.join(temporaryRoot, "bin", "control"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     if (process.platform !== "win32") await chmod(path.join(temporaryRoot, "bin", "control"), 0o700);
     process.env.CODEX_ROUTER_SOURCE_ROOT = temporaryRoot;
@@ -1936,9 +2054,9 @@ test("provider writes republish all installed targets and roll selection back on
   }
 });
 
-test("catalog-backed mutations outlive the publication-lock wait", async () => {
+test("catalog-backed mutations preserve complete forward and rollback restart epochs", async () => {
   const source = await readFile(new URL("../apps/control-center/electron/ipc.mjs", import.meta.url), "utf8");
-  assert.match(source, /const CATALOG_MUTATION_TIMEOUT_MS = 330_000/);
+  assert.match(source, /const CATALOG_MUTATION_TIMEOUT_MS = 1_320_000/);
   assert.match(source, /\["set-apply"[\s\S]{0,180}timeoutMs: CATALOG_MUTATION_TIMEOUT_MS/);
   assert.match(source, /handleAction\("setSubagentMode"[\s\S]{0,280}CATALOG_MUTATION_TIMEOUT_MS/);
   assert.match(source, /handleAction\("setSubagentEffort"[\s\S]{0,320}\["subagents", "effort", model, effort\][\s\S]{0,120}CATALOG_MUTATION_TIMEOUT_MS/);
@@ -1948,10 +2066,29 @@ test("catalog-backed mutations outlive the publication-lock wait", async () => {
   assert.match(source, /handle\("getChatGptAccountPool"[\s\S]{0,260}timeoutMs: CATALOG_MUTATION_TIMEOUT_MS/);
 });
 
+test("Antigravity probe IPC has one inner deadline and a larger tree-kill margin", async () => {
+  const source = await readFile(new URL("../apps/control-center/electron/ipc.mjs", import.meta.url), "utf8");
+  assert.match(source, /ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS = 10 \* 60_000/);
+  assert.match(
+    source,
+    /ANTIGRAVITY_PROBE_RUNNER_TIMEOUT_MS\s*=\s*ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS \+ 60_000/,
+  );
+  const handler = source.match(/handleAction\("connectProvider"[\s\S]*?\n  \}\);/)?.[0];
+  assert.ok(handler, "provider-connect handler should be readable");
+  assert.match(handler, /\["probe-provider", id, "--live", "--yes"\]/);
+  assert.match(handler, /timeoutMs: ANTIGRAVITY_PROBE_RUNNER_TIMEOUT_MS/);
+  assert.match(handler, /CODEX_ROUTER_OPERATION_TIMEOUT_MS:[\s\S]{0,120}ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS/);
+  assert.match(
+    handler,
+    /\["login", id\][\s\S]{0,220}CODEX_ROUTER_OPERATION_TIMEOUT_MS:[\s\S]{0,120}ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS/,
+  );
+  assert.doesNotMatch(handler, /\["probe-provider"[\s\S]{0,120}timeoutMs: 120_000/);
+});
+
 test("service IPC exposes only safe beta actions and start covers readiness", async () => {
   const source = await readFile(new URL("../apps/control-center/electron/ipc.mjs", import.meta.url), "utf8");
   assert.match(source, /const SERVICE_COMMANDS = \["status", "start"\]/);
-  assert.match(source, /value === "start" \? 330_000 : 120_000/);
+  assert.match(source, /\["start", "restart"\]\.includes\(value\) \? 330_000 : 120_000/);
   assert.match(source, /runControl\(\["service", value\], \{ timeoutMs \}\)/);
   const api = await readFile(new URL("../apps/control-center/electron/api.d.ts", import.meta.url), "utf8");
   assert.match(api, /type ServiceAction = "status" \| "start"/);
@@ -1989,9 +2126,9 @@ test("local model mutations cover service readiness and validate consent flags",
   const source = await readFile(new URL("../apps/control-center/electron/ipc.mjs", import.meta.url), "utf8");
   assert.match(source, /typeof yes !== "boolean"/);
   assert.match(source, /typeof force !== "boolean"/);
-  assert.match(source, /local-models", "install"[\s\S]{0,260}timeoutMs: 330_000/);
-  assert.match(source, /local-models", "uninstall"[\s\S]{0,180}timeoutMs: 330_000/);
-  assert.match(source, /local-models", "set"[\s\S]{0,240}timeoutMs: 330_000/);
+  assert.match(source, /local-models", "install"[\s\S]{0,260}timeoutMs: CATALOG_MUTATION_TIMEOUT_MS/);
+  assert.match(source, /local-models", "uninstall"[\s\S]{0,180}timeoutMs: CATALOG_MUTATION_TIMEOUT_MS/);
+  assert.match(source, /local-models", "set"[\s\S]{0,240}timeoutMs: CATALOG_MUTATION_TIMEOUT_MS/);
 });
 
 test("one-click MLX setup stays on fixed IPC commands and polls background stages", async () => {
@@ -2027,7 +2164,9 @@ for (const mode of ["timeout", "overflow"]) {
       process.env.CODEX_ROUTER_SOURCE_ROOT = root;
       const command = runControl(
         [pidFile, mode],
-        mode === "timeout" ? { timeoutMs: 250 } : { timeoutMs: 5_000, maxOutputBytes: 32 },
+        mode === "timeout"
+          ? { timeoutMs: process.platform === "win32" ? 2_000 : 250 }
+          : { timeoutMs: 5_000, maxOutputBytes: 32 },
       );
       await assert.rejects(command, mode === "timeout" ? /timed out/ : /output exceeded/);
       descendantPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
@@ -2043,6 +2182,274 @@ for (const mode of ["timeout", "overflow"]) {
     }
   });
 }
+
+for (const { mode, expectedCode } of [
+  { mode: "success", expectedCode: 0 },
+  { mode: "failure", expectedCode: 7 },
+]) {
+  test(`command ${mode} retires descendants holding inherited pipes`, async () => {
+    const root = await makeProcessTreeControlRoot();
+    const pidFile = path.join(root, `${mode}.pid`);
+    const marker = `${pidFile}.survived`;
+    const priorRoot = process.env.CODEX_ROUTER_SOURCE_ROOT;
+    let descendantPid;
+    try {
+      process.env.CODEX_ROUTER_SOURCE_ROOT = root;
+      const result = await runControl([pidFile, mode], {
+        timeoutMs: 5_000,
+        allowNonZero: true,
+      });
+      assert.equal(result.code, expectedCode);
+      descendantPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
+      assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+      await waitForProcessExit(descendantPid);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      assert.equal(existsSync(marker), false);
+    } finally {
+      if (descendantPid) {
+        try { process.kill(descendantPid, "SIGKILL"); } catch { /* already gone */ }
+      }
+      if (priorRoot === undefined) delete process.env.CODEX_ROUTER_SOURCE_ROOT;
+      else process.env.CODEX_ROUTER_SOURCE_ROOT = priorRoot;
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+}
+
+for (const ownerSignal of ["SIGINT", "SIGTERM"]) {
+  test(
+    `Electron command owner ${ownerSignal} drains its descendant tree before exit`,
+    { skip: process.platform === "win32" },
+    async () => {
+      const root = await makeProcessTreeControlRoot();
+      const pidFile = path.join(root, `${ownerSignal}.pid`);
+      const marker = `${pidFile}.survived`;
+      const moduleUrl = new URL(
+        "../apps/control-center/electron/command-runner.mjs",
+        import.meta.url,
+      ).href;
+      const program = [
+        `process.env.CODEX_ROUTER_SOURCE_ROOT = ${JSON.stringify(root)}`,
+        `const { runControl } = await import(${JSON.stringify(moduleUrl)})`,
+        `await runControl([${JSON.stringify(pidFile)}, 'timeout'], { timeoutMs: 60_000 })`,
+      ].join(";");
+      const owner = (await import("node:child_process")).spawn(
+        process.execPath,
+        ["--input-type=module", "-e", program],
+        {
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS: "1000",
+          },
+        },
+      );
+      let descendantPid;
+      try {
+        const deadline = Date.now() + 3_000;
+        while (!existsSync(pidFile) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        assert.equal(existsSync(pidFile), true);
+        descendantPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
+        owner.kill(ownerSignal);
+        const [code, signal] = await once(owner, "exit");
+        assert.equal(signal, null);
+        assert.equal(code, ownerSignal === "SIGINT" ? 130 : 143);
+        await waitForProcessExit(descendantPid);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        assert.equal(existsSync(marker), false);
+      } finally {
+        if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+        if (descendantPid) {
+          try { process.kill(descendantPid, "SIGKILL"); } catch { /* already gone */ }
+        }
+        await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      }
+    },
+  );
+}
+
+async function startElectronBarrierTree({ mode, rollbackMs, barrierMs, depth = 0 }) {
+  const root = await makeBarrierControlRoot();
+  const readyPath = path.join(root, "barrier-ready.pid");
+  const ownerReadyPath = path.join(root, "owner-signal-ready");
+  const completedPath = path.join(root, "barrier-complete");
+  const moduleUrl = new URL(
+    "../apps/control-center/electron/command-runner.mjs",
+    import.meta.url,
+  ).href;
+  const program = [
+    `process.env.CODEX_ROUTER_SOURCE_ROOT = ${JSON.stringify(root)}`,
+    "const { writeFileSync } = await import('node:fs')",
+    `const { runControl } = await import(${JSON.stringify(moduleUrl)})`,
+    `const running = runControl(${JSON.stringify([
+      readyPath,
+      completedPath,
+      mode,
+      String(rollbackMs),
+      String(barrierMs),
+      String(depth),
+    ])}, { timeoutMs: 10_000 })`,
+    "while (process.listenerCount('SIGTERM') === 0) await new Promise((resolve) => setImmediate(resolve))",
+    `writeFileSync(${JSON.stringify(ownerReadyPath)}, 'ready')`,
+    "await running",
+  ].join(";");
+  const owner = (await import("node:child_process")).spawn(
+    process.execPath,
+    ["--input-type=module", "-e", program],
+    {
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        CODEX_ROUTER_OWNER_SIGNAL_BUDGET_MS: "1500",
+      },
+    },
+  );
+  const deadline = Date.now() + 10_000;
+  while (
+    (!existsSync(readyPath) || !existsSync(ownerReadyPath))
+    && Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(existsSync(readyPath), true);
+  assert.equal(existsSync(ownerReadyPath), true);
+  return {
+    root,
+    readyPath,
+    ownerReadyPath,
+    completedPath,
+    owner,
+    childPid: Number.parseInt(await readFile(readyPath, "utf8"), 10),
+  };
+}
+
+test(
+  "Electron and nested Node owners preserve a control rollback barrier",
+  { skip: process.platform === "win32" },
+  async () => {
+    const tree = await startElectronBarrierTree({
+      mode: "complete",
+      rollbackMs: 1_300,
+      barrierMs: 2_500,
+      depth: 1,
+    });
+    const startedAt = Date.now();
+    try {
+      tree.owner.kill("SIGTERM");
+      const [code, signal] = await once(tree.owner, "exit");
+      assert.equal(signal, null);
+      assert.equal(code, 143);
+      assert.equal(await readFile(tree.completedPath, "utf8"), "restored");
+      assert.ok(Date.now() - startedAt >= 1_100);
+      await waitForProcessExit(tree.childPid);
+    } finally {
+      if (tree.owner.exitCode === null && tree.owner.signalCode === null) tree.owner.kill("SIGKILL");
+      try { process.kill(tree.childPid, "SIGKILL"); } catch { /* already gone */ }
+      await rm(tree.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  },
+);
+
+test(
+  "Electron forcibly retires a control child whose rollback barrier never releases",
+  { skip: process.platform === "win32" },
+  async () => {
+    const tree = await startElectronBarrierTree({
+      mode: "stuck",
+      rollbackMs: 0,
+      barrierMs: 1_800,
+    });
+    const startedAt = Date.now();
+    try {
+      tree.owner.kill("SIGTERM");
+      const [code, signal] = await once(tree.owner, "exit");
+      const elapsed = Date.now() - startedAt;
+      assert.equal(signal, null);
+      assert.equal(code, 143);
+      assert.ok(elapsed >= 1_500, `barrier was cut off after only ${elapsed}ms`);
+      assert.ok(elapsed < 4_000, `stuck barrier held shutdown for ${elapsed}ms`);
+      assert.equal(existsSync(tree.completedPath), false);
+      await waitForProcessExit(tree.childPid);
+    } finally {
+      if (tree.owner.exitCode === null && tree.owner.signalCode === null) tree.owner.kill("SIGKILL");
+      try { process.kill(tree.childPid, "SIGKILL"); } catch { /* already gone */ }
+      await rm(tree.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  },
+);
+
+test(
+  "Windows Job containment drains a Control Center command after abrupt owner exit",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const root = await makeProcessTreeControlRoot();
+    const pidFile = path.join(root, "owner-exit.pid");
+    const marker = `${pidFile}.survived`;
+    const moduleUrl = new URL(
+      "../apps/control-center/electron/command-runner.mjs",
+      import.meta.url,
+    ).href;
+    const program = [
+      `process.env.CODEX_ROUTER_SOURCE_ROOT = ${JSON.stringify(root)}`,
+      `const { runControl } = await import(${JSON.stringify(moduleUrl)})`,
+      `await runControl([${JSON.stringify(pidFile)}, 'timeout'], { timeoutMs: 60_000 })`,
+    ].join(";");
+    const owner = (await import("node:child_process")).spawn(
+      process.execPath,
+      ["--input-type=module", "-e", program],
+      { stdio: "ignore" },
+    );
+    let descendantPid;
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(pidFile) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(existsSync(pidFile), true);
+      descendantPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
+      owner.kill("SIGKILL");
+      await once(owner, "exit");
+      await waitForProcessExit(descendantPid, 10_000);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      assert.equal(existsSync(marker), false);
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+      if (descendantPid) {
+        try { process.kill(descendantPid, "SIGKILL"); } catch { /* already gone */ }
+      }
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  },
+);
+
+test("Electron uses the installed Windows Job Object owner", () => {
+  const invocation = windowsJobProcessInvocation(
+    "C:\\Program Files\\Codex Router\\router.exe",
+    ["control.mjs", "doctor"],
+    {
+      sourceRoot: "C:\\Users\\operator\\codex-router",
+      environment: {},
+      ownerPid: 4321,
+    },
+  );
+  assert.equal(invocation.command, "powershell.exe");
+  assert.equal(
+    invocation.args.at(-2),
+    path.join("C:\\Users\\operator\\codex-router", "src", "windows-process-tree.ps1"),
+  );
+  assert.deepEqual(
+    JSON.parse(Buffer.from(invocation.args.at(-1), "base64").toString("utf8")),
+    {
+      command: "C:\\Program Files\\Codex Router\\router.exe",
+      arguments: ["control.mjs", "doctor"],
+      ownerProcessId: 4321,
+      windowsHide: true,
+      windowsVerbatimArguments: false,
+    },
+  );
+});
 
 test("router children inherit the proxy opt-in this install recorded", async () => {
   const runner = await readFile(

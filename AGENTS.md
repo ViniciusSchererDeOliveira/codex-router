@@ -46,8 +46,11 @@ user.
 ## Codex procedure
 
 1. Read the host platform and check for Codex, Git, Node.js 22.19+, and `uv` or
-   Python 3.10+. Read-only checks are allowed. Do not install a package manager
-   or system runtime without the user's permission.
+   Python 3.10+. On Windows, also verify that Windows PowerShell reports
+   `FullLanguage` and permits `Add-Type`; the process-tree safety boundary fails
+   closed before mutation under Constrained Language, AppLocker, or WDAC.
+   Read-only checks are allowed. Do not install a package manager or system
+   runtime without the user's permission.
 2. Use a stable checkout: `~/.local/share/codex-router` on macOS/Linux, or
    `%LOCALAPPDATA%\codex-router` on Windows. Do not install the service from a
    temporary clone.
@@ -113,10 +116,38 @@ user.
    never read or copy the official Copilot CLI credential store. Command
    Command Code is API-key-only: invoke `bin/model-router codex provider-key
     commandcode set` in a PTY so the hidden prompt receives the value directly.
-   For Antigravity OAuth, require `ANTIGRAVITY_CLIENT_SECRET` in the installer
-   environment, disclose that sign-in may provision a Google Cloud project for
-   the account when none exists, then run `bin/model-router codex providers
-   login antigravity-oauth`; never ask the user to paste the secret into chat.
+   For Antigravity OAuth, never read or reuse the official `agy`/IDE credential
+   store and never use the vendor's OAuth client or identity. Require one
+   coherent operator-owned Google OAuth client ID and secret pair: the operator
+   must create a Google OAuth **Desktop app** client they own. Run
+   `bin/model-router codex providers login antigravity-oauth`; the router first
+   binds `127.0.0.1` on an OS-assigned port, then opens a loopback-only setup
+   page where the client ID and matching secret are submitted without entering
+   shell history. Open only the local URL through the OS browser command and
+   redirect to Google inside that listener, so neither client value reaches
+   argv or terminal logs. The coherent pair and resulting tokens are stored together
+   in the router's owner-only credential file and used for refresh on macOS,
+   Linux, and Windows; they never belong in a service environment. Sign-in does
+   not call the private Antigravity service or enable the route. Run the
+   explicitly quota-consuming `providers probe antigravity-oauth --live --yes`
+   next; add `--provision-project` only when the operator separately authorizes
+   creation of a Google Cloud project. Provisioning still requires a successful,
+   schema-valid bootstrap response that explicitly advertises the selected tier;
+   auth errors, server errors, malformed responses, and missing tiers fail closed.
+   The probe identifies itself truthfully
+   as Codex Router, and only a successful proof makes the provider enableable.
+   The Antigravity forwarder is not spawned or health-gated before that proof,
+   so an unused provider port cannot fail the whole router. A passing probe
+   records a generation-bound `pending_activation` that every configured and
+   publication reader rejects. Startup alone may boot its exact pending proof;
+   only after the whole local stack is healthy does it atomically promote that
+   generation active. A failed restart, an early process death, a credential
+   replacement, or a disconnect leaves it nonpublishable. The probe restarts
+   an installed service through that sequence, and a foreground operator must
+   restart that process before enabling the provider. A v2 proof record with
+   no activation metadata is not grandfathered: it was written by the unsafe
+   pre-readiness path and must pass the explicit live probe again.
+   If Google accepts only an impersonated vendor client, leave it disabled.
    A key does not mean every account may use the Provider API: the Go plan is
    refused with "Your Go plan doesn't include API access". GOAT, Pro, Max, Team,
    and Provider plans do have API access and meter against their own credits.
@@ -1316,9 +1347,9 @@ In particular, Venice curation retains the provider-advertised effort metadata;
 the repository does not replace it with a cross-provider inference for a route
 it could not execute.
 
-The named GLM-5.3-Flash routes on OpenCode Go, OpenRouter, and Z.ai Coding did
-pass direct basic, streaming, forced-tool, stateless tool-result, and compact
-probes. Their recorded effort ladder is `low`/`high`/`max`, and it is the
+The named GLM-5.3-Flash routes on OpenCode Go, OpenRouter, Z.ai API, and Z.ai
+Coding did pass direct basic, streaming, forced-tool, stateless tool-result,
+and compact probes. Their recorded effort ladder is `low`/`high`/`max`, and it is the
 **model's** ladder rather than a generic reseller default. The model always
 thinks, and its upstream refuses an off-ladder rung by name:
 
@@ -1335,9 +1366,24 @@ loop for the OpenCode Go and OpenRouter named routes: it clamps whatever Codex
 sent onto the rungs the registry entry declares, so `xhigh` and `ultra` land on
 `max`, while `medium` and `minimal` land on `low`. An absent effort stays absent
 so the upstream default applies, and undocumented `thinking` is stripped. Z.ai
-Coding uses its own `glm-thinking` profile. All three named routes advertise a
+Coding uses its own `glm-thinking` profile. These named routes advertise a
 1,000,000-token window, compact at the directly proved conservative 400,000
 threshold, and preserve forced `tool_choice: "required"`.
+
+`ollama-cloud/glm-5.3-flash` is checked in as candidate registry metadata with a
+model-scoped request profile that clamps both flat and nested reasoning effort
+onto the same `low`/`high`/`max` ladder. It must not be called certified until
+the public slug passes the router-level exact-route suite for basic, streaming,
+forced-tool, stateless tool-result, and compact requests with failover disabled.
+
+`ollama-cloud/glm-5.3` is also checked in as candidate registry metadata on the
+same low/high/max ladder and the sibling `ollama-cloud-glm-5-3` clamp profile,
+advertising 1,000,000 context and an 880,000 conservative compact threshold
+matching the existing Ollama Cloud GLM-5.2 policy. It requires its own run of
+the router-level exact-route suite before it is called certified. That
+threshold is not a provider-measured boundary. It is text-only: GLM-5.3's
+multimodal variant is GLM-5.3-Flash, so the full-size route declares `text`
+modality instead of inheriting Flash's image path.
 
 ## A provider whose models each name their own endpoint
 

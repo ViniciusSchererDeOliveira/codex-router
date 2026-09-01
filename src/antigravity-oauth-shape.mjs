@@ -1019,7 +1019,7 @@ export function toAntigravityRequest(chat, { projectId = "", requestId = undefin
     model: resolved.model,
     request,
     requestType: "agent",
-    userAgent: "antigravity",
+    userAgent: "codex-router",
     requestId: requestId || `agent-${randomRequestId()}`,
   };
 }

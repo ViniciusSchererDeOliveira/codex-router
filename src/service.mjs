@@ -28,6 +28,22 @@ const shutdownCommands = new Set(["stop", "uninstall"]);
 // service and reverts the app config out from under a router that goes on to
 // come up healthy seconds later.
 const READINESS_TIMEOUT_MS = 300_000;
+// router-restart.mjs reserves this phase before the readiness wait. Check it
+// again in the child before the service-manager mutation so an independently
+// invoked or stale inherited deadline cannot make a restart deterministically
+// short of its health contract.
+const PLATFORM_COMMAND_RESERVE_MS = 10_000;
+const operationDeadline = (() => {
+  const value = Number(process.env.CODEX_ROUTER_OPERATION_DEADLINE_MS);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+})();
+
+function remainingOperationMs(limit = Number.POSITIVE_INFINITY) {
+  if (operationDeadline === undefined) return Number.isFinite(limit) ? limit : undefined;
+  const remaining = operationDeadline - Date.now();
+  if (remaining <= 0) throw new Error("The router operation deadline expired.");
+  return Math.max(1, Math.min(remaining, limit));
+}
 // One restart-count query runs on every readiness poll, synchronously. A
 // systemctl that never answers must cost the wait a bounded slice, not the
 // whole readiness budget, so the query is killed and read as inconclusive.
@@ -44,6 +60,20 @@ export async function runServiceCommandUnlocked(
     ...process.env,
     ...(environmentProxyOptedIn() ? { NODE_USE_ENV_PROXY: "1" } : {}),
   };
+  // Synchronous service renderers can own grandchildren. Do not apply a
+  // direct-child timeout here: it could orphan those descendants and let them
+  // mutate the service after the UI reports failure. The outer desktop runner
+  // owns process-tree termination; this preflight and the readiness wait keep
+  // every cooperative phase on the shared inner deadline.
+  const platformBudgetMs = remainingOperationMs();
+  if (
+    platformBudgetMs !== undefined
+    && platformBudgetMs < PLATFORM_COMMAND_RESERVE_MS + READINESS_TIMEOUT_MS
+  ) {
+    throw new Error(
+      "The service operation deadline cannot preserve its platform and 300-second readiness allowances.",
+    );
+  }
   const result = spawnSync(
     process.execPath,
     [path.join(SOURCE_ROOT, "src", script), ...args],
@@ -58,6 +88,12 @@ export async function runServiceCommandUnlocked(
   if (shutdownCommands.has(command)) await stopManagedOllama();
   if (!readinessCommands.has(command)) return 0;
 
+  const readinessBudgetMs = remainingOperationMs();
+  if (readinessBudgetMs < READINESS_TIMEOUT_MS) {
+    throw new Error(
+      "The service operation deadline did not preserve the full 300-second router readiness allowance.",
+    );
+  }
   const health = await waitForServiceReadiness({
     timeoutMs: READINESS_TIMEOUT_MS,
     // Only the Linux service manager exposes an automatic-restart counter

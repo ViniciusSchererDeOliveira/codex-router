@@ -77,7 +77,11 @@ const SESSION_LIST_LIMIT = 500;
 // and committing all coupled model files. Leave room for both the bounded
 // lock wait and the build itself; killing the lock holder at the old 30/120s
 // limits would strand a stale lock and force a rollback to race recovery.
-const CATALOG_MUTATION_TIMEOUT_MS = 330_000;
+// A restart-bearing model-overlay mutation owns two complete 640-second
+// epochs: each has five minutes for publication followed by the service's
+// status/platform/readiness envelope. The runner and control owner retain
+// their process-tree cleanup margins outside the 1,280-second transaction.
+const CATALOG_MUTATION_TIMEOUT_MS = 1_320_000;
 // Provider usage combines the local retained ledger with optional account
 // quota reads. OAuth refreshes alone may take 30 seconds, and a rejected token
 // can require a second refresh before the provider answers. Keep this aligned
@@ -89,6 +93,13 @@ const PROVIDER_USAGE_TIMEOUT_MS = 120_000;
 // catalog ceiling is not enough headroom for a slow provider, and a timeout
 // here reads to the operator as "your model failed" when it did not.
 const SUBAGENT_CERTIFY_TIMEOUT_MS = 600_000;
+const ROUTER_BROWSER_OAUTH_TIMEOUT_MS = 11 * 60_000;
+// The live compatibility request and the managed service readiness gate share
+// one ten-minute budget. The command runner gets one extra minute solely to
+// terminate the complete child tree and return a truthful failure to the UI.
+const ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS = 10 * 60_000;
+const ANTIGRAVITY_PROBE_RUNNER_TIMEOUT_MS =
+  ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS + 60_000;
 // Repair reruns the installer with --force-deps, which rebuilds node_modules
 // and the Python environment from scratch. That is the slowest thing this app
 // can start, so it gets the runner's whole ceiling rather than a catalog-sized
@@ -1516,10 +1527,46 @@ export function registerIpcHandlers({
     return { provider: id, added: unique };
   });
   handleAction("connectProvider", async ({ providerId } = {}) => {
+    const { id, provider } = await validateProvider(providerId, "sign-in");
+    if (id === "antigravity-oauth") {
+      if (provider.action === "blocked") {
+        throw new Error(
+          "Disconnect the incompatible router-owned Antigravity record before signing in.",
+        );
+      }
+      if (provider.action === "probe") {
+        // The button names the live request and its quota cost. Carry both
+        // consent flags only from that explicit action, then publish the
+        // provider after the truthful request has succeeded.
+        await runControl(
+          ["probe-provider", id, "--live", "--yes"],
+          {
+            timeoutMs: ANTIGRAVITY_PROBE_RUNNER_TIMEOUT_MS,
+            environmentOverrides: {
+              CODEX_ROUTER_OPERATION_TIMEOUT_MS: String(
+                ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS,
+              ),
+            },
+          },
+        );
+        return updateProviderSelection(id, true);
+      }
+      // This is the router-owned loopback browser flow, not a vendor CLI. It
+      // works identically on macOS, Windows, and Linux and receives no secret
+      // in argv or IPC.
+      await runControl(["login", id], {
+        timeoutMs: ROUTER_BROWSER_OAUTH_TIMEOUT_MS,
+        environmentOverrides: {
+          CODEX_ROUTER_OPERATION_TIMEOUT_MS: String(
+            ANTIGRAVITY_PROBE_ACTIVATION_TIMEOUT_MS,
+          ),
+        },
+      });
+      return { providerId: id, pending: false };
+    }
     if (!terminalAvailable()) {
       throw new Error("Provider CLI sign-in must be run in your own terminal on Windows or Linux.");
     }
-    const { id } = await validateProvider(providerId, "sign-in");
     await runControl(["install-cli", id], { timeoutMs: 120_000 });
     const login = OAUTH_LOGIN_COMMANDS[id];
     if (!login) throw new Error(`Interactive sign-in is not available for ${id}.`);
@@ -1554,7 +1601,10 @@ export function registerIpcHandlers({
     return runJson(["providers"]);
   });
   handleAction("removeProviderCredential", async ({ providerId } = {}) => {
-    const { id } = await validateProvider(providerId, "credential");
+    const { id, provider } = await validateProvider(providerId);
+    if (provider.kind !== "api" && id !== "antigravity-oauth") {
+      throw new Error(`${provider.displayName || id} has no router-managed credential to remove.`);
+    }
     // The control command owns credential deletion, provider withdrawal, and
     // publication under the same lock as credential setup. Splitting a
     // pre-disable/apply here would reopen the inter-process race and publish
@@ -1623,17 +1673,17 @@ export function registerIpcHandlers({
     const args = ["local-models", "install", validateLocalTag(tag)];
     if (yes) args.push("--yes");
     if (force) args.push("--force");
-    return runJson(args, { timeoutMs: 330_000 });
+    return runJson(args, { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS });
   });
   handleAction("installLocalMlx", async ({ yes = false } = {}) => {
     if (yes !== true) throw new Error("Installing the MLX runtime and model requires explicit consent.");
     return runJson(["local-models", "mlx-install", "--yes"], { timeoutMs: 30_000 });
   });
   handleAction("cancelLocalMlx", async () => runJson(["local-models", "mlx-cancel"], { timeoutMs: 20_000 }));
-  handleAction("uninstallLocalModel", async ({ tag } = {}) => runJson(["local-models", "uninstall", validateLocalTag(tag), "--yes"], { timeoutMs: 330_000 }));
+  handleAction("uninstallLocalModel", async ({ tag } = {}) => runJson(["local-models", "uninstall", validateLocalTag(tag), "--yes"], { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS }));
   handleAction("setLocalModelEnabled", async ({ tag, enabled } = {}) => {
     if (typeof enabled !== "boolean") throw new Error("enabled must be boolean.");
-    return runJson(["local-models", "set", validateLocalTag(tag), enabled ? "on" : "off"], { timeoutMs: 330_000 });
+    return runJson(["local-models", "set", validateLocalTag(tag), enabled ? "on" : "off"], { timeoutMs: CATALOG_MUTATION_TIMEOUT_MS });
   });
   handleAction("benchmarkLocalModel", async ({ tag } = {}) => runJson(["local-models", "benchmark", validateLocalTag(tag)], { timeoutMs: 5 * 60_000 }));
   handleAction("controlLocalRuntime", async ({ action } = {}) => {
@@ -1894,7 +1944,7 @@ export function registerIpcHandlers({
   handleAction("setPresence", async ({ mode } = {}) => runJson(["presence", "set", oneOf(mode, PRESENCE_MODES, "Presence mode")]));
   handleAction("controlService", async ({ action = "status" } = {}) => {
     const value = oneOf(action, SERVICE_COMMANDS, "Service action");
-    const timeoutMs = value === "start" ? 330_000 : 120_000;
+    const timeoutMs = ["start", "restart"].includes(value) ? 330_000 : 120_000;
     await runControl(["service", value], { timeoutMs });
     return { action: value, ok: true };
   });

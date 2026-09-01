@@ -235,6 +235,9 @@ Requirements:
 - Node.js 22.19 or newer; Node.js 24 LTS is recommended.
 - `uv`, or Python 3.10+ with `venv`.
 - Git for the managed one-command checkout and rollback.
+- On Windows, Windows PowerShell must run in `FullLanguage` mode and local
+  application-control policy must permit `Add-Type`. The router checks this
+  before starting a mutation child; it does not weaken or bypass that policy.
 
 Linux installations support the Codex CLI.
 
@@ -253,6 +256,7 @@ Linux installations support the Codex CLI.
 | Grok 4.5 (API) | `grok-api/grok-4.5` | Separately billed xAI API key |
 | Claude Opus 4.8 (API) | `anthropic-api/claude-opus-4.8` | Separately billed Anthropic API key |
 | GLM-5.2 (Ollama Cloud) | `ollama-cloud/glm-5.2` | Ollama Cloud API key |
+| GLM-5.3 (Ollama Cloud) | `ollama-cloud/glm-5.3` | Ollama Cloud API key |
 | GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud API key |
 | Kimi K2.7 Code (Ollama Cloud) | `ollama-cloud/kimi-k2.7-code` | Ollama Cloud API key |
 | Kimi K3 (Ollama Cloud) | `ollama-cloud/kimi-k3` | Ollama Cloud API key |
@@ -273,6 +277,7 @@ Linux installations support the Codex CLI.
 | GLM-5.3 (Coding Plan) | `zai-coding/glm-5.3` | Z.ai GLM Coding Plan API key |
 | GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
 | GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
+| GLM-5.3-Flash (Z.ai API) | `zai-api/glm-5.3-flash` | Separately billed Z.ai platform API key |
 | GLM-5.3 (Z.ai API) | `zai-api/glm-5.3` | Separately billed Z.ai platform API key |
 | GLM-5.2 (Z.ai API) | `zai-api/glm-5.2` | Separately billed Z.ai platform API key |
 | GLM-4.7 (Z.ai API) | `zai-api/glm-4.7` | Separately billed Z.ai platform API key |
@@ -392,47 +397,71 @@ grok login --oauth
 ```
 
 > [!WARNING]
-> **Antigravity OAuth is not a self-service provider in public builds today.**
-> It requires the client secret paired with the integration's OAuth client ID.
-> This project does not distribute that secret, and a Google AI Pro/Ultra
-> subscription, Gemini API key, Google account, or existing `agy` CLI login
-> does not provide a way to retrieve it. Do not use the old
+> **Antigravity OAuth has no bundled or shared OAuth client.** Create and use a
+> Google OAuth Desktop-app client pair that you own, as described below. A
+> Google AI Pro/Ultra subscription, Gemini API key, Google account, or existing
+> `agy` CLI login does not supply that pair, and the router never copies the
+> official `agy` identity or credential store. Do not use the old
 > `your-integration-client-secret` placeholder: it cannot work.
 
-Only enable `antigravity-oauth` if the operator of a provisioned integration
-has privately supplied its matching `ANTIGRAVITY_CLIENT_SECRET`. Set it in the
-private environment used for both installation and sign-in, and re-run the
-installer with that environment so the generated background-service definition
-can refresh tokens. Never paste the secret into chat, an issue, a command
-argument, or a tracked file. The login may provision a Google Cloud project for
-the signed-in account when none exists.
+Create a Google OAuth **Desktop app** client in a Google Cloud project you own:
 
-If the secret is already set in the current private shell, sign in and enable
-the provider with:
+1. In Google Cloud Console, open **APIs & Services > OAuth consent screen** and
+   configure the app for your account with a truthful name such as **Codex
+   Router**—not Antigravity (add the account as a test user when the consent
+   screen is in testing mode).
+2. Open **APIs & Services > Credentials**, choose **Create credentials > OAuth
+   client ID**, and select **Desktop app**. Keep the resulting client ID and
+   matching secret in that private browser tab.
+3. Run the login command below and enter that one pair only in the local setup
+   page it opens.
+
+Do not copy the official Antigravity/`agy` client or credential store. The
+login command binds `127.0.0.1` on an OS-assigned ephemeral port before it
+constructs the redirect. It opens only a loopback URL through the operating
+system; the local listener redirects the browser to Google, so neither client
+value is put in process arguments or terminal output. The pair and tokens are
+persisted together in the router's owner-only state and are never copied to a
+background-service environment.
+
+If an older incompatible router credential is already present, the new flow
+preserves it and asks you to run `providers disconnect antigravity-oauth`
+before sign-in; it never silently upgrades, reuses, or overwrites that record.
 
 ```sh
-test -n "$ANTIGRAVITY_CLIENT_SECRET"
 ./bin/model-router codex providers login antigravity-oauth
+./bin/model-router codex providers probe antigravity-oauth --live --yes
 ./bin/model-router codex providers enable antigravity-oauth
 ```
 
 On Windows PowerShell, use the matching wrapper:
 
 ```powershell
-if (-not $env:ANTIGRAVITY_CLIENT_SECRET) {
-  throw 'ANTIGRAVITY_CLIENT_SECRET is not set'
-}
 .\model-router.ps1 codex providers login antigravity-oauth
+.\model-router.ps1 codex providers probe antigravity-oauth --live --yes
 .\model-router.ps1 codex providers enable antigravity-oauth
 ```
 
-There is currently no router-managed acquisition path for that secret.
-Bring-your-own OAuth client overrides exist for development, but are not yet a
-supported persistent installation flow. Follow
-[#393](https://github.com/duolahypercho/codex-router/issues/393) for that gap.
-The resulting token stays in the router's owner-only state directory. This is
-an unofficial compatibility route over Google's internal Antigravity service,
-not a public Gemini API contract, so availability and wire behavior can change.
+The probe sends a small real prompt and consumes provider quota. It uses the
+truthful `codex-router` identity and must succeed before the route can be
+enabled. If the account has no companion project, rerun the probe with
+`--provision-project` only after authorizing that side effect. Provisioning still
+requires a successful, schema-valid bootstrap response that explicitly
+advertises the tier it will use; auth errors, server errors, malformed
+responses, and missing tiers all fail closed. This remains an unofficial
+compatibility route over Google's internal Antigravity service,
+not a public Gemini API contract; if Google serves only the impersonated vendor
+client, the router deliberately leaves this provider disabled.
+
+After proof, the command records a nonpublishable pending generation and
+restarts an installed router service. Startup health-checks that exact proof
+and promotes it only after the complete local stack is ready; restart failure
+or process death leaves it disabled. Proof records from the earlier v2 writer
+that have no activation metadata are unverified and require the explicit live
+probe again. Before proof the Antigravity forwarder
+does not bind a port, so an unused provider cannot make the rest of the router
+fail to start. If you run the router in the foreground for development,
+restart that foreground process before enabling the provider.
 
 MiMo (Xiaomi API) uses Xiaomi's official OpenAI-compatible endpoint at
 `https://api.xiaomimimo.com/v1`. Unlike MiMo reseller routes, the direct API
@@ -852,7 +881,7 @@ a 1,048,576-token context window, 131,072 tokens of output, text and image
 input, and tool calling. No checked-in Ox Alpha route remains. OpenCode Go
 graduated the preview to the named, metered `glm-5.3-flash` model; direct
 exact-route probes also certified that named model on OpenRouter and Z.ai
-Coding.
+Coding, and the Z.ai API route is shipped with the same direct-proven ladder.
 
 | Picker label | Model ID | Needs a key | Status |
 | --- | --- | --- | --- |
@@ -861,16 +890,22 @@ Coding.
 | ~~Ox Alpha (OpenCode Free)~~ | `opencode-free/ox-alpha` | ~~no~~ | Withdrawn |
 | GLM-5.3-Flash (opencode Go) | `opencode-go/glm-5.3-flash` | opencode | Named replacement |
 | GLM-5.3-Flash (OpenRouter) | `openrouter/glm-5.3-flash` | OpenRouter | Available |
+| GLM-5.3-Flash (Z.ai API) | `zai-api/glm-5.3-flash` | Z.ai API | Available |
 | GLM-5.3-Flash (Z.ai Coding) | `zai-coding/glm-5.3-flash` | Z.ai Coding | Available |
+| GLM-5.3-Flash (Ollama Cloud) | `ollama-cloud/glm-5.3-flash` | Ollama Cloud | Candidate — exact-route proof required |
 | ~~Ox Alpha (OpenRouter)~~ | `openrouter/ox-alpha` | ~~OpenRouter~~ | Withdrawn |
 | ~~Ox Alpha (Nous Research)~~ | `nousresearch/ox-alpha` | ~~Nous Portal~~ | Withdrawn |
 
 The exact-route certification run sent basic, streaming, forced-tool,
-stateless tool-result, and compact requests without failover. Command Code's
-`stealth/ox-alpha` rejected every surface as unavailable. The available Venice
-account stopped at its API billing gate before `stealth-ox-alpha` could be
-wire-certified. Publishing either preset would therefore claim more than the
-evidence supports.
+stateless tool-result, and compact requests without failover for the named
+OpenCode Go, OpenRouter, Z.ai API, and Z.ai Coding routes. The Ollama Cloud
+candidate must pass that same router-level suite before it is called certified.
+The full `ollama-cloud/glm-5.3` entry is candidate registry metadata too and
+requires its own run of the same suite.
+Command Code's `stealth/ox-alpha` rejected every surface as unavailable. The
+available Venice account stopped at its API billing gate before
+`stealth-ox-alpha` could be wire-certified. Publishing either preset would
+therefore claim more than the evidence supports.
 
 Reasoning effort is **low · high · max** on the certified named Flash routes,
 defaulting to `max`. Only three rungs exist because
