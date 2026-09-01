@@ -28,6 +28,14 @@ extraResources:
     to: src/path-security.mjs
   - from: ../../src/process-identity.mjs
     to: src/process-identity.mjs
+  # Read-only helpers used by the desktop UI must match the UI version even
+  # when the shared router service is still owned by an older stable checkout.
+  # They remain behind fixed IPC operations and are covered by the app's outer
+  # signature; no renderer-controlled module path is accepted.
+  - from: ../../src
+    to: router-src
+    filter:
+      - "**/*"
 mac:
   category: public.app-category.developer-tools
   icon: assets/icon.png
