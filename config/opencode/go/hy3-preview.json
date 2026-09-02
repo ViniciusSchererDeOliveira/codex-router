@@ -7,7 +7,7 @@
       "upstreamModel": "hy3-preview",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "Hy3 Preview (opencode Go, legacy) - 24.2x",
+      "displayName": "Hy3 Preview [Go/legacy] · 16.1x",
       "description": "Legacy Hy3 Preview route retained by the live opencode Go catalog. OpenCode last documented a 256,000-token context, text input, and Chat Completions transport before withdrawing it from the current lineup.",
       "priority": 93,
       "defaultEffort": "high",

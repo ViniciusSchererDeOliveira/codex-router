@@ -7,7 +7,7 @@
       "upstreamModel": "deepseek-v4-flash-vision-exp",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "DeepSeek V4 Flash Vision Exp (opencode Go) - 11.9x",
+      "displayName": "DeepSeek V4 Flash Vision [Go] · 7.9x",
       "description": "DeepSeek V4 Flash Vision Exp through the opencode Go subscription; image understanding and tool calls over the Chat Completions route documented by OpenCode.",
       "priority": 38,
       "defaultEffort": "high",

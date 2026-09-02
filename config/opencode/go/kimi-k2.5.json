@@ -7,7 +7,7 @@
       "upstreamModel": "kimi-k2.5",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "Kimi K2.5 (opencode Go, legacy) - 24.5x",
+      "displayName": "Kimi K2.5 [Go/legacy] · 16.3x",
       "description": "Kimi K2.5 through the opencode Go Chat Completions route. OpenCode marks this exact Go id as deprecated and publishes a 262,144-token context window, a 65,536-token output limit, and image input; auto-compaction preserves that output reserve. OpenCode publishes no named effort ladder for this id, so high remains the conservative default.",
       "priority": 91,
       "defaultEffort": "high",

@@ -322,12 +322,27 @@ test("the checked-in OpenCode Go set matches the live catalog and published cost
     "qwen3.8-flash": 5_400,
     "qwen3.8-max": 160,
   };
-  const baseline = requestsPerFiveHours["muse-spark-1.2-contributor"];
+  const baseline = requestsPerFiveHours["mimo-v2.5"];
   for (const model of MODELS.filter(({ upstreamModel }) => live.includes(upstreamModel))) {
     if (!model.provider.startsWith("opencode-go")) continue;
     const multiplier = Math.round((baseline / requestsPerFiveHours[model.upstreamModel]) * 10) / 10;
-    assert.match(model.displayName, new RegExp(` - ${String(multiplier).replace(".", "\\.")}x$`), model.slug);
+    assert.match(
+      model.displayName,
+      new RegExp(` \\[Go(?:/legacy|/opt-in)?\\] · ${String(multiplier).replace(".", "\\.")}x$`),
+      model.slug,
+    );
   }
+  assert.equal(
+    MODELS.find(({ provider, upstreamModel }) => provider === "opencode-go" && upstreamModel === "mimo-v2.5")?.displayName,
+    "MiMo V2.5 [Go] · 1x",
+  );
+  assert.equal(
+    MODELS.find(
+      ({ provider, upstreamModel }) =>
+        provider === "opencode-go-responses" && upstreamModel === "muse-spark-1.2-contributor",
+    )?.displayName,
+    "Muse Spark 1.2 [Go/opt-in] · 0.7x",
+  );
 });
 
 test("discovery reports the context length the provider advertises", () => {

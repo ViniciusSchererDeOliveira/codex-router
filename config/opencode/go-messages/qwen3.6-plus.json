@@ -7,7 +7,7 @@
       "upstreamModel": "qwen3.6-plus",
       "provider": "opencode-go-messages",
       "listed": true,
-      "displayName": "Qwen3.6 Plus (opencode Go) - 13.7x",
+      "displayName": "Qwen3.6 Plus [Go] · 9.1x",
       "description": "Qwen3.6 Plus through the opencode Go subscription using the Messages API.",
       "priority": 45,
       "defaultEffort": "high",

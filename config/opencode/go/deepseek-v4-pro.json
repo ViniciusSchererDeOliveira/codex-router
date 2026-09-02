@@ -7,7 +7,7 @@
       "upstreamModel": "deepseek-v4-pro",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "DeepSeek V4 Pro (opencode Go) - 43.1x",
+      "displayName": "DeepSeek V4 Pro [Go] · 28.7x",
       "description": "DeepSeek V4 Pro through the opencode Go subscription.",
       "priority": 36,
       "defaultEffort": "high",

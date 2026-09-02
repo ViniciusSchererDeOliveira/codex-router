@@ -7,7 +7,7 @@
       "upstreamModel": "qwen3.8-max",
       "provider": "opencode-go-messages",
       "listed": true,
-      "displayName": "Qwen3.8 Max (opencode Go) - 283.1x",
+      "displayName": "Qwen3.8 Max [Go] · 188.1x",
       "description": "Qwen3.8 Max through the opencode Go subscription using the Messages API.",
       "priority": 42,
       "defaultEffort": "high",

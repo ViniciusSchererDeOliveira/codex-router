@@ -7,7 +7,7 @@
       "upstreamModel": "qwen3.8-flash",
       "provider": "opencode-go-messages",
       "listed": true,
-      "displayName": "Qwen3.8 Flash (opencode Go) - 8.4x",
+      "displayName": "Qwen3.8 Flash [Go] · 5.6x",
       "description": "Qwen3.8 Flash through the opencode Go subscription using the Messages API. Fast 1M-context route with vision input.",
       "priority": 43,
       "defaultEffort": "high",

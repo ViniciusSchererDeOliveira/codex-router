@@ -7,7 +7,7 @@
       "upstreamModel": "mimo-v2.5",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "MiMo-V2.5 (opencode Go) - 1.5x",
+      "displayName": "MiMo V2.5 [Go] · 1x",
       "description": "MiMo-V2.5 through the opencode Go subscription.",
       "priority": 38,
       "defaultEffort": "high",

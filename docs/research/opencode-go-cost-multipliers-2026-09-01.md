@@ -9,16 +9,19 @@ cache, and output shapes with each model's included Go allowance. That is the
 closest public measure of what selecting a model actually costs this
 subscription.
 
-The cheapest published route is Muse Spark 1.2 Contributor at 45,300 requests
-per five hours. Every multiplier is:
+The neutral baseline is MiMo V2.5 at 30,100 requests per five hours. It is the
+cheapest published route that does not require training opt-in. Every
+multiplier is:
 
 ```text
-45,300 / model requests per five hours
+30,100 / model requests per five hours
 ```
 
 Values are rounded to one decimal, with a trailing `.0` removed. `1x` therefore
-means the cheapest published typical request, not zero cost. Muse is region
-limited and permits Meta to use inputs and outputs for training.
+means the cheapest published typical request without training opt-in, not zero
+cost. A value below `1x` means OpenCode subsidizes that opt-in route relative to
+the neutral baseline. Muse is region limited, permits Meta to use inputs and
+outputs for training, and is `0.7x` under this convention.
 
 ## Sources
 
@@ -38,39 +41,39 @@ limited and permits Meta to use inputs and outputs for training.
 
 | Model ID | Requests / 5h | Cost |
 | --- | ---: | ---: |
-| `muse-spark-1.2-contributor` | 45,300 | 1x |
-| `mimo-v2.5` | 30,100 | 1.5x |
-| `longcat-2.0` | 11,400 | 4x |
-| `qwen3.5-plus` | 10,200 | 4.4x |
-| `deepseek-v4-flash` | 7,600 | 6x |
-| `minimax-m2.5` | 6,300 | 7.2x |
-| `qwen3.8-flash` | 5,400 | 8.4x |
-| `qwen3.7-plus` | 4,300 | 10.5x |
-| `hy3` | 4,300 | 10.5x |
-| `deepseek-v4-flash-vision-exp` | 3,800 | 11.9x |
-| `minimax-m2.7` | 3,400 | 13.3x |
-| `qwen3.6-plus` | 3,300 | 13.7x |
-| `mimo-v2.5-pro` | 3,250 | 13.9x |
-| `minimax-m3` | 3,200 | 14.2x |
-| `mimo-v2-omni` | 2,150 | 21.1x |
-| `gpt-5.6-luna` | 2,050 | 22.1x |
-| `hy3-preview` | 1,875 | 24.2x |
-| `kimi-k2.5` | 1,850 | 24.5x |
-| `glm-5.3-flash` | 1,580 | 28.7x |
-| `kimi-k2.7-code` | 1,350 | 33.6x |
-| `hy4-preview` | 1,350 | 33.6x |
-| `mimo-v2-pro` | 1,290 | 35.1x |
-| `kimi-k2.6` | 1,150 | 39.4x |
-| `glm-5` | 1,150 | 39.4x |
-| `deepseek-v4-pro` | 1,050 | 43.1x |
-| `glm-5.2` | 880 | 51.5x |
-| `glm-5.1` | 880 | 51.5x |
-| `glm-5.3` | 220 | 205.9x |
-| `qwen3.7-max` | 170 | 266.5x |
-| `grok-4.6` | 169 | 268x |
-| `qwen3.8-max` | 160 | 283.1x |
-| `grok-4.5` | 120 | 377.5x |
-| `kimi-k3` | 110 | 411.8x |
+| `muse-spark-1.2-contributor` | 45,300 | 0.7x |
+| `mimo-v2.5` | 30,100 | 1x |
+| `longcat-2.0` | 11,400 | 2.6x |
+| `qwen3.5-plus` | 10,200 | 3x |
+| `deepseek-v4-flash` | 7,600 | 4x |
+| `minimax-m2.5` | 6,300 | 4.8x |
+| `qwen3.8-flash` | 5,400 | 5.6x |
+| `qwen3.7-plus` | 4,300 | 7x |
+| `hy3` | 4,300 | 7x |
+| `deepseek-v4-flash-vision-exp` | 3,800 | 7.9x |
+| `minimax-m2.7` | 3,400 | 8.9x |
+| `qwen3.6-plus` | 3,300 | 9.1x |
+| `mimo-v2.5-pro` | 3,250 | 9.3x |
+| `minimax-m3` | 3,200 | 9.4x |
+| `mimo-v2-omni` | 2,150 | 14x |
+| `gpt-5.6-luna` | 2,050 | 14.7x |
+| `hy3-preview` | 1,875 | 16.1x |
+| `kimi-k2.5` | 1,850 | 16.3x |
+| `glm-5.3-flash` | 1,580 | 19.1x |
+| `kimi-k2.7-code` | 1,350 | 22.3x |
+| `hy4-preview` | 1,350 | 22.3x |
+| `mimo-v2-pro` | 1,290 | 23.3x |
+| `kimi-k2.6` | 1,150 | 26.2x |
+| `glm-5` | 1,150 | 26.2x |
+| `deepseek-v4-pro` | 1,050 | 28.7x |
+| `glm-5.2` | 880 | 34.2x |
+| `glm-5.1` | 880 | 34.2x |
+| `glm-5.3` | 220 | 136.8x |
+| `qwen3.7-max` | 170 | 177.1x |
+| `grok-4.6` | 169 | 178.1x |
+| `qwen3.8-max` | 160 | 188.1x |
+| `grok-4.5` | 120 | 250.8x |
+| `kimi-k3` | 110 | 273.6x |
 
 The current table supplies 25 rows. The eight routes no longer in that table
 use their final official Go estimate and are marked `legacy` in the picker.

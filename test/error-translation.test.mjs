@@ -341,7 +341,7 @@ test("an OpenCode data-policy 403 asks for workspace opt-in and becomes non-retr
   const payload = translateGatewayError({
     status: 403,
     bodyText,
-    modelName: "Muse Spark 1.2 Contributor (opencode Go) - 1x",
+    modelName: "Muse Spark 1.2 [Go/opt-in] · 0.7x",
     providerName: "opencode",
     providerKind: "openai-compatible",
   });

@@ -7,7 +7,7 @@
       "upstreamModel": "qwen3.5-plus",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "Qwen3.5 Plus (opencode Go, legacy) - 4.4x",
+      "displayName": "Qwen3.5 Plus [Go/legacy] · 3x",
       "description": "Qwen3.5 Plus through the opencode Go Chat Completions route. OpenCode marks this exact Go id as deprecated and publishes a 262,144-token context window, a 65,536-token output limit, and image input; auto-compaction preserves that output reserve. OpenCode documents toggle and token-budget reasoning but no named effort ladder, so high remains the conservative default.",
       "priority": 92,
       "defaultEffort": "high",

@@ -677,44 +677,47 @@ the operator explicitly selects them.
 
 | Picker label | Model ID |
 | --- | --- |
-| Grok 4.6 (opencode Go) - 268x | `opencode-go-responses/grok-4.6` |
-| Grok 4.5 (opencode Go, legacy) - 377.5x | `opencode-go-responses/grok-4.5` |
-| GLM-5.3-Flash (opencode Go) - 28.7x | `opencode-go/glm-5.3-flash` |
-| GLM-5.3 (opencode Go) - 205.9x | `opencode-go/glm-5.3` |
-| GLM-5.2 (opencode Go) - 51.5x | `opencode-go/glm-5.2` |
-| GLM-5.1 (opencode Go) - 51.5x | `opencode-go/glm-5.1` |
-| GLM-5 (opencode Go, legacy) - 39.4x | `opencode-go/glm-5` |
-| Kimi K3 (opencode Go) - 411.8x | `opencode-go/kimi-k3` |
-| Kimi K2.7 Code (opencode Go) - 33.6x | `opencode-go/kimi-k2.7-code` |
-| Kimi K2.6 (opencode Go) - 39.4x | `opencode-go/kimi-k2.6` |
-| Kimi K2.5 (opencode Go, legacy) - 24.5x | `opencode-go/kimi-k2.5` |
-| LongCat-2.0 (opencode Go) - 4x | `opencode-go/longcat-2.0` |
-| DeepSeek V4 Pro (opencode Go) - 43.1x | `opencode-go/deepseek-v4-pro` |
-| DeepSeek V4 Flash (opencode Go) - 6x | `opencode-go/deepseek-v4-flash` |
-| DeepSeek V4 Flash Vision Exp (opencode Go) - 11.9x | `opencode-go/deepseek-v4-flash-vision-exp` |
-| MiMo-V2.5 (opencode Go) - 1.5x | `opencode-go/mimo-v2.5` |
-| MiMo-V2.5-Pro (opencode Go) - 13.9x | `opencode-go/mimo-v2.5-pro` |
-| MiMo-V2-Pro (opencode Go, legacy) - 35.1x | `opencode-go/mimo-v2-pro` |
-| MiMo-V2-Omni (opencode Go, legacy) - 21.1x | `opencode-go/mimo-v2-omni` |
-| Hy3 (opencode Go) - 10.5x | `opencode-go/hy3` |
-| Hy3 Preview (opencode Go, legacy) - 24.2x | `opencode-go/hy3-preview` |
-| Hy4 Preview (opencode Go) - 33.6x | `opencode-go/hy4-preview` |
-| MiniMax M3 (opencode Go) - 14.2x | `opencode-go-messages/minimax-m3` |
-| MiniMax M2.7 (opencode Go) - 13.3x | `opencode-go-messages/minimax-m2.7` |
-| MiniMax M2.5 (opencode Go, legacy) - 7.2x | `opencode-go-messages/minimax-m2.5` |
-| Qwen3.8 Max (opencode Go) - 283.1x | `opencode-go-messages/qwen3.8-max` |
-| Qwen3.8 Flash (opencode Go) - 8.4x | `opencode-go-messages/qwen3.8-flash` |
-| Qwen3.7 Max (opencode Go) - 266.5x | `opencode-go-messages/qwen3.7-max` |
-| Qwen3.7 Plus (opencode Go) - 10.5x | `opencode-go-messages/qwen3.7-plus` |
-| Qwen3.6 Plus (opencode Go) - 13.7x | `opencode-go-messages/qwen3.6-plus` |
-| Qwen3.5 Plus (opencode Go, legacy) - 4.4x | `opencode-go/qwen3.5-plus` |
-| GPT 5.6 Luna (opencode Go) - 22.1x | `opencode-go-responses/gpt-5.6-luna` |
+| Grok 4.6 [Go] · 178.1x | `opencode-go-responses/grok-4.6` |
+| Grok 4.5 [Go/legacy] · 250.8x | `opencode-go-responses/grok-4.5` |
+| GLM-5.3 Flash [Go] · 19.1x | `opencode-go/glm-5.3-flash` |
+| GLM-5.3 [Go] · 136.8x | `opencode-go/glm-5.3` |
+| GLM-5.2 [Go] · 34.2x | `opencode-go/glm-5.2` |
+| GLM-5.1 [Go] · 34.2x | `opencode-go/glm-5.1` |
+| GLM-5 [Go/legacy] · 26.2x | `opencode-go/glm-5` |
+| Kimi K3 [Go] · 273.6x | `opencode-go/kimi-k3` |
+| Kimi K2.7 Code [Go] · 22.3x | `opencode-go/kimi-k2.7-code` |
+| Kimi K2.6 [Go] · 26.2x | `opencode-go/kimi-k2.6` |
+| Kimi K2.5 [Go/legacy] · 16.3x | `opencode-go/kimi-k2.5` |
+| LongCat 2.0 [Go] · 2.6x | `opencode-go/longcat-2.0` |
+| DeepSeek V4 Pro [Go] · 28.7x | `opencode-go/deepseek-v4-pro` |
+| DeepSeek V4 Flash [Go] · 4x | `opencode-go/deepseek-v4-flash` |
+| DeepSeek V4 Flash Vision [Go] · 7.9x | `opencode-go/deepseek-v4-flash-vision-exp` |
+| MiMo V2.5 [Go] · 1x | `opencode-go/mimo-v2.5` |
+| MiMo V2.5 Pro [Go] · 9.3x | `opencode-go/mimo-v2.5-pro` |
+| MiMo V2 Pro [Go/legacy] · 23.3x | `opencode-go/mimo-v2-pro` |
+| MiMo V2 Omni [Go/legacy] · 14x | `opencode-go/mimo-v2-omni` |
+| Hy3 [Go] · 7x | `opencode-go/hy3` |
+| Hy3 Preview [Go/legacy] · 16.1x | `opencode-go/hy3-preview` |
+| Hy4 Preview [Go] · 22.3x | `opencode-go/hy4-preview` |
+| MiniMax M3 [Go] · 9.4x | `opencode-go-messages/minimax-m3` |
+| MiniMax M2.7 [Go] · 8.9x | `opencode-go-messages/minimax-m2.7` |
+| MiniMax M2.5 [Go/legacy] · 4.8x | `opencode-go-messages/minimax-m2.5` |
+| Qwen3.8 Max [Go] · 188.1x | `opencode-go-messages/qwen3.8-max` |
+| Qwen3.8 Flash [Go] · 5.6x | `opencode-go-messages/qwen3.8-flash` |
+| Qwen3.7 Max [Go] · 177.1x | `opencode-go-messages/qwen3.7-max` |
+| Qwen3.7 Plus [Go] · 7x | `opencode-go-messages/qwen3.7-plus` |
+| Qwen3.6 Plus [Go] · 9.1x | `opencode-go-messages/qwen3.6-plus` |
+| Qwen3.5 Plus [Go/legacy] · 3x | `opencode-go/qwen3.5-plus` |
+| GPT 5.6 Luna [Go] · 14.7x | `opencode-go-responses/gpt-5.6-luna` |
+| Muse Spark 1.2 [Go/opt-in] · 0.7x | `opencode-go-responses/muse-spark-1.2-contributor` |
 
 The `Nx` suffix is estimated Go quota cost per typical coding-agent request,
-relative to Muse Spark 1.2 Contributor (`1x`). It is derived from OpenCode's
-published requests-per-five-hours table rather than from a simple input-token
-price, so cache use, output use, and each model's included allowance are part
-of the comparison. See
+relative to MiMo V2.5 (`1x`), the cheapest published route that does not
+require training opt-in. Values below `1x` identify subsidized opt-in routes;
+Muse Spark 1.2 Contributor is currently `0.7x`. The estimate is derived from
+OpenCode's published requests-per-five-hours table rather than from a simple
+input-token price, so cache use, output use, and each model's included
+allowance are part of the comparison. See
 [`docs/research/opencode-go-cost-multipliers-2026-09-01.md`](docs/research/opencode-go-cost-multipliers-2026-09-01.md)
 for the source rows and calculation.
 

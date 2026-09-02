@@ -7,7 +7,7 @@
       "upstreamModel": "mimo-v2-omni",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "MiMo-V2-Omni (opencode Go, legacy) - 21.1x",
+      "displayName": "MiMo V2 Omni [Go/legacy] · 14x",
       "description": "Legacy MiMo-V2-Omni route retained by the live opencode Go catalog. OpenCode publishes a 262,144-token context and marks the model deprecated; Codex exposes its supported text and image inputs.",
       "priority": 94,
       "defaultEffort": "high",

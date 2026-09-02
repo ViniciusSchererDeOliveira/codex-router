@@ -7,7 +7,7 @@
       "upstreamModel": "mimo-v2-pro",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "MiMo-V2-Pro (opencode Go, legacy) - 35.1x",
+      "displayName": "MiMo V2 Pro [Go/legacy] · 23.3x",
       "description": "Legacy MiMo-V2-Pro route retained by the live opencode Go catalog. OpenCode publishes a 1,048,576-token context, text input, and marks the model deprecated.",
       "priority": 95,
       "defaultEffort": "high",

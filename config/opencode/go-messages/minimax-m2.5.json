@@ -7,7 +7,7 @@
       "upstreamModel": "minimax-m2.5",
       "provider": "opencode-go-messages",
       "listed": true,
-      "displayName": "MiniMax M2.5 (opencode Go, legacy) - 7.2x",
+      "displayName": "MiniMax M2.5 [Go/legacy] · 4.8x",
       "description": "MiniMax M2.5 through the opencode Go subscription using the Messages API documented by OpenCode.",
       "priority": 42,
       "defaultEffort": "high",
