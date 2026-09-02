@@ -990,7 +990,11 @@ function normalizeBody(buffer, contentType, route) {
     // compatibility probe and, worse, decline the forced function call the
     // subagent payload relay depends on.
     if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
-      payload.tool_choice = "auto";
+      // The profile spans OpenAI-compatible and Anthropic Messages routes.
+      // OpenAI spells the automatic choice as a string; Messages requires an
+      // object and rejects the string with HTTP 400.  Keep the normalization
+      // model-scoped while preserving the protocol's wire shape.
+      payload.tool_choice = provider.protocol === "anthropic" ? { type: "auto" } : "auto";
     }
   }
   // The provider still answers protocol, auth profile, and identity; the

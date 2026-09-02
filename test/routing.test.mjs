@@ -5997,6 +5997,39 @@ test("API forwarder routes opencode Go chat, Messages, and Responses surfaces", 
     );
     assert.equal(upstreamRequests[1].headers.authorization, undefined);
 
+    const qwenMessages = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/messages`,
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": INTERNAL_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-messages-qwen3-8-flash",
+          max_tokens: 64,
+          tool_choice: { type: "any" },
+          tools: [
+            {
+              name: "codex_router_probe",
+              description: "Compatibility probe",
+              input_schema: {
+                type: "object",
+                properties: { value: { type: "string" } },
+                required: ["value"],
+              },
+            },
+          ],
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(qwenMessages.status, 200);
+    assert.equal(upstreamRequests[2].url, "/v1/messages");
+    assert.equal(upstreamRequests[2].body.model, "qwen3.8-flash");
+    assert.deepEqual(upstreamRequests[2].body.tool_choice, { type: "auto" });
+
     const responses = await fetch(
       `http://127.0.0.1:${forwarderPort}/v1/responses`,
       {
@@ -6013,10 +6046,10 @@ test("API forwarder routes opencode Go chat, Messages, and Responses surfaces", 
       },
     );
     assert.equal(responses.status, 200);
-    assert.equal(upstreamRequests[2].url, "/v1/responses");
-    assert.equal(upstreamRequests[2].body.model, "gpt-5.6-luna");
+    assert.equal(upstreamRequests[3].url, "/v1/responses");
+    assert.equal(upstreamRequests[3].body.model, "gpt-5.6-luna");
     assert.equal(
-      upstreamRequests[2].headers.authorization,
+      upstreamRequests[3].headers.authorization,
       "Bearer TEST_OPENCODE_GO_API_KEY",
     );
   } finally {
