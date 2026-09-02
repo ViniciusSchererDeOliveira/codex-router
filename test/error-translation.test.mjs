@@ -329,6 +329,33 @@ test("a 403 about missing credits is out-of-usage, not a credential error", () =
   assert.ok(!payload.error.message.includes("credentials"));
 });
 
+test("an OpenCode data-policy 403 asks for workspace opt-in and becomes non-retryable", () => {
+  const bodyText = JSON.stringify({
+    type: "error",
+    error: {
+      type: "DataPolicyError",
+      message:
+        "This model collects data used to improve its quality and requires explicit opt in: https://opencode.ai/workspace/wrk_test/go",
+    },
+  });
+  const payload = translateGatewayError({
+    status: 403,
+    bodyText,
+    modelName: "Muse Spark 1.2 Contributor (opencode Go) - 1x",
+    providerName: "opencode",
+    providerKind: "openai-compatible",
+  });
+
+  assert.equal(gatewayErrorStatus({ status: 403, bodyText }), 400);
+  assert.equal(payload.error.type, "invalid_request_error");
+  assert.match(payload.error.message, /accepted the credential/);
+  assert.match(payload.error.message, /requires explicit data-policy opt-in/);
+  assert.match(payload.error.message, /workspace\/wrk_test\/go/);
+  assert.match(payload.error.message, /replacing the key will not help/);
+  assert.doesNotMatch(payload.error.message, /rejected the stored credentials/);
+  assert.doesNotMatch(payload.error.message, /Re-run codex-router setup/);
+});
+
 test("a low credit balance body is out-of-usage even on a 400", () => {
   const payload = translateGatewayError({
     status: 400,

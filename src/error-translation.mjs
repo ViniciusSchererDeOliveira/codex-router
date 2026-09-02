@@ -113,6 +113,25 @@ function isOutOfUsage(detail, errorType) {
   return QUOTA_PATTERNS.some((pattern) => pattern.test(detail));
 }
 
+// Some catalog routes are gated by an account-level data policy rather than
+// by authentication or plan entitlement. OpenCode's Muse route is the first
+// observed example: a valid Go key receives `DataPolicyError` until the
+// workspace explicitly opts in to provider training. Calling that a rejected
+// credential sends the operator through setup, which cannot change the policy.
+// Keep the type check primary and the prose checks narrow enough that ordinary
+// privacy-policy notices do not become request failures.
+const DATA_POLICY_CONSENT_PATTERNS = [
+  /requires? explicit opt[ -]?in/i,
+  /data policy.{0,80}(?:opt[ -]?in|consent)/i,
+];
+
+function isDataPolicyConsentRequired(detail, errorType) {
+  return (
+    (typeof errorType === "string" && /data[_\s-]?policy(?:error)?/i.test(errorType)) ||
+    DATA_POLICY_CONSENT_PATTERNS.some((pattern) => pattern.test(detail))
+  );
+}
+
 // Ollama's MLX runner returns this deterministic request-size failure as an
 // HTTP 500, and LiteLLM currently wraps it as APIConnectionError. Left as a
 // server error, Codex retries for minutes and eventually replaces the useful
@@ -157,7 +176,15 @@ export function contextLengthFailure(bodyText) {
 // rejection is corrected from the gateway's 5xx wrapper to the OpenAI-shaped
 // 400 that tells Codex not to retry.
 export function gatewayErrorStatus({ status, bodyText }) {
-  return contextLengthFailure(bodyText) ? 400 : Number(status);
+  const upstreamStatus = Number(status);
+  const parsed = parseUpstreamError(bodyText);
+  if (
+    contextLengthFailure(bodyText) ||
+    (upstreamStatus < 500 && isDataPolicyConsentRequired(parsed.message, parsed.type))
+  ) {
+    return 400;
+  }
+  return upstreamStatus;
 }
 
 // The same two questions `describeFailure` asks, in the same order, answered for
@@ -191,6 +218,19 @@ function describeFailure({
   providerAuthMode,
   retryAfterSeconds,
 }) {
+  // A valid credential reached the model and was stopped by an explicit
+  // workspace policy. This must precede the generic 401/403 branch, and a 400
+  // public status (gatewayErrorStatus above) keeps Codex from reconnecting to
+  // a request that cannot succeed until the operator changes that policy.
+  if (status < 500 && isDataPolicyConsentRequired(detail, errorType)) {
+    return {
+      type: "invalid_request_error",
+      message:
+        `${providerName} accepted the credential, but ${modelName} requires explicit data-policy opt-in. ` +
+        `Open the workspace settings URL in the provider detail below and consent there, or switch models. ` +
+        "Re-running setup or replacing the key will not help.",
+    };
+  }
   // Ahead of both the quota and the credential branches: an entitlement
   // failure is the only one of the three that neither a top-up nor a new key
   // can resolve, and its wording overlaps with both.
