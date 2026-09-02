@@ -7,7 +7,7 @@
       "upstreamModel": "glm-5.3-flash",
       "provider": "opencode-go",
       "listed": true,
-      "displayName": "GLM-5.3-Flash (opencode Go)",
+      "displayName": "GLM-5.3-Flash (opencode Go) - 28.7x",
       "description": "GLM-5.3-Flash through the opencode Go subscription. Z.ai previously tested this multimodal model as Ox Alpha; the old router slug migrates here. Codex compacts conservatively because large live requests have returned empty completions.",
       "priority": 29,
       "defaultEffort": "max",

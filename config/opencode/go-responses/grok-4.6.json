@@ -7,7 +7,7 @@
       "upstreamModel": "grok-4.6",
       "provider": "opencode-go-responses",
       "listed": true,
-      "displayName": "Grok 4.6 (opencode Go)",
+      "displayName": "Grok 4.6 (opencode Go) - 268x",
       "description": "Grok 4.6 through the opencode Go subscription using the Responses API documented by OpenCode.",
       "priority": 30,
       "defaultEffort": "high",

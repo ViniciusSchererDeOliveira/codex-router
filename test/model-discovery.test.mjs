@@ -48,7 +48,7 @@ test("model discovery compares fixtures without needing or exposing a key", () =
   }
 });
 
-test("OpenCode Go discovery blocks live ids whose protocol route is not certified", () => {
+test("OpenCode Go discovery blocks only live ids whose protocol route is not certified", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-opencode-route-discovery-"));
   const fixture = path.join(testRoot, "models.json");
   writeFileSync(
@@ -67,7 +67,7 @@ test("OpenCode Go discovery blocks live ids whose protocol route is not certifie
       { cwd: root, encoding: "utf8", env: { ...process.env, OPENCODE_API_KEY: "" } },
     );
     const result = JSON.parse(output);
-    assert.deepEqual(result.unregistered, ["future-responses-only-model", "hy3-preview"]);
+    assert.deepEqual(result.unregistered, ["future-responses-only-model"]);
     assert.deepEqual(result.addable, []);
     assert.deepEqual(Object.keys(result.blocked).sort(), result.unregistered);
     assert.ok(result.registered.includes("glm-5"));
@@ -266,11 +266,11 @@ test("the current OpenCode catalogs remain fully fetchable without preselecting 
   );
 });
 
-test("the checked-in OpenCode Go set matches the official current-model table", () => {
-  const documented = [
+test("the checked-in OpenCode Go set matches the live catalog and published cost ratios", () => {
+  const live = [
     "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash",
-    "gpt-5.6-luna", "grok-4.5", "grok-4.6", "hy3", "hy4-preview", "kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "longcat-2.0",
-    "mimo-v2.5", "mimo-v2.5-pro", "minimax-m2.5", "minimax-m2.7", "minimax-m3",
+    "gpt-5.6-luna", "grok-4.5", "grok-4.6", "hy3", "hy3-preview", "hy4-preview", "kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "longcat-2.0",
+    "mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m2.5", "minimax-m2.7", "minimax-m3",
     "muse-spark-1.2-contributor", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max",
     "qwen3.7-plus", "qwen3.8-flash", "qwen3.8-max",
   ].sort();
@@ -278,10 +278,55 @@ test("the checked-in OpenCode Go set matches the official current-model table", 
     .filter(({ provider }) => ["opencode-go", "opencode-go-messages", "opencode-go-responses"].includes(provider))
     .map(({ upstreamModel }) => upstreamModel)
     .sort();
-  assert.deepEqual(registered, documented);
-  for (const model of MODELS.filter(({ upstreamModel }) => documented.includes(upstreamModel))) {
+  assert.deepEqual(registered, live);
+  for (const model of MODELS.filter(({ upstreamModel }) => live.includes(upstreamModel))) {
     if (!model.provider.startsWith("opencode-go")) continue;
     assert.notEqual(model.multiAgentVersion, "v2", `${model.slug} lacks native Codex collaboration proof`);
+  }
+
+  // Current values come from the 2026-09-01 Go usage table. Deprecated
+  // routes use the last request estimate OpenCode published before removing
+  // them from that table; all still appear in the provider's live /models.
+  const requestsPerFiveHours = {
+    "deepseek-v4-flash": 7_600,
+    "deepseek-v4-flash-vision-exp": 3_800,
+    "deepseek-v4-pro": 1_050,
+    "glm-5": 1_150,
+    "glm-5.1": 880,
+    "glm-5.2": 880,
+    "glm-5.3": 220,
+    "glm-5.3-flash": 1_580,
+    "gpt-5.6-luna": 2_050,
+    "grok-4.5": 120,
+    "grok-4.6": 169,
+    hy3: 4_300,
+    "hy3-preview": 1_875,
+    "hy4-preview": 1_350,
+    "kimi-k2.5": 1_850,
+    "kimi-k2.6": 1_150,
+    "kimi-k2.7-code": 1_350,
+    "kimi-k3": 110,
+    "longcat-2.0": 11_400,
+    "mimo-v2-omni": 2_150,
+    "mimo-v2-pro": 1_290,
+    "mimo-v2.5": 30_100,
+    "mimo-v2.5-pro": 3_250,
+    "minimax-m2.5": 6_300,
+    "minimax-m2.7": 3_400,
+    "minimax-m3": 3_200,
+    "muse-spark-1.2-contributor": 45_300,
+    "qwen3.5-plus": 10_200,
+    "qwen3.6-plus": 3_300,
+    "qwen3.7-max": 170,
+    "qwen3.7-plus": 4_300,
+    "qwen3.8-flash": 5_400,
+    "qwen3.8-max": 160,
+  };
+  const baseline = requestsPerFiveHours["muse-spark-1.2-contributor"];
+  for (const model of MODELS.filter(({ upstreamModel }) => live.includes(upstreamModel))) {
+    if (!model.provider.startsWith("opencode-go")) continue;
+    const multiplier = Math.round((baseline / requestsPerFiveHours[model.upstreamModel]) * 10) / 10;
+    assert.match(model.displayName, new RegExp(` - ${String(multiplier).replace(".", "\\.")}x$`), model.slug);
   }
 });
 

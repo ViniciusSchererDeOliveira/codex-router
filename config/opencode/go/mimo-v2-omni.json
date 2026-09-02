@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "opencode-go/mimo-v2-omni",
+      "gatewayModel": "opencode-go-mimo-v2-omni",
+      "upstreamModel": "mimo-v2-omni",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "MiMo-V2-Omni (opencode Go, legacy) - 21.1x",
+      "description": "Legacy MiMo-V2-Omni route retained by the live opencode Go catalog. OpenCode publishes a 262,144-token context and marks the model deprecated; Codex exposes its supported text and image inputs.",
+      "priority": 94,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 130000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "opencode-go-mimo-v2-omni-v1"
+    }
+  ]
+}

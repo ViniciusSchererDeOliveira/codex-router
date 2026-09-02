@@ -7,7 +7,7 @@
       "upstreamModel": "minimax-m2.7",
       "provider": "opencode-go-messages",
       "listed": true,
-      "displayName": "MiniMax M2.7 (opencode Go)",
+      "displayName": "MiniMax M2.7 (opencode Go) - 13.3x",
       "description": "MiniMax M2.7 through the opencode Go subscription using the Messages API.",
       "priority": 41,
       "upgradeTo": {

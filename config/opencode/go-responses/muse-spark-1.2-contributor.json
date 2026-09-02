@@ -7,7 +7,7 @@
       "upstreamModel": "muse-spark-1.2-contributor",
       "provider": "opencode-go-responses",
       "listed": true,
-      "displayName": "Muse Spark 1.2 Contributor (opencode Go)",
+      "displayName": "Muse Spark 1.2 Contributor (opencode Go) - 1x",
       "description": "Muse Spark 1.2 Contributor through the opencode Go subscription using the Responses API. Meta may use inputs and outputs for training, and availability is region-limited.",
       "priority": 48,
       "defaultEffort": "high",

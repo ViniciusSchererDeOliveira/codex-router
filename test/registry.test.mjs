@@ -152,6 +152,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/glm-5.3-flash",
       "opencode-go/glm-5.3",
       "opencode-go/glm-5",
+      "opencode-go/hy3-preview",
       "opencode-go/hy3",
       "opencode-go/hy4-preview",
       "opencode-go/kimi-k2.5",
@@ -159,6 +160,8 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/kimi-k2.7-code",
       "opencode-go/kimi-k3",
       "opencode-go/longcat-2.0",
+      "opencode-go/mimo-v2-omni",
+      "opencode-go/mimo-v2-pro",
       "opencode-go/mimo-v2.5-pro",
       "opencode-go/mimo-v2.5",
       "opencode-go/qwen3.5-plus",
@@ -832,7 +835,7 @@ test("GLM-5.3 on Ollama Cloud uses the :cloud tag and shared profile", () => {
   assert.deepEqual(model?.inputModalities, ["text"]);
 });
 
-test("four additional OpenCode Go Chat routes retain their documented limits and conservative controls", () => {
+test("seven additional OpenCode Go Chat routes retain their documented limits and conservative controls", () => {
   const expected = {
     "opencode-go/glm-5": {
       contextWindow: 202_752,
@@ -865,6 +868,30 @@ test("four additional OpenCode Go Chat routes retain their documented limits and
       outputLimit: 65_536,
       efforts: ["high"],
       modalities: ["text", "image"],
+      description: /deprecated/,
+    },
+    "opencode-go/hy3-preview": {
+      contextWindow: 256_000,
+      autoCompact: 190_000,
+      outputLimit: 65_536,
+      efforts: ["low", "high"],
+      modalities: ["text"],
+      description: /Legacy Hy3 Preview/,
+    },
+    "opencode-go/mimo-v2-omni": {
+      contextWindow: 262_144,
+      autoCompact: 130_000,
+      outputLimit: 131_072,
+      efforts: ["high"],
+      modalities: ["text", "image"],
+      description: /deprecated/,
+    },
+    "opencode-go/mimo-v2-pro": {
+      contextWindow: 1_048_576,
+      autoCompact: 900_000,
+      outputLimit: 131_072,
+      efforts: ["high"],
+      modalities: ["text"],
       description: /deprecated/,
     },
   };
